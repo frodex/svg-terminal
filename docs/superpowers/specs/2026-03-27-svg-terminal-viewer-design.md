@@ -8,37 +8,51 @@
 
 ## 1. Overview
 
-A zero-dependency Node.js server and self-contained SVG file that renders a live tmux session as vector graphics in a browser. Read-only viewer — no input handling.
+A zero-dependency Node.js server that renders **multiple live tmux sessions** as vector graphics in a browser. Read-only viewer — no input handling. Each session is an independent SVG instance with its own poll loop and visibility-aware update rate.
 
-**Two files, zero npm dependencies:**
-- `server.mjs` — Node built-in `http` module, SGR parser, 3 JSON/SVG endpoints
-- `terminal.svg` — standalone SVG with embedded `<script>` for live polling and DOM updates
+**Three files, zero npm dependencies:**
+- `server.mjs` — Node built-in `http` module, SGR parser, 4 JSON/SVG/HTML endpoints
+- `terminal.svg` — standalone SVG viewer for a single session/pane (embeddable, self-contained)
+- `index.html` — multi-session dashboard that auto-discovers all tmux sessions and renders a grid of SVG viewers
 
-**First test case:** Viewing `cp-*` tmux sessions from claude-proxy.
-**Future integration:** Per-node terminal display in PHAT TOAD's hierarchical agent dashboard.
+**Primary use case:** Viewing all `cp-*` tmux sessions from claude-proxy simultaneously.
+**Future integration:** Per-node terminal display in PHAT TOAD's hierarchical agent dashboard, where dozens of nodes may each have a terminal view.
 
 ---
 
 ## 2. Architecture
 
 ```
-┌─────────────────────────────┐
-│  terminal.svg               │
-│  (standalone SVG file)      │
-│                             │
-│  <rect> background          │
-│  <text> × N lines           │
-│    <tspan> colored spans    │
-│  <script>                   │
-│    fetch /api/pane every    │
-│    150ms, diff & update     │
-│    text elements            │
-└──────────┬──────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  index.html (multi-session dashboard)                        │
+│                                                              │
+│  On load: fetch /api/sessions → build grid of <object> tags  │
+│  Periodically re-fetches session list for new/removed sessions│
+│                                                              │
+│  ┌──────────────────┐  ┌──────────────────┐                 │
+│  │ terminal.svg      │  │ terminal.svg      │  ← each is an │
+│  │ ?session=cp-greg  │  │ ?session=cp-test  │    independent │
+│  │ POLLING 150ms     │  │ POLLING 150ms     │    SVG instance│
+│  └──────────────────┘  └──────────────────┘                 │
+│  ┌──────────────────┐  ┌──────────────────┐                 │
+│  │ terminal.svg      │  │ terminal.svg      │  ← offscreen  │
+│  │ ?session=cp-resume│  │ ?session=cp-root  │    instances   │
+│  │ STOPPED           │  │ STOPPED           │    stop polling│
+│  └──────────────────┘  └──────────────────┘                 │
+└──────────────────────────────────────────────────────────────┘
+           │
+           │ Each SVG fetches independently:
            │ HTTP GET /api/pane?session=X&pane=Y
            ▼
 ┌─────────────────────────────┐
 │  server.mjs                 │
 │  (Node built-in http)       │
+│                             │
+│  GET /                      │
+│    → serve index.html       │
+│                             │
+│  GET /terminal.svg          │
+│    → serve the SVG file     │
 │                             │
 │  GET /api/pane              │
 │    → tmux capture-pane -p   │
@@ -46,14 +60,11 @@ A zero-dependency Node.js server and self-contained SVG file that renders a live
 │    → parse SGR into spans   │
 │    → return JSON            │
 │                             │
-│  GET /terminal.svg          │
-│    → serve the SVG file     │
-│                             │
 │  GET /api/sessions          │
 │    → tmux list-sessions     │
 │    → return session list    │
 └──────────┬──────────────────┘
-           │ child_process.execSync
+           │ child_process.execFileSync
            ▼
 ┌─────────────────────────────┐
 │  tmux                       │
@@ -63,11 +74,21 @@ A zero-dependency Node.js server and self-contained SVG file that renders a live
 └─────────────────────────────┘
 ```
 
+**Key multi-session principle:** Each SVG instance is fully independent — own session parameter, own poll loop, own visibility state, own error handling. The dashboard (`index.html`) only manages layout and session discovery. This means:
+- Adding/removing sessions is just adding/removing `<object>` tags
+- Each SVG can be embedded independently in any page
+- No shared state or coordination between viewers
+- Server handles concurrent requests from N viewers naturally
+
 ---
 
 ## 3. Server — `server.mjs`
 
 ### 3.1 Endpoints
+
+#### `GET /`
+
+Serves `index.html` — the multi-session dashboard. See Section 5.
 
 #### `GET /terminal.svg`
 
@@ -354,7 +375,104 @@ If a fetch to `/api/pane` fails:
 
 ---
 
-## 5. Security
+## 5. Multi-Session Dashboard — `index.html`
+
+### 5.1 Purpose
+
+A simple HTML page that auto-discovers all tmux sessions and renders each one as an independent SVG viewer in a responsive grid.
+
+### 5.2 Behavior
+
+1. **On load:** Fetch `/api/sessions` → create an `<object>` tag per session
+2. **Periodic refresh:** Re-fetch `/api/sessions` every 5 seconds → add new sessions, remove dead ones
+3. **Layout:** CSS grid, responsive columns based on viewport width
+4. **Session label:** Each viewer has a header showing the session name
+
+### 5.3 Structure
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { background: #0a0a0a; margin: 0; padding: 16px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+      gap: 12px;
+    }
+    .terminal-card {
+      background: #1c1c1c;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .terminal-card header {
+      padding: 6px 12px;
+      color: #888;
+      font-family: monospace;
+      font-size: 12px;
+      border-bottom: 1px solid #333;
+    }
+    .terminal-card object {
+      width: 100%;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="grid" id="grid"></div>
+  <script>
+    // fetch /api/sessions, diff against current cards,
+    // add/remove <object> tags as needed
+  </script>
+</body>
+</html>
+```
+
+### 5.4 Session Discovery Loop
+
+```
+every 5 seconds:
+  1. fetch /api/sessions
+  2. compare against currently rendered session names
+  3. for each new session → create card with <object data="/terminal.svg?session=NAME">
+  4. for each removed session → remove card from DOM
+  5. no action for sessions that still exist (their SVGs manage themselves)
+```
+
+### 5.5 Interaction with Visibility-Aware Polling
+
+Each `<object>` embeds a `terminal.svg` that manages its own IntersectionObserver. When the dashboard grid is large enough to scroll, offscreen SVGs automatically stop polling. When the user scrolls them into view, they resume. When terminals are small due to many sessions in the grid, they drop to the 2000ms tier. The dashboard does not need to coordinate any of this — it's all handled by the individual SVGs.
+
+---
+
+## 6. Implementation Phases
+
+Development is phased to prove concepts early while building toward multi-session:
+
+### Phase 1: Single Terminal POC
+- `server.mjs` with `/api/pane` and `/terminal.svg` endpoints
+- SGR parser (full color support)
+- `terminal.svg` with poll loop and line diffing
+- **Validates:** SVG rendering, SGR parsing, poll loop, tmux integration
+
+### Phase 2: Visibility-Aware Polling
+- Add IntersectionObserver + character cell measurement to `terminal.svg`
+- Three-tier polling (150ms / 2000ms / stopped)
+- **Validates:** Resource management works before multiplying terminals
+
+### Phase 3: Multi-Session Dashboard
+- `index.html` with session discovery and grid layout
+- `/api/sessions` endpoint
+- `GET /` serves dashboard
+- Periodic session list refresh (add/remove terminals)
+- **Validates:** Multiple independent SVG instances, auto-discovery, grid layout
+
+Each phase builds on the previous and can be tested independently. The architecture supports multi-session from the start — Phase 1 just happens to exercise one terminal at a time.
+
+---
+
+## 7. Security
 
 - **Input validation:** `session` and `pane` parameters validated against `^[a-zA-Z0-9_:%-]+$` before shell execution. Any other characters return HTTP 400.
 - **No shell interpolation:** Parameters are passed as arguments to `execSync`, never interpolated into a shell string. Use `execFileSync` with argument array.
@@ -363,12 +481,13 @@ If a fetch to `/api/pane` fails:
 
 ---
 
-## 6. File Structure
+## 8. File Structure
 
 ```
 /srv/svg-terminal/
 ├── server.mjs              # HTTP server + SGR parser
-├── terminal.svg            # Self-contained SVG viewer
+├── terminal.svg            # Self-contained SVG viewer (single session)
+├── index.html              # Multi-session dashboard
 ├── sessions.md             # Live project context
 ├── docs/
 │   ├── bibliography.md
@@ -381,26 +500,37 @@ If a fetch to `/api/pane` fails:
 
 ---
 
-## 7. Test Plan
+## 9. Test Plan
 
+### Phase 1 Tests (Single Terminal)
 1. **Server starts:** `node server.mjs` binds to port 3200 without error
-2. **Session list:** `GET /api/sessions` returns the `cp-*` sessions visible via `tmux list-sessions`
-3. **Pane capture:** `GET /api/pane?session=cp-greg_session_001&pane=%0` returns valid JSON with correct dimensions and parsed spans
-4. **SGR parsing:** Unit test the parser against known ANSI sequences — standard colors, 256-color, truecolor, bold, reset, mixed attributes
-5. **SVG renders:** Open `http://localhost:3200/terminal.svg?session=cp-greg_session_001` in Chrome — see terminal content as crisp vector text
-6. **Live updates:** Type in the tmux session, see changes reflected in the SVG within ~200ms
-7. **Color accuracy:** Compare SVG rendering against actual terminal — colors should match
-8. **Zoom:** Zoom to 500% in Chrome — text stays crisp, no pixelation
-9. **Input rejection:** `GET /api/pane?session=foo;rm -rf /` returns 400
-10. **Visibility tiers:** Embed multiple SVGs in an HTML page, scroll — offscreen ones stop polling (verify via network inspector)
+2. **Pane capture:** `GET /api/pane?session=cp-greg_session_001&pane=%0` returns valid JSON with correct dimensions and parsed spans
+3. **SGR parsing:** Unit test the parser against known ANSI sequences — standard colors, 256-color, truecolor, bold, reset, mixed attributes
+4. **SVG renders:** Open `http://localhost:3200/terminal.svg?session=cp-greg_session_001` in Chrome — see terminal content as crisp vector text
+5. **Live updates:** Type in the tmux session, see changes reflected in the SVG within ~200ms
+6. **Color accuracy:** Compare SVG rendering against actual terminal — colors should match
+7. **Zoom:** Zoom to 500% in Chrome — text stays crisp, no pixelation
+8. **Input rejection:** `GET /api/pane?session=foo;rm -rf /` returns 400
+
+### Phase 2 Tests (Visibility)
+9. **Tier measurement:** Resize browser to make SVG small — confirm poll rate drops to 2000ms (network inspector)
+10. **Offscreen stop:** Scroll SVG off viewport — confirm polling stops entirely
+
+### Phase 3 Tests (Multi-Session)
+11. **Session list:** `GET /api/sessions` returns the `cp-*` sessions visible via `tmux list-sessions`
+12. **Dashboard renders:** Open `http://localhost:3200/` — see grid of all tmux sessions
+13. **Auto-discovery:** Create a new tmux session — it appears in the dashboard within 5 seconds
+14. **Session removal:** Kill a tmux session — its card disappears from the dashboard
+15. **Selective polling:** With 6+ sessions in the grid, verify only visible ones are polling at full speed (network inspector)
+16. **Zoom interaction:** Zoom into one terminal in the grid — it upgrades to 150ms polling as character cells cross the 4x6 threshold
 
 ---
 
-## 8. Integration Points
+## 10. Integration Points
 
 ### claude-proxy
 
-The SVG viewer is standalone — no changes to claude-proxy are needed. Just point the viewer at a `cp-*` session name. Future: claude-proxy could serve the SVG and API directly by importing the server logic.
+The SVG viewer is standalone — no changes to claude-proxy are needed. The dashboard auto-discovers all `cp-*` sessions. Future: claude-proxy could serve the SVG and API directly by importing the server logic.
 
 ### PHAT TOAD
 
@@ -408,11 +538,10 @@ The dashboard embeds multiple `terminal.svg` instances via `<object>` or `<ifram
 
 ---
 
-## 9. Out of Scope (for POC)
+## 11. Out of Scope (for POC)
 
 - Input handling (sending keystrokes to tmux)
 - WebSocket streaming (upgrade from polling)
-- Session picker UI within the SVG
 - Authentication/authorization
 - Multiple panes in a single SVG
 - Recording/playback
