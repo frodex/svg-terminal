@@ -70,7 +70,7 @@
       })();
 
       var SESSION = urlParams['session'] || '';
-      var PANE    = urlParams['pane']    || '%0';
+      var PANE    = urlParams['pane']    || '0';
       var SERVER  = (urlParams['server'] || '').replace(/\/$/, '');
 
       // -----------------------------------------------------------------------
