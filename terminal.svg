@@ -1,4 +1,273 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 408">
-  <rect width="100%" height="100%" fill="#1c1c1c"/>
-  <text x="10" y="20" fill="#c5c5c5" font-family="monospace" font-size="14">Loading...</text>
+<svg xmlns="http://www.w3.org/2000/svg" id="root"
+     font-family="'DejaVu Sans Mono', 'Fira Code', Consolas, monospace"
+     font-size="14">
+  <defs>
+    <style>
+      /* foreground color classes */
+      .fg { fill: #c5c5c5; }
+      .bg { fill: #1c1c1c; }
+      .c0 { fill: #1c1c1c; } .c1 { fill: #ff005b; } .c2 { fill: #00cd00; }
+      .c3 { fill: #cdcd00; } .c4 { fill: #0000ee; } .c5 { fill: #cd00cd; }
+      .c6 { fill: #00cdcd; } .c7 { fill: #e5e5e5; }
+      .cb0 { fill: #4d4d4d; } .cb1 { fill: #ff0000; } .cb2 { fill: #00ff00; }
+      .cb3 { fill: #ffff00; } .cb4 { fill: #5c5cff; } .cb5 { fill: #ff00ff; }
+      .cb6 { fill: #00ffff; } .cb7 { fill: #ffffff; }
+      /* background color classes */
+      .bc0 { fill: #1c1c1c; } .bc1 { fill: #ff005b; } .bc2 { fill: #00cd00; }
+      .bc3 { fill: #cdcd00; } .bc4 { fill: #0000ee; } .bc5 { fill: #cd00cd; }
+      .bc6 { fill: #00cdcd; } .bc7 { fill: #e5e5e5; }
+      .bcb0 { fill: #4d4d4d; } .bcb1 { fill: #ff0000; } .bcb2 { fill: #00ff00; }
+      .bcb3 { fill: #ffff00; } .bcb4 { fill: #5c5cff; } .bcb5 { fill: #ff00ff; }
+      .bcb6 { fill: #00ffff; } .bcb7 { fill: #ffffff; }
+      /* text styling */
+      .bold { font-weight: bold; }
+      .italic { font-style: italic; }
+      .dim { opacity: 0.5; }
+      text { dominant-baseline: text-before-edge; white-space: pre; }
+    </style>
+  </defs>
+
+  <rect id="bg" class="bg" width="100%" height="100%" />
+  <g id="bg-layer"></g>
+  <g id="text-layer" class="fg"></g>
+  <rect id="cursor" width="8" height="17" fill="#c5c5c5" opacity="0.7">
+    <animate attributeName="opacity" values="0.7;0;0.7" dur="1s" repeatCount="indefinite" />
+  </rect>
+
+  <g id="error-overlay" visibility="hidden">
+    <rect width="100%" height="100%" fill="#1c1c1c" opacity="0.85" />
+    <text id="error-msg" x="50%" y="50%" text-anchor="middle" class="fg" font-size="16">
+      Connection lost — retrying
+    </text>
+  </g>
+
+  <script type="text/javascript">
+  <![CDATA[
+    (function () {
+      'use strict';
+
+      var SVG_NS = 'http://www.w3.org/2000/svg';
+      var CELL_W = 8;
+      var CELL_H = 17;
+
+      // -----------------------------------------------------------------------
+      // Parse URL params from the SVG's own URL
+      // -----------------------------------------------------------------------
+      var docUrl = document.URL || '';
+      var urlParams = (function () {
+        var map = {};
+        var qIdx = docUrl.indexOf('?');
+        if (qIdx === -1) return map;
+        var query = docUrl.slice(qIdx + 1);
+        query.split('&').forEach(function (part) {
+          var eqIdx = part.indexOf('=');
+          if (eqIdx === -1) return;
+          var key = decodeURIComponent(part.slice(0, eqIdx));
+          var val = decodeURIComponent(part.slice(eqIdx + 1));
+          map[key] = val;
+        });
+        return map;
+      })();
+
+      var SESSION = urlParams['session'] || '';
+      var PANE    = urlParams['pane']    || '%0';
+      var SERVER  = (urlParams['server'] || '').replace(/\/$/, '');
+
+      // -----------------------------------------------------------------------
+      // Element references
+      // -----------------------------------------------------------------------
+      var root         = document.getElementById('root');
+      var textLayer    = document.getElementById('text-layer');
+      var bgLayer      = document.getElementById('bg-layer');
+      var cursorEl     = document.getElementById('cursor');
+      var errorOverlay = document.getElementById('error-overlay');
+
+      // -----------------------------------------------------------------------
+      // State
+      // -----------------------------------------------------------------------
+      var prevState   = [];   // array of JSON strings, one per row
+      var initialized = false;
+      var pollTimer   = null;
+      var POLL_MS     = 150;
+      var RETRY_MS    = 2000;
+
+      // -----------------------------------------------------------------------
+      // Helpers
+      // -----------------------------------------------------------------------
+      function apiUrl(path) {
+        return SERVER + path;
+      }
+
+      function showError() {
+        errorOverlay.setAttribute('visibility', 'visible');
+      }
+
+      function hideError() {
+        errorOverlay.setAttribute('visibility', 'hidden');
+      }
+
+      function schedulePoll(ms) {
+        if (pollTimer !== null) {
+          clearTimeout(pollTimer);
+        }
+        pollTimer = setTimeout(poll, ms);
+      }
+
+      function stopPolling() {
+        if (pollTimer !== null) {
+          clearTimeout(pollTimer);
+          pollTimer = null;
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // Line rendering
+      // -----------------------------------------------------------------------
+      function updateLine(index, spans) {
+        var text = document.getElementById('r' + index);
+        if (!text) return;
+        while (text.firstChild) {
+          text.removeChild(text.firstChild);
+        }
+        for (var i = 0; i < spans.length; i++) {
+          var span = spans[i];
+          var tspan = document.createElementNS(SVG_NS, 'tspan');
+          tspan.textContent = span.text;
+          var classes = [];
+          if (span.cls)  classes.push(span.cls);
+          if (span.bold) classes.push('bold');
+          if (span.italic) classes.push('italic');
+          if (span.dim)  classes.push('dim');
+          if (classes.length) tspan.setAttribute('class', classes.join(' '));
+          if (span.fg)   tspan.setAttribute('fill', span.fg);
+          if (span.underline)     tspan.setAttribute('text-decoration', 'underline');
+          if (span.strikethrough) tspan.setAttribute('text-decoration', 'line-through');
+          text.appendChild(tspan);
+        }
+      }
+
+      function rebuildBgLayer(lines) {
+        while (bgLayer.firstChild) {
+          bgLayer.removeChild(bgLayer.firstChild);
+        }
+        for (var row = 0; row < lines.length; row++) {
+          var spans = lines[row].spans;
+          var colOffset = 0;
+          for (var s = 0; s < spans.length; s++) {
+            var span = spans[s];
+            var hasBg = (span.bg != null) || (span.bgCls != null);
+            if (hasBg) {
+              var rect = document.createElementNS(SVG_NS, 'rect');
+              rect.setAttribute('x', colOffset * CELL_W);
+              rect.setAttribute('y', row * CELL_H);
+              rect.setAttribute('width', span.text.length * CELL_W);
+              rect.setAttribute('height', CELL_H);
+              if (span.bgCls) {
+                rect.setAttribute('class', span.bgCls);
+              } else if (span.bg) {
+                rect.setAttribute('fill', span.bg);
+              }
+              bgLayer.appendChild(rect);
+            }
+            colOffset += span.text.length;
+          }
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // Initialization: set up row <text> elements
+      // -----------------------------------------------------------------------
+      function initLayout(width, height) {
+        // Clear any existing text rows
+        while (textLayer.firstChild) {
+          textLayer.removeChild(textLayer.firstChild);
+        }
+
+        // Set viewBox
+        root.setAttribute('viewBox', '0 0 ' + (width * CELL_W) + ' ' + (height * CELL_H));
+
+        // Create one <text> element per row
+        for (var row = 0; row < height; row++) {
+          var text = document.createElementNS(SVG_NS, 'text');
+          text.setAttribute('id', 'r' + row);
+          text.setAttribute('x', '0');
+          text.setAttribute('y', row * CELL_H);
+          text.setAttribute('textLength', width * CELL_W);
+          text.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve');
+          textLayer.appendChild(text);
+        }
+
+        // Initialize prevState
+        prevState = new Array(height).fill(null);
+        initialized = true;
+      }
+
+      // -----------------------------------------------------------------------
+      // Poll
+      // -----------------------------------------------------------------------
+      function poll() {
+        pollTimer = null;
+
+        var url = apiUrl('/api/pane?pane=' + encodeURIComponent(PANE));
+        if (SESSION) {
+          url += '&session=' + encodeURIComponent(SESSION);
+        }
+
+        fetch(url)
+          .then(function (res) {
+            if (!res.ok) {
+              throw new Error('HTTP ' + res.status);
+            }
+            return res.json();
+          })
+          .then(function (data) {
+            var width  = data.width;
+            var height = data.height;
+            var lines  = data.lines;
+            var cursor = data.cursor;
+
+            // First-time init or dimension change
+            if (!initialized ||
+                prevState.length !== height) {
+              initLayout(width, height);
+            }
+
+            // Diff and update changed lines
+            var anyChanged = false;
+            for (var i = 0; i < lines.length; i++) {
+              var serialized = JSON.stringify(lines[i].spans);
+              if (serialized !== prevState[i]) {
+                updateLine(i, lines[i].spans);
+                prevState[i] = serialized;
+                anyChanged = true;
+              }
+            }
+
+            // Rebuild background layer if anything changed
+            if (anyChanged) {
+              rebuildBgLayer(lines);
+            }
+
+            // Update cursor position
+            if (cursor) {
+              cursorEl.setAttribute('x', cursor.x * CELL_W);
+              cursorEl.setAttribute('y', cursor.y * CELL_H);
+            }
+
+            hideError();
+            schedulePoll(POLL_MS);
+          })
+          .catch(function (err) {
+            showError();
+            schedulePoll(RETRY_MS);
+          });
+      }
+
+      // -----------------------------------------------------------------------
+      // Start
+      // -----------------------------------------------------------------------
+      poll();
+    })();
+  ]]>
+  </script>
 </svg>
