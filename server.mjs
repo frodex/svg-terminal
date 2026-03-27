@@ -232,11 +232,35 @@ function router(req, res) {
     if (pathname === '/terminal.svg') {
       return handleSvg(req, res);
     }
+    if (pathname === '/terminal') {
+      try {
+        const content = readFileSync(staticPath('terminal.html'));
+        setCors(res);
+        res.setHeader('Content-Type', 'text/html');
+        res.writeHead(200);
+        res.end(content);
+      } catch (err) {
+        sendError(res, 500, 'Failed to read terminal.html');
+      }
+      return;
+    }
     if (pathname === '/api/pane') {
       return handlePane(req, res, url.searchParams);
     }
     if (pathname === '/api/sessions') {
       return handleSessions(req, res);
+    }
+    if (pathname === '/font-test.html') {
+      try {
+        const content = readFileSync(staticPath('font-test.html'));
+        setCors(res);
+        res.setHeader('Content-Type', 'text/html');
+        res.writeHead(200);
+        res.end(content);
+      } catch (err) {
+        sendError(res, 500, 'Failed to read font-test.html');
+      }
+      return;
     }
   }
 

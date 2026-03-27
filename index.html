@@ -54,9 +54,11 @@
       color: #555;
       font-size: 10px;
     }
-    .terminal-card object {
+    .terminal-card iframe {
       width: 100%;
+      height: 400px;
       display: block;
+      border: none;
       pointer-events: none;
     }
     .input-bar {
@@ -130,9 +132,8 @@
       hdr.appendChild(statusEl);
       card.appendChild(hdr);
 
-      var obj = document.createElement('object');
-      obj.type = 'image/svg+xml';
-      obj.data = '/terminal.svg?session=' + encodeURIComponent(session.name);
+      var obj = document.createElement('iframe');
+      obj.src = '/terminal?session=' + encodeURIComponent(session.name);
       card.appendChild(obj);
 
       card.addEventListener('click', function () { selectCard(session.name); });
