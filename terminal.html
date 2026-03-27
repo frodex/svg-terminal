@@ -72,13 +72,15 @@ svg { width: 100vw; height: 100vh; display: block; }
   'use strict';
 
   var SVG_NS = 'http://www.w3.org/2000/svg';
-  var CELL_H = 17;
 
   // Wait for font to load before measuring
   function start() {
     var measureEl = document.getElementById('measure');
-    var CELL_W = measureEl.getBBox().width / 10;
+    var bbox = measureEl.getBBox();
+    var CELL_W = bbox.width / 10;
     if (!CELL_W || CELL_W <= 0) CELL_W = 8.4;
+    var CELL_H = bbox.height;
+    if (!CELL_H || CELL_H <= 0) CELL_H = 17;
 
     var urlParams = new URL(window.location.href).searchParams;
     var SESSION = urlParams.get('session') || '';
@@ -163,6 +165,7 @@ svg { width: 100vw; height: 100vh; display: block; }
       while (textLayer.firstChild) textLayer.removeChild(textLayer.firstChild);
       root.setAttribute('viewBox', '0 0 ' + (width * CELL_W).toFixed(2) + ' ' + (height * CELL_H));
       cursorEl.setAttribute('width', CELL_W.toFixed(2));
+      cursorEl.setAttribute('height', CELL_H.toFixed(2));
       for (var row = 0; row < height; row++) {
         var text = document.createElementNS(SVG_NS, 'text');
         text.setAttribute('id', 'r' + row);

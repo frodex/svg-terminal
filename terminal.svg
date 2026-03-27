@@ -64,13 +64,14 @@
       'use strict';
 
       var SVG_NS = 'http://www.w3.org/2000/svg';
-      var CELL_H = 17;
 
-      // Measure actual monospace character width from the browser's rendered font
+      // Measure actual monospace character dimensions from the browser's rendered font
       var measureEl = document.getElementById('measure');
-      var CELL_W = measureEl.getBBox().width / 10;
-      // Fallback if measurement fails
+      var measureBBox = measureEl.getBBox();
+      var CELL_W = measureBBox.width / 10;
       if (!CELL_W || CELL_W <= 0) CELL_W = 8.4;
+      var CELL_H = measureBBox.height;
+      if (!CELL_H || CELL_H <= 0) CELL_H = 17;
 
       // -----------------------------------------------------------------------
       // Parse URL params from the SVG's own URL
@@ -220,6 +221,7 @@
 
         // Update cursor size to match measured cell width
         cursorEl.setAttribute('width', CELL_W.toFixed(2));
+        cursorEl.setAttribute('height', CELL_H.toFixed(2));
 
         // Create one <text> element per row — no textLength, tspans handle positioning
         for (var row = 0; row < height; row++) {
