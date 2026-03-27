@@ -143,6 +143,28 @@ Lists available tmux sessions.
 ]
 ```
 
+#### `POST /api/input` (Phase 4)
+
+Sends keystrokes to a tmux session/pane.
+
+**Request body:**
+```json
+{
+  "session": "cp-greg_session_001",
+  "pane": "%0",
+  "keys": "npm test\n"
+}
+```
+
+**Server-side steps:**
+1. Validate `session` and `pane` against `^[a-zA-Z0-9_:%-]+$`
+2. Run `execFileSync('tmux', ['send-keys', '-t', `${session}:${pane}`, '-l', keys])`
+   - `-l` flag sends literal characters (disables tmux key name lookup)
+   - Special keys (Enter, Tab, Ctrl-C, etc.) sent via separate `send-keys` call without `-l`
+3. Return `{ "ok": true }`
+
+**Security:** Same input validation as `/api/pane`. The `-l` flag prevents key name injection (e.g., sending `"Enter"` as literal text rather than as a keypress requires explicit handling).
+
 ### 3.2 SGR Parser
 
 A state machine that walks `tmux capture-pane -p -e` output and produces structured spans.
@@ -429,7 +451,23 @@ A simple HTML page that auto-discovers all tmux sessions and renders each one as
 </html>
 ```
 
-### 5.4 Session Discovery Loop
+### 5.4 Selection State
+
+The dashboard tracks which terminal card is "selected" from Phase 3 onward (used by Phase 4 input):
+
+- Click a terminal card → it becomes selected (CSS class `.selected` with visible border highlight)
+- Only one card is selected at a time
+- Selected card's `session` and `pane` are stored as dashboard state
+- The selection state is available to the input box in Phase 4
+- Keyboard shortcut (e.g., Tab or arrow keys) cycles selection between cards
+
+```css
+.terminal-card.selected {
+  border: 2px solid #5c5cff;
+}
+```
+
+### 5.5 Session Discovery Loop
 
 ```
 every 5 seconds:
@@ -440,7 +478,7 @@ every 5 seconds:
   5. no action for sessions that still exist (their SVGs manage themselves)
 ```
 
-### 5.5 Interaction with Visibility-Aware Polling
+### 5.6 Interaction with Visibility-Aware Polling
 
 Each `<object>` embeds a `terminal.svg` that manages its own IntersectionObserver. When the dashboard grid is large enough to scroll, offscreen SVGs automatically stop polling. When the user scrolls them into view, they resume. When terminals are small due to many sessions in the grid, they drop to the 2000ms tier. The dashboard does not need to coordinate any of this — it's all handled by the individual SVGs.
 
@@ -455,6 +493,7 @@ Development is phased to prove concepts early while building toward multi-sessio
 - SGR parser (full color support)
 - `terminal.svg` with poll loop and line diffing
 - **Validates:** SVG rendering, SGR parsing, poll loop, tmux integration
+- **Phase 4 prep:** `session` and `pane` are URL params from day one — this is the selection target
 
 ### Phase 2: Visibility-Aware Polling
 - Add IntersectionObserver + character cell measurement to `terminal.svg`
@@ -466,9 +505,18 @@ Development is phased to prove concepts early while building toward multi-sessio
 - `/api/sessions` endpoint
 - `GET /` serves dashboard
 - Periodic session list refresh (add/remove terminals)
+- Terminal card selection state (click to select, visual highlight)
 - **Validates:** Multiple independent SVG instances, auto-discovery, grid layout
+- **Phase 4 prep:** Selection state tracks which session/pane is active
 
-Each phase builds on the previous and can be tested independently. The architecture supports multi-session from the start — Phase 1 just happens to exercise one terminal at a time.
+### Phase 4: Input
+- `POST /api/input` endpoint (sends keystrokes via `tmux send-keys`)
+- Input box in `index.html` below the terminal grid
+- Keystrokes sent to the currently selected terminal card
+- Special key handling (Enter, Tab, Ctrl-C, arrow keys)
+- **Validates:** Full read-write interaction through the SVG viewer
+
+Each phase builds on the previous and can be tested independently. The architecture supports multi-session and input from the start — earlier phases just don't exercise those paths yet.
 
 ---
 
@@ -523,6 +571,14 @@ Each phase builds on the previous and can be tested independently. The architect
 14. **Session removal:** Kill a tmux session — its card disappears from the dashboard
 15. **Selective polling:** With 6+ sessions in the grid, verify only visible ones are polling at full speed (network inspector)
 16. **Zoom interaction:** Zoom into one terminal in the grid — it upgrades to 150ms polling as character cells cross the 4x6 threshold
+17. **Selection:** Click a terminal card — it highlights. Click another — previous deselects, new one highlights.
+
+### Phase 4 Tests (Input)
+18. **Input endpoint:** `POST /api/input` with valid session/pane/keys — verify keystrokes appear in tmux session
+19. **Input box:** Type in the dashboard input box — keystrokes appear in the selected terminal's tmux session
+20. **Special keys:** Enter, Tab, Ctrl-C send correct tmux key sequences
+21. **No selection:** Input box is disabled or shows message when no terminal is selected
+22. **Input rejection:** `POST /api/input` with invalid session name returns 400
 
 ---
 
@@ -540,9 +596,8 @@ The dashboard embeds multiple `terminal.svg` instances via `<object>` or `<ifram
 
 ## 11. Out of Scope (for POC)
 
-- Input handling (sending keystrokes to tmux)
 - WebSocket streaming (upgrade from polling)
 - Authentication/authorization
-- Multiple panes in a single SVG
+- Multiple panes in a single SVG (use multiple SVGs instead)
 - Recording/playback
 - Custom themes (CSS class approach enables this later)
