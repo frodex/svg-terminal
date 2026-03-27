@@ -99,9 +99,9 @@
       var rows        = 0;
       var prevState   = [];   // array of JSON strings, one per row
       var initialized = false;
-      var pollTimer   = null;
-      var POLL_MS     = 150;
-      var RETRY_MS    = 2000;
+      var pollTimer    = null;
+      var pollInterval = 150;
+      var RETRY_MS     = 2000;
 
       // -----------------------------------------------------------------------
       // Helpers
@@ -275,7 +275,7 @@
             }
 
             hideError();
-            schedulePoll(POLL_MS);
+            schedulePoll(pollInterval);
           })
           .catch(function (err) {
             showError();
@@ -284,9 +284,63 @@
       }
 
       // -----------------------------------------------------------------------
+      // Tier measurement — returns target poll interval based on rendered size
+      // -----------------------------------------------------------------------
+      function measureTier() {
+        var el = document.getElementById('r0');
+        if (!el) return 150;
+        var rect = el.getBoundingClientRect();
+        if (!rect || rect.width === 0) return 150;
+        var charWidth  = columns > 0 ? rect.width / columns : 0;
+        var charHeight = rect.height;
+        if (charWidth >= 4 && charHeight >= 6) return 150;
+        return 2000;
+      }
+
+      // -----------------------------------------------------------------------
+      // startPolling — set interval and kick off polling if not already running
+      // -----------------------------------------------------------------------
+      function startPolling(ms) {
+        pollInterval = ms;
+        if (pollTimer === null) {
+          poll();
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // IntersectionObserver — stop polling when offscreen, resume when visible
+      // -----------------------------------------------------------------------
+      if (typeof IntersectionObserver !== 'undefined') {
+        var observer = new IntersectionObserver(function (entries) {
+          var entry = entries[0];
+          if (!entry.isIntersecting) {
+            stopPolling();
+          } else {
+            startPolling(measureTier());
+          }
+        });
+        observer.observe(document.documentElement);
+      }
+
+      // -----------------------------------------------------------------------
+      // Resize listener — debounced, rechecks tier and updates pollInterval
+      // -----------------------------------------------------------------------
+      var resizeTimer = null;
+      window.addEventListener('resize', function () {
+        if (resizeTimer !== null) clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(function () {
+          resizeTimer = null;
+          var newTier = measureTier();
+          if (newTier !== pollInterval) {
+            pollInterval = newTier;
+          }
+        }, 200);
+      });
+
+      // -----------------------------------------------------------------------
       // Start
       // -----------------------------------------------------------------------
-      poll();
+      startPolling(150);
     })();
   ]]>
   </script>
