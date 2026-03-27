@@ -59,11 +59,54 @@
       display: block;
       pointer-events: none;
     }
+    .input-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: #111;
+      border-top: 1px solid #333;
+      padding: 8px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .input-bar .target {
+      color: #5c5cff;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .input-bar .target.none {
+      color: #555;
+    }
+    .input-bar input {
+      flex: 1;
+      background: #1c1c1c;
+      border: 1px solid #333;
+      border-radius: 4px;
+      color: #c5c5c5;
+      font-family: inherit;
+      font-size: 14px;
+      padding: 6px 10px;
+      outline: none;
+    }
+    .input-bar input:focus {
+      border-color: #5c5cff;
+    }
+    .input-bar input:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
   <h1>svg-terminal</h1>
   <div class="grid" id="grid"></div>
+
+  <div class="input-bar">
+    <span class="target none" id="input-target">No terminal selected</span>
+    <input type="text" id="input-box" placeholder="Select a terminal first..." disabled>
+  </div>
 
   <script>
     // Session card management
@@ -121,6 +164,7 @@
         var card = cards.get(name);
         if (card) card.classList.add('selected');
       }
+      updateInputBar();
     }
 
     // Session discovery
@@ -158,7 +202,7 @@
 
     // Keyboard navigation
     document.addEventListener('keydown', function (e) {
-      if (e.key === 'Tab') {
+      if (e.key === 'Tab' && document.activeElement !== inputBox) {
         e.preventDefault();
         var names = Array.from(cards.keys());
         if (names.length === 0) return;
@@ -167,6 +211,81 @@
           ? (idx <= 0 ? names.length - 1 : idx - 1)
           : (idx + 1) % names.length;
         selectCard(names[next]);
+      }
+    });
+
+    var inputBox = document.getElementById('input-box');
+    var inputTarget = document.getElementById('input-target');
+
+    function updateInputBar() {
+      if (selectedSession) {
+        inputTarget.textContent = selectedSession;
+        inputTarget.className = 'target';
+        inputBox.disabled = false;
+        inputBox.placeholder = 'Type here to send to selected terminal...';
+      } else {
+        inputTarget.textContent = 'No terminal selected';
+        inputTarget.className = 'target none';
+        inputBox.disabled = true;
+        inputBox.placeholder = 'Select a terminal first...';
+      }
+    }
+
+    async function sendKeys(session, keys) {
+      try {
+        await fetch('/api/input', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session: session, pane: '0', keys: keys })
+        });
+      } catch (e) { /* silently fail */ }
+    }
+
+    async function sendSpecialKey(session, key) {
+      try {
+        await fetch('/api/input', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session: session, pane: '0', specialKey: key })
+        });
+      } catch (e) { /* silently fail */ }
+    }
+
+    inputBox.addEventListener('keydown', function (e) {
+      if (!selectedSession) return;
+
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        var text = inputBox.value;
+        if (text) {
+          sendKeys(selectedSession, text);
+          inputBox.value = '';
+        }
+        sendSpecialKey(selectedSession, 'Enter');
+      } else if (e.key === 'Tab' && document.activeElement === inputBox) {
+        e.preventDefault();
+        sendSpecialKey(selectedSession, 'Tab');
+      } else if (e.ctrlKey && e.key === 'c') {
+        e.preventDefault();
+        sendSpecialKey(selectedSession, 'C-c');
+      } else if (e.ctrlKey && e.key === 'd') {
+        e.preventDefault();
+        sendSpecialKey(selectedSession, 'C-d');
+      } else if (e.ctrlKey && e.key === 'l') {
+        e.preventDefault();
+        sendSpecialKey(selectedSession, 'C-l');
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        sendSpecialKey(selectedSession, 'Up');
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        sendSpecialKey(selectedSession, 'Down');
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        sendSpecialKey(selectedSession, 'Escape');
+      } else if (e.key === 'Backspace') {
+        e.preventDefault();
+        sendSpecialKey(selectedSession, 'BSpace');
       }
     });
   </script>
