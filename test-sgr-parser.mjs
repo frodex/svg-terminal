@@ -170,3 +170,25 @@ test('non-SGR escape sequences skipped', () => {
     span({ text: 'abcd' }),
   ]);
 });
+
+// 20. Truncated truecolor fg (38;2;255;128 — missing blue) → no color applied
+test('handles truncated truecolor fg gracefully', () => {
+  const spans = parseLine('\x1b[38;2;255;128mtext');
+  assert.equal(spans[0].text, 'text');
+  assert.equal(spans[0].fg, null);
+});
+
+// 21. Truncated truecolor bg (48;2;255 — missing green and blue) → no color applied
+test('handles truncated truecolor bg gracefully', () => {
+  const spans = parseLine('\x1b[48;2;255mtext');
+  assert.equal(spans[0].text, 'text');
+  assert.equal(spans[0].bg, null);
+});
+
+// 22. 38;5 with missing index → no color applied
+test('handles 38;5 with missing index gracefully', () => {
+  const spans = parseLine('\x1b[38;5mtext');
+  assert.equal(spans[0].text, 'text');
+  assert.equal(spans[0].fg, null);
+  assert.equal(spans[0].cls, null);
+});

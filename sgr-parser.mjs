@@ -70,22 +70,26 @@ function applyParams(params, style) {
       if (sub === 5) {
         // 256-color fg
         const n = params[i + 2];
-        if (n < 16) {
-          next.cls = fgClass[n];
-          next.fg = null;
-        } else {
-          next.fg = table[n];
-          next.cls = null;
+        if (n !== undefined && n >= 0 && n <= 255) {
+          if (n < 16) {
+            next.cls = fgClass[n];
+            next.fg = null;
+          } else {
+            next.fg = table[n];
+            next.cls = null;
+          }
+          i += 2;
         }
-        i += 2;
       } else if (sub === 2) {
         // Truecolor fg
         const r = params[i + 2];
         const g = params[i + 3];
         const b = params[i + 4];
-        next.fg = '#' + toHex2(r) + toHex2(g) + toHex2(b);
-        next.cls = null;
-        i += 4;
+        if (r !== undefined && g !== undefined && b !== undefined) {
+          next.fg = '#' + toHex2(r) + toHex2(g) + toHex2(b);
+          next.cls = null;
+          i += 4;
+        }
       }
     } else if (code === 39) {
       next.cls = null;
@@ -98,22 +102,26 @@ function applyParams(params, style) {
       if (sub === 5) {
         // 256-color bg
         const n = params[i + 2];
-        if (n < 16) {
-          next.bgCls = bgClass[n];
-          next.bg = null;
-        } else {
-          next.bg = table[n];
-          next.bgCls = null;
+        if (n !== undefined && n >= 0 && n <= 255) {
+          if (n < 16) {
+            next.bgCls = bgClass[n];
+            next.bg = null;
+          } else {
+            next.bg = table[n];
+            next.bgCls = null;
+          }
+          i += 2;
         }
-        i += 2;
       } else if (sub === 2) {
         // Truecolor bg
         const r = params[i + 2];
         const g = params[i + 3];
         const b = params[i + 4];
-        next.bg = '#' + toHex2(r) + toHex2(g) + toHex2(b);
-        next.bgCls = null;
-        i += 4;
+        if (r !== undefined && g !== undefined && b !== undefined) {
+          next.bg = '#' + toHex2(r) + toHex2(g) + toHex2(b);
+          next.bgCls = null;
+          i += 4;
+        }
       }
     } else if (code === 49) {
       next.bgCls = null;
