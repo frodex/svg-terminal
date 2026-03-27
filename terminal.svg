@@ -34,6 +34,11 @@
     <animate attributeName="opacity" values="0.7;0;0.7" dur="1s" repeatCount="indefinite" />
   </rect>
 
+  <!-- Hidden element for measuring actual font cell width -->
+  <text id="measure" x="-9999" y="-9999" font-size="14"
+        font-family="'DejaVu Sans Mono', 'Fira Code', Consolas, monospace"
+        visibility="hidden">MMMMMMMMMM</text>
+
   <g id="error-overlay" visibility="hidden">
     <rect width="100%" height="100%" fill="#1c1c1c" opacity="0.85" />
     <text id="error-msg" x="50%" y="50%" text-anchor="middle" class="fg" font-size="16">
@@ -47,8 +52,13 @@
       'use strict';
 
       var SVG_NS = 'http://www.w3.org/2000/svg';
-      var CELL_W = 8;
       var CELL_H = 17;
+
+      // Measure actual monospace character width from the browser's rendered font
+      var measureEl = document.getElementById('measure');
+      var CELL_W = measureEl.getBBox().width / 10;
+      // Fallback if measurement fails
+      if (!CELL_W || CELL_W <= 0) CELL_W = 8.4;
 
       // -----------------------------------------------------------------------
       // Parse URL params from the SVG's own URL
@@ -85,6 +95,8 @@
       // -----------------------------------------------------------------------
       // State
       // -----------------------------------------------------------------------
+      var columns     = 0;
+      var rows        = 0;
       var prevState   = [];   // array of JSON strings, one per row
       var initialized = false;
       var pollTimer   = null;
@@ -121,7 +133,7 @@
       }
 
       // -----------------------------------------------------------------------
-      // Line rendering
+      // Line rendering — each tspan gets an explicit x position
       // -----------------------------------------------------------------------
       function updateLine(index, spans) {
         var text = document.getElementById('r' + index);
@@ -129,10 +141,13 @@
         while (text.firstChild) {
           text.removeChild(text.firstChild);
         }
+        var charOffset = 0;
         for (var i = 0; i < spans.length; i++) {
           var span = spans[i];
           var tspan = document.createElementNS(SVG_NS, 'tspan');
           tspan.textContent = span.text;
+          // Position each tspan at its character offset
+          tspan.setAttribute('x', (charOffset * CELL_W).toFixed(2));
           var classes = [];
           if (span.cls)  classes.push(span.cls);
           if (span.bold) classes.push('bold');
@@ -143,6 +158,7 @@
           if (span.underline)     tspan.setAttribute('text-decoration', 'underline');
           if (span.strikethrough) tspan.setAttribute('text-decoration', 'line-through');
           text.appendChild(tspan);
+          charOffset += span.text.length;
         }
       }
 
@@ -158,9 +174,9 @@
             var hasBg = (span.bg != null) || (span.bgCls != null);
             if (hasBg) {
               var rect = document.createElementNS(SVG_NS, 'rect');
-              rect.setAttribute('x', colOffset * CELL_W);
+              rect.setAttribute('x', (colOffset * CELL_W).toFixed(2));
               rect.setAttribute('y', row * CELL_H);
-              rect.setAttribute('width', span.text.length * CELL_W);
+              rect.setAttribute('width', (span.text.length * CELL_W).toFixed(2));
               rect.setAttribute('height', CELL_H);
               if (span.bgCls) {
                 rect.setAttribute('class', span.bgCls);
@@ -178,22 +194,26 @@
       // Initialization: set up row <text> elements
       // -----------------------------------------------------------------------
       function initLayout(width, height) {
+        columns = width;
+        rows = height;
+
         // Clear any existing text rows
         while (textLayer.firstChild) {
           textLayer.removeChild(textLayer.firstChild);
         }
 
-        // Set viewBox
-        root.setAttribute('viewBox', '0 0 ' + (width * CELL_W) + ' ' + (height * CELL_H));
+        // Set viewBox based on measured cell width
+        root.setAttribute('viewBox', '0 0 ' +
+          (width * CELL_W).toFixed(2) + ' ' + (height * CELL_H));
 
-        // Create one <text> element per row
+        // Update cursor size to match measured cell width
+        cursorEl.setAttribute('width', CELL_W.toFixed(2));
+
+        // Create one <text> element per row — no textLength, tspans handle positioning
         for (var row = 0; row < height; row++) {
           var text = document.createElementNS(SVG_NS, 'text');
           text.setAttribute('id', 'r' + row);
-          text.setAttribute('x', '0');
           text.setAttribute('y', row * CELL_H);
-          text.setAttribute('textLength', width * CELL_W);
-          text.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve');
           textLayer.appendChild(text);
         }
 
@@ -228,7 +248,7 @@
 
             // First-time init or dimension change
             if (!initialized ||
-                prevState.length !== height) {
+                columns !== width || rows !== height) {
               initLayout(width, height);
             }
 
@@ -250,7 +270,7 @@
 
             // Update cursor position
             if (cursor) {
-              cursorEl.setAttribute('x', cursor.x * CELL_W);
+              cursorEl.setAttribute('x', (cursor.x * CELL_W).toFixed(2));
               cursorEl.setAttribute('y', cursor.y * CELL_H);
             }
 
