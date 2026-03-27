@@ -141,6 +141,58 @@ function handlePane(req, res, params) {
   }
 }
 
+const ALLOWED_SPECIAL_KEYS = [
+  'Enter', 'Tab', 'Escape', 'C-c', 'C-d', 'C-z', 'C-l',
+  'Up', 'Down', 'Left', 'Right', 'Home', 'End', 'BSpace', 'DC',
+];
+
+function handleInput(req, res) {
+  let body = '';
+  req.on('data', (chunk) => { body += chunk; });
+  req.on('end', () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      return sendError(res, 400, 'Invalid JSON body');
+    }
+
+    const { session, pane = '0', keys, specialKey } = parsed;
+
+    if (!validateParam(session)) {
+      return sendError(res, 400, 'Invalid session parameter');
+    }
+    if (!validateParam(pane)) {
+      return sendError(res, 400, 'Invalid pane parameter');
+    }
+
+    const target = `${session}:${pane}`;
+
+    if (specialKey !== undefined) {
+      if (!ALLOWED_SPECIAL_KEYS.includes(specialKey)) {
+        return sendError(res, 400, `Invalid specialKey: ${specialKey}`);
+      }
+      try {
+        execFileSync('tmux', ['send-keys', '-t', target, specialKey]);
+        return sendJson(res, 200, { ok: true });
+      } catch (err) {
+        return sendError(res, 500, `tmux error: ${err.message}`);
+      }
+    }
+
+    if (typeof keys === 'string' && keys.length > 0) {
+      try {
+        execFileSync('tmux', ['send-keys', '-t', target, '-l', keys]);
+        return sendJson(res, 200, { ok: true });
+      } catch (err) {
+        return sendError(res, 500, `tmux error: ${err.message}`);
+      }
+    }
+
+    return sendError(res, 400, 'Must provide keys or specialKey');
+  });
+}
+
 function handleSessions(req, res) {
   try {
     const raw = execFileSync(
@@ -186,6 +238,10 @@ function router(req, res) {
     if (pathname === '/api/sessions') {
       return handleSessions(req, res);
     }
+  }
+
+  if (req.method === 'POST' && pathname === '/api/input') {
+    return handleInput(req, res);
   }
 
   setCors(res);

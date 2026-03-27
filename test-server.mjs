@@ -117,3 +117,45 @@ test('cache-control no-cache on API responses', async () => {
   const res = await get('/api/sessions');
   assert.equal(res.headers.get('cache-control'), 'no-cache');
 });
+
+// Input API tests
+
+test('rejects invalid session in input', async () => {
+  const res = await fetch(`${BASE}/api/input`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session: 'foo;rm -rf', pane: '0', keys: 'test' }),
+  });
+  assert.equal(res.status, 400);
+});
+
+test('rejects GET on input endpoint', async () => {
+  const res = await fetch(`${BASE}/api/input`);
+  assert.equal(res.status, 404);
+});
+
+test('sends keys to a real tmux session', async () => {
+  const { execSync } = await import('node:child_process');
+  execSync('tmux new-session -d -s svg-test-input');
+  try {
+    const res = await fetch(`${BASE}/api/input`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session: 'svg-test-input', pane: '0', keys: 'echo hello' }),
+    });
+    const data = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(data.ok, true);
+  } finally {
+    execSync('tmux kill-session -t svg-test-input');
+  }
+});
+
+test('rejects invalid special key', async () => {
+  const res = await fetch(`${BASE}/api/input`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session: 'anything', pane: '0', specialKey: 'Evil-Key' }),
+  });
+  assert.equal(res.status, 400);
+});
