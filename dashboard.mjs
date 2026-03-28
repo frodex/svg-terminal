@@ -11,7 +11,7 @@ const MORPH_DURATION = 2.0;
 const BILLBOARD_SLERP = 0.03;
 const IDLE_TIMEOUT = 3000;
 const SIDEBAR_WIDTH = 140;
-const HOME_POS = new THREE.Vector3(0, 200, 800);
+const HOME_POS = new THREE.Vector3(0, 100, 500);
 const HOME_TARGET = new THREE.Vector3(0, 0, 0);
 let zoomDistance = 400; // distance from focused terminal, adjustable via wheel
 
@@ -464,6 +464,13 @@ function animate() {
     }
 
     idx++;
+  }
+
+  // Always ensure camera looks at current target when not tweening
+  if (cameraTweenStart === null && !focusedSession) {
+    camera.lookAt(currentLookTarget);
+  } else if (cameraTweenStart === null && focusedSession) {
+    camera.lookAt(cameraLookTo);
   }
 
   renderer.render(scene, camera);
