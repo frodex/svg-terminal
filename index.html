@@ -21,6 +21,27 @@
   <!-- Focus overlay: native DOM rendering for pixel-perfect focused terminal -->
   <div class="focus-overlay" id="focus-overlay"></div>
 
+  <!-- Help button + panel -->
+  <button class="help-btn" id="help-btn" title="Controls (?)">?</button>
+  <div class="help-panel" id="help-panel">
+    <div class="help-panel-inner">
+      <div class="help-header">
+        <span>Controls</span>
+        <button class="help-close" id="help-close">&times;</button>
+      </div>
+      <div class="help-controls">
+        <div class="help-row"><kbd>Drag</kbd><span>Orbit</span></div>
+        <div class="help-row"><kbd>Shift + Drag</kbd><span>Pan X / Y</span></div>
+        <div class="help-row"><kbd>Ctrl + Drag</kbd><span>Rotate origin</span></div>
+        <div class="help-row"><kbd>Scroll</kbd><span>Zoom</span></div>
+        <div class="help-row"><kbd>Shift + Scroll</kbd><span>Dolly</span></div>
+        <div class="help-row"><kbd>Click</kbd><span>Focus terminal</span></div>
+        <div class="help-row"><kbd>Esc</kbd><span>Unfocus</span></div>
+        <div class="help-row"><kbd>?</kbd><span>Toggle help</span></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Input bar (hidden until terminal focused) -->
   <div class="input-bar" id="input-bar">
     <span class="target" id="input-target"></span>

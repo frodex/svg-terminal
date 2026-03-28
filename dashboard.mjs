@@ -51,6 +51,8 @@ let terminalGroup, shadowGroup;
 const terminals = new Map();
 let sessionOrder = [];
 let focusedSession = null;
+let focusedSessions = new Set();
+let activeInputSession = null;
 const clock = new THREE.Clock();
 
 // Ring state
@@ -64,6 +66,10 @@ let isDragging = false;
 let dragMode = null; // 'orbit' | 'dollyXY' | 'rotateOrigin'
 let dragStart = { x: 0, y: 0 };
 let dragDistance = 0;
+let ctrlHeld = false;
+let suppressNextClick = false;
+let lastAddToFocusTime = 0;
+let mouseDownOnSidebar = false;
 let orbitAngle = 0;
 let orbitPitch = 0;
 let orbitDist = HOME_POS.z;
@@ -126,18 +132,64 @@ function computeRingPos(index, total, config, angle) {
   return { x: v.x, y: v.y, z: v.z };
 }
 
-// === Focused Layout ===
-// Only the focused terminal flies out to origin; camera offsets to center it in usable area
+// === Multi-Focus Layout ===
+// Arrange focused terminals in a grid pattern that maximizes screen space:
+// 1=center, 2=side-by-side, 3=triangle, 4=2x2, 5+=grid
 function calculateFocusedLayout() {
   const now = clock.getElapsedTime();
+  const count = focusedSessions.size;
+  if (count === 0) return;
 
-  const ft = terminals.get(focusedSession);
-  if (ft) {
-    ft.morphFrom = { ...ft.currentPos };
-    ft.targetPos = { x: 0, y: 0, z: 0 };
-    ft.morphStart = now;
-    ft.focusQuatFrom = ft.css3dObject.quaternion.clone(); // capture current rotation for slerp
+  // Grid dimensions
+  const cols = Math.ceil(Math.sqrt(count * (window.innerWidth / window.innerHeight)));
+  const rows = Math.ceil(count / cols);
+
+  // Card world size and spacing
+  const cardW = 320;
+  const cardH = 248;
+  const gap = 30;
+  const totalW = cols * cardW + (cols - 1) * gap;
+  const totalH = rows * cardH + (rows - 1) * gap;
+
+  let idx = 0;
+  const names = [...focusedSessions];
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      if (idx >= count) break;
+      const name = names[idx];
+      const t = terminals.get(name);
+      if (!t) { idx++; continue; }
+
+      t.morphFrom = { ...t.currentPos };
+      t.targetPos = {
+        x: (col - (cols - 1) / 2) * (cardW + gap),
+        y: ((rows - 1) / 2 - row) * (cardH + gap),
+        z: 0
+      };
+      t.morphStart = now;
+      t.focusQuatFrom = t.css3dObject.quaternion.clone();
+      idx++;
+    }
   }
+
+  // Camera distance: pull back enough to see the whole grid
+  const vFov = camera.fov * DEG2RAD;
+  const distForH = (totalH / 2) / Math.tan(vFov / 2) * 1.15;
+  const distForW = (totalW / 2) / (Math.tan(vFov / 2) * camera.aspect) * 1.15;
+  const dist = Math.max(FOCUS_DIST, Math.max(distForH, distForW));
+
+  const vFovH = 2 * dist * Math.tan(vFov / 2);
+  const pxToWorld = vFovH / window.innerHeight;
+  const offX = (SIDEBAR_WIDTH / 2) * pxToWorld;
+
+  cameraTween = {
+    from: camera.position.clone(),
+    to: new THREE.Vector3(offX, 0, dist),
+    lookFrom: currentLookTarget.clone(),
+    lookTo: new THREE.Vector3(offX, 0, 0),
+    start: now,
+    duration: 1.0
+  };
 }
 
 // === Init ===
@@ -167,12 +219,14 @@ function init() {
   // Events
   window.addEventListener('resize', onResize);
   renderer.domElement.addEventListener('mousemove', onMouseMove);
-  renderer.domElement.addEventListener('mousedown', onMouseDown);
-  renderer.domElement.addEventListener('mouseup', onMouseUp);
+  document.addEventListener('mousedown', onMouseDown);
+  document.addEventListener('mouseup', onMouseUp);
   renderer.domElement.addEventListener('mouseleave', onMouseLeave);
   renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
   renderer.domElement.addEventListener('click', onSceneClick);
   document.addEventListener('keydown', onKeyDown);
+  document.getElementById('help-btn').addEventListener('click', toggleHelp);
+  document.getElementById('help-close').addEventListener('click', toggleHelp);
 
   refreshSessions();
   setInterval(refreshSessions, 5000);
@@ -199,6 +253,11 @@ function onMouseMove(e) {
     dragStart.x = e.clientX;
     dragStart.y = e.clientY;
 
+    // Resolve ctrl pending to rotateOrigin once there's real movement
+    if (dragMode === 'ctrlPending' && dragDistance > 5) {
+      dragMode = 'rotateOrigin';
+    }
+
     if (dragMode === 'orbit') {
       // Orbit camera around its look target at current distance
       orbitAngle -= dx * 0.005;
@@ -220,8 +279,16 @@ function onMouseMove(e) {
       camera.lookAt(currentLookTarget);
 
     } else if (dragMode === 'rotateOrigin') {
-      // Ctrl+drag: rotate camera around world origin (0,0,0)
+      // Ctrl+drag: rotate camera around center of mass of focused terminals (or world origin)
       const origin = new THREE.Vector3(0, 0, 0);
+      if (focusedSessions.size > 0) {
+        let count = 0;
+        for (const fname of focusedSessions) {
+          const ft = terminals.get(fname);
+          if (ft) { origin.add(ft.css3dObject.position); count++; }
+        }
+        if (count > 0) origin.divideScalar(count);
+      }
       const offset = camera.position.clone().sub(origin);
       const rotY = new THREE.Matrix4().makeRotationY(-dx * 0.005);
       const rotX = new THREE.Matrix4().makeRotationX(-dy * 0.005);
@@ -234,23 +301,33 @@ function onMouseMove(e) {
 }
 
 function onMouseDown(e) {
+  const sidebar = document.getElementById('sidebar');
+  mouseDownOnSidebar = sidebar && sidebar.contains(e.target);
   if (e.button === 0) {
     if (e.ctrlKey) {
+      // Don't commit to rotateOrigin yet — could be ctrl+click for multi-focus
       isDragging = true;
-      dragMode = 'rotateOrigin';
+      dragMode = 'ctrlPending';
+      dragDistance = 0;
+      dragStart.x = e.clientX;
+      dragStart.y = e.clientY;
+      // No preventDefault — let click event fire for ctrl+click
     } else if (e.shiftKey) {
       isDragging = true;
       dragMode = 'dollyXY';
+      dragStart.x = e.clientX;
+      dragStart.y = e.clientY;
+      e.preventDefault();
     } else {
       // Plain left drag: orbit
       isDragging = true;
       dragMode = 'orbit';
       dragDistance = 0;
       syncOrbitFromCamera();
+      dragStart.x = e.clientX;
+      dragStart.y = e.clientY;
+      e.preventDefault();
     }
-    dragStart.x = e.clientX;
-    dragStart.y = e.clientY;
-    e.preventDefault();
   } else if (e.button === 1) {
     // Middle button: pan
     isDragging = true;
@@ -271,13 +348,48 @@ function onMouseDown(e) {
 
 document.addEventListener('contextmenu', function(e) { e.preventDefault(); });
 
-function onMouseUp() {
+function onMouseUp(e) {
+  if (e.button === 0 && dragDistance <= 5) {
+    if (dragMode === 'ctrlPending' || ctrlHeld) {
+      // Ctrl+click on 3D scene — skip if click was on sidebar (thumbnail handles it)
+      if (!mouseDownOnSidebar) {
+        handleCtrlClick(e);
+      }
+      suppressNextClick = true;
+      isDragging = false;
+      dragMode = null;
+      return;
+    }
+  }
   isDragging = false;
   dragMode = null;
 }
 
+function handleCtrlClick(e) {
+  let clicked = null;
+  let closestZ = -Infinity;
+  for (const [name, t] of terminals) {
+    if (focusedSessions.has(name)) continue; // skip already-focused
+    const rect = t.dom.getBoundingClientRect();
+    if (rect.width < 10) continue;
+    if (e.clientX >= rect.left && e.clientX <= rect.right &&
+        e.clientY >= rect.top && e.clientY <= rect.bottom) {
+      const worldPos = new THREE.Vector3();
+      t.css3dObject.getWorldPosition(worldPos);
+      worldPos.project(camera);
+      if (worldPos.z > closestZ) {
+        closestZ = worldPos.z;
+        clicked = name;
+      }
+    }
+  }
+  if (clicked) {
+    addToFocus(clicked);
+  }
+}
+
 function wasDrag() {
-  return dragDistance > 5;
+  return dragDistance > 5 && dragMode !== 'ctrlPending';
 }
 
 function onMouseLeave() {
@@ -286,16 +398,38 @@ function onMouseLeave() {
   dragMode = null;
 }
 
+function toggleHelp() {
+  const panel = document.getElementById('help-panel');
+  panel.classList.toggle('visible');
+}
+
+document.addEventListener('keydown', function(e) { if (e.key === 'Control') ctrlHeld = true; });
+document.addEventListener('keyup', function(e) { if (e.key === 'Control') ctrlHeld = false; });
+window.addEventListener('blur', function() { ctrlHeld = false; });
+
 function onKeyDown(e) {
-  if (e.key === 'Escape' && focusedSession) {
-    unfocusTerminal();
+  if (e.key === 'Escape') {
+    const panel = document.getElementById('help-panel');
+    if (panel.classList.contains('visible')) {
+      panel.classList.remove('visible');
+    } else if (focusedSessions.size > 0) {
+      unfocusTerminal();
+    }
+  }
+  if (e.key === '?') {
+    toggleHelp();
   }
 }
 
 function onSceneClick(e) {
+  // Ctrl+click is handled entirely in onMouseUp — skip here
+  if (suppressNextClick || ctrlHeld || e.ctrlKey) {
+    suppressNextClick = false;
+    return;
+  }
   if (wasDrag()) return;
   if (e.button !== 0) return;
-  if (e.ctrlKey || e.shiftKey) return;
+  if (e.shiftKey) return; // shift+click reserved for drag
 
   let clicked = null;
   let closestZ = -Infinity;
@@ -315,8 +449,14 @@ function onSceneClick(e) {
   }
 
   if (clicked) {
-    focusTerminal(clicked);
-  } else if (focusedSession) {
+    if (focusedSessions.has(clicked)) {
+      // Click on an already-focused terminal: switch input to it
+      setActiveInput(clicked);
+    } else {
+      // Regular click: focus single terminal (replaces all)
+      focusTerminal(clicked);
+    }
+  } else if (focusedSessions.size > 0) {
     unfocusTerminal();
   }
 }
@@ -389,7 +529,7 @@ function createTerminalDOM(sessionName) {
   inner.appendChild(obj);
 
   el.appendChild(inner);
-  el.addEventListener('click', function () { focusTerminal(sessionName); });
+  // Click handling is done in onSceneClick/onMouseUp — no per-element handler
   return el;
 }
 
@@ -414,7 +554,15 @@ function createThumbnail(sessionName) {
   obj.data = '/terminal.svg?session=' + encodeURIComponent(sessionName);
   item.appendChild(obj);
 
-  item.addEventListener('click', function () { focusTerminal(sessionName); });
+  item.addEventListener('click', function (e) {
+    e.stopPropagation();
+    if (e.ctrlKey || ctrlHeld) {
+      lastAddToFocusTime = performance.now();
+      addToFocus(sessionName);
+    } else {
+      focusTerminal(sessionName);
+    }
+  });
   document.getElementById('sidebar').appendChild(item);
   return item;
 }
@@ -443,7 +591,7 @@ async function refreshSessions() {
     }
     if (changed) {
       assignRings();
-      if (focusedSession) calculateFocusedLayout();
+      if (focusedSessions.size > 0) calculateFocusedLayout();
     }
   } catch (e) {}
 }
@@ -522,67 +670,57 @@ function removeTerminal(sessionName) {
   t.thumbnail.remove();
   terminals.delete(sessionName);
   sessionOrder = sessionOrder.filter(n => n !== sessionName);
-  if (focusedSession === sessionName) unfocusTerminal();
+  if (focusedSessions.has(sessionName)) {
+    focusedSessions.delete(sessionName);
+    if (activeInputSession === sessionName) activeInputSession = [...focusedSessions][0] || null;
+    if (focusedSessions.size === 0) unfocusTerminal();
+    else { updateFocusStyles(); calculateFocusedLayout(); }
+  }
 }
 
 // === Focus / Unfocus ===
+
+// Focus a single terminal (replaces all focused)
 function focusTerminal(sessionName) {
+  if (performance.now() - lastAddToFocusTime < 200) {
+    return;
+  }
   const t = terminals.get(sessionName);
   if (!t) return;
 
-  // Restore the previously focused terminal before focusing the new one
-  const now = clock.getElapsedTime();
-  if (focusedSession && focusedSession !== sessionName) {
-    const prev = terminals.get(focusedSession);
-    if (prev) {
-      prev.dom.classList.remove('faded', 'focused');
-      prev.dom.style.width = '';
-      prev.dom.style.height = '';
-      prev.dom.style.borderRadius = '';
-      const inner = prev.dom.querySelector('.terminal-inner');
-      if (inner) inner.style.transform = '';
-      prev.css3dObject.scale.setScalar(0.25);
-      prev.morphFrom = { ...prev.currentPos };
-      prev.morphStart = now;
-      prev.billboardArrival = null;
-    }
-  }
+  // Restore any previously focused terminals
+  restoreAllFocused();
 
+  focusedSessions.add(sessionName);
   focusedSession = sessionName;
+  activeInputSession = sessionName;
 
-  for (const [name, term] of terminals) {
-    if (name !== sessionName) {
-      term.dom.classList.add('faded');
-    } else {
-      term.dom.classList.remove('faded');
-      term.dom.classList.add('focused');
-    }
-    term.thumbnail.classList.toggle('active', name === sessionName);
-  }
+  updateFocusStyles();
 
-  calculateFocusedLayout();
+  const now = clock.getElapsedTime();
+  t.morphFrom = { ...t.currentPos };
+  t.targetPos = { x: 0, y: 0, z: 0 };
+  t.morphStart = now;
+  t.focusQuatFrom = t.css3dObject.quaternion.clone();
 
-  // Camera offset so terminal appears centered in usable area
+  // 1:1 pixel mapping for single terminal focus
   const vFov = camera.fov * DEG2RAD;
   const visH = 2 * FOCUS_DIST * Math.tan(vFov / 2);
   const pxToWorld = visH / window.innerHeight;
   const offX = (SIDEBAR_WIDTH / 2) * pxToWorld;
   const offY = -(50 / 2) * pxToWorld;
 
-  // 1:1 pixel mapping: resize outer to match exact screen pixel count
-  // Inner wrapper scales to fit — all internal proportions stay identical
   const worldH = 248;
   const worldW = 320;
   const screenH = Math.round((worldH / visH) * window.innerHeight);
   const screenW = Math.round(screenH * (worldW / worldH));
-  const innerScale = screenW / 1280; // scale 4x layout to fit screen size
+  const innerScale = screenW / 1280;
 
   t.dom.style.width = screenW + 'px';
   t.dom.style.height = screenH + 'px';
   t.dom.style.borderRadius = Math.round(48 * innerScale) + 'px';
   const inner = t.dom.querySelector('.terminal-inner');
   if (inner) inner.style.transform = 'scale(' + innerScale + ')';
-
   t.css3dObject.scale.setScalar(worldH / screenH);
 
   cameraTween = {
@@ -590,7 +728,7 @@ function focusTerminal(sessionName) {
     to: new THREE.Vector3(offX, offY, FOCUS_DIST),
     lookFrom: currentLookTarget.clone(),
     lookTo: new THREE.Vector3(offX, offY, 0),
-    start: clock.getElapsedTime(),
+    start: now,
     duration: 1.0
   };
 
@@ -598,26 +736,103 @@ function focusTerminal(sessionName) {
   document.getElementById('input-target').textContent = sessionName;
 }
 
+// Add a terminal to the multi-focus set (ctrl+click)
+function addToFocus(sessionName) {
+  const t = terminals.get(sessionName);
+  if (!t) return;
+
+  if (focusedSessions.has(sessionName)) {
+    setActiveInput(sessionName);
+    return;
+  }
+  lastAddToFocusTime = performance.now();
+
+  // If switching from single-focus to multi-focus, restore DOM sizing on all existing focused
+  for (const fname of focusedSessions) {
+    const ft = terminals.get(fname);
+    if (ft) {
+      ft.dom.style.width = '';
+      ft.dom.style.height = '';
+      ft.dom.style.borderRadius = '';
+      const inner = ft.dom.querySelector('.terminal-inner');
+      if (inner) inner.style.transform = '';
+      ft.css3dObject.scale.setScalar(0.25);
+    }
+  }
+
+  focusedSessions.add(sessionName);
+  if (!focusedSession) focusedSession = sessionName;
+  activeInputSession = sessionName;
+
+  updateFocusStyles();
+  calculateFocusedLayout();
+
+  document.getElementById('input-bar').classList.add('visible');
+  document.getElementById('input-target').textContent = activeInputSession;
+}
+
+// Set which focused terminal receives input
+function setActiveInput(sessionName) {
+  if (!focusedSessions.has(sessionName)) return;
+  activeInputSession = sessionName;
+  updateFocusStyles();
+  document.getElementById('input-target').textContent = sessionName;
+}
+
+// Update CSS classes for all terminals based on focus state
+function updateFocusStyles() {
+  for (const [name, term] of terminals) {
+    term.dom.classList.remove('faded', 'focused', 'input-active');
+    term.thumbnail.classList.remove('active');
+
+    if (focusedSessions.size > 0) {
+      if (focusedSessions.has(name)) {
+        term.dom.classList.add('focused');
+        term.thumbnail.classList.add('active');
+        if (name === activeInputSession && focusedSessions.size > 1) {
+          term.dom.classList.add('input-active');
+        }
+      } else {
+        term.dom.classList.add('faded');
+      }
+    }
+  }
+}
+
+// Restore a single terminal to overview state
+function restoreFocusedTerminal(name) {
+  const term = terminals.get(name);
+  if (!term) return;
+  const now = clock.getElapsedTime();
+  term.dom.classList.remove('faded', 'focused', 'input-active');
+  term.dom.style.width = '';
+  term.dom.style.height = '';
+  term.dom.style.borderRadius = '';
+  const inner = term.dom.querySelector('.terminal-inner');
+  if (inner) inner.style.transform = '';
+  term.css3dObject.scale.setScalar(0.25);
+  term.morphFrom = { ...term.currentPos };
+  term.morphStart = now;
+  term.billboardArrival = null;
+}
+
+// Restore all focused terminals
+function restoreAllFocused() {
+  for (const name of focusedSessions) {
+    restoreFocusedTerminal(name);
+  }
+  focusedSessions.clear();
+}
+
 function unfocusTerminal() {
-  const wasFocused = focusedSession;
+  restoreAllFocused();
   focusedSession = null;
+  activeInputSession = null;
   const now = clock.getElapsedTime();
 
   for (const [name, term] of terminals) {
-    term.dom.classList.remove('faded', 'focused');
+    term.dom.classList.remove('faded', 'focused', 'input-active');
     term.thumbnail.classList.remove('active');
-    if (name === wasFocused) {
-      // Restore 4x CSS size
-      term.dom.style.width = '';
-      term.dom.style.height = '';
-      term.dom.style.borderRadius = '';
-      const inner = term.dom.querySelector('.terminal-inner');
-      if (inner) inner.style.transform = '';
-      term.css3dObject.scale.setScalar(0.25);
-
-      term.morphFrom = { ...term.currentPos };
-      term.morphStart = now;
-    }
   }
 
   cameraTween = {
@@ -665,8 +880,8 @@ function animate() {
   for (const [name, t] of terminals) {
     let pos;
 
-    if (focusedSession && name === focusedSession) {
-      // Focused terminal: morph to center position
+    if (focusedSessions.has(name)) {
+      // Focused terminal: morph to grid position
       const morphElapsed = time - t.morphStart;
       const morphT = Math.min(1, morphElapsed / MORPH_DURATION);
       const eased = easeInOutCubic(morphT);
@@ -692,7 +907,7 @@ function animate() {
 
     // Gentle float
     let floatY = 0, floatX = 0;
-    if (name !== focusedSession) {
+    if (!focusedSessions.has(name)) {
       floatY = Math.sin(time * 0.4 + idx * 1.3) * 5;
       floatX = Math.cos(time * 0.3 + idx * 1.7) * 3;
     }
@@ -704,7 +919,7 @@ function animate() {
     );
 
     // === Orientation ===
-    if (focusedSession === name) {
+    if (focusedSessions.has(name)) {
       // Focused terminal: slerp from captured rotation to face-camera over the fly-in
       const morphElapsed = time - t.morphStart;
       const morphT = Math.min(1, morphElapsed / MORPH_DURATION);
@@ -804,31 +1019,31 @@ function animate() {
 const inputBox = document.getElementById('input-box');
 if (inputBox) {
   inputBox.addEventListener('keydown', async function (e) {
-    if (!focusedSession) return;
+    if (!activeInputSession) return;
 
     if (e.key === 'Enter') {
       e.preventDefault();
       const text = inputBox.value;
       if (text) {
-        await sendKeys(focusedSession, text);
+        await sendKeys(activeInputSession, text);
         inputBox.value = '';
       }
-      await sendSpecialKey(focusedSession, 'Enter');
+      await sendSpecialKey(activeInputSession, 'Enter');
     } else if (e.ctrlKey && e.key === 'c') {
       e.preventDefault();
-      await sendSpecialKey(focusedSession, 'C-c');
+      await sendSpecialKey(activeInputSession, 'C-c');
     } else if (e.ctrlKey && e.key === 'd') {
       e.preventDefault();
-      await sendSpecialKey(focusedSession, 'C-d');
+      await sendSpecialKey(activeInputSession, 'C-d');
     } else if (e.ctrlKey && e.key === 'l') {
       e.preventDefault();
-      await sendSpecialKey(focusedSession, 'C-l');
+      await sendSpecialKey(activeInputSession, 'C-l');
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      await sendSpecialKey(focusedSession, 'Up');
+      await sendSpecialKey(activeInputSession, 'Up');
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
-      await sendSpecialKey(focusedSession, 'Down');
+      await sendSpecialKey(activeInputSession, 'Down');
     } else if (e.key === 'Escape') {
       e.preventDefault();
       unfocusTerminal();
