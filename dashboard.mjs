@@ -58,35 +58,34 @@ function calculateLayout() {
       ft.morphStart = now;
     }
 
-    // Others: arc behind the focused terminal
-    const arcSpan = Math.min(Math.PI * 0.8, others.length * 0.3); // arc width
+    // Others: arc behind the focused terminal (negative Z = further from camera)
+    const arcSpan = Math.min(Math.PI * 0.7, others.length * 0.25);
     for (let i = 0; i < others.length; i++) {
       const t = terminals.get(others[i]);
       if (!t) continue;
       const frac = others.length === 1 ? 0.5 : i / (others.length - 1);
       const angle = (frac - 0.5) * arcSpan;
-      const depth = -arcRadius * 0.6; // behind the focused terminal
       t.morphFrom = { ...t.currentPos };
       t.targetPos = {
-        x: Math.sin(angle) * arcRadius * 0.7,
-        y: (Math.random() - 0.5) * 40, // slight Y scatter
-        z: depth + Math.cos(angle) * arcRadius * 0.3
+        x: Math.sin(angle) * arcRadius * 0.6,
+        y: 20 + Math.sin(i * 1.3) * 30,
+        z: -200 + Math.cos(angle) * 60 // behind origin, visible from camera at z=350
       };
       t.morphStart = now;
     }
   } else {
-    // Overview layout: gentle arc/sphere facing the camera
-    // Like a curved display wall
-    const arcSpan = Math.min(Math.PI * 0.9, count * 0.35);
+    // Overview layout: curved wall facing the camera
+    // Camera is at z=600, so terminals should be around z=0 to z=200
+    // Arc curves away from camera (sides go to lower z values)
+    const arcSpan = Math.min(Math.PI * 0.8, count * 0.3);
     const rows = count <= 4 ? 1 : 2;
     const perRow = Math.ceil(count / rows);
 
     let idx = 0;
     for (let row = 0; row < rows; row++) {
       const rowCount = Math.min(perRow, count - idx);
-      const rowY = rows === 1 ? 0 : (row === 0 ? 60 : -70);
-      const rowZ = rows === 1 ? 0 : (row === 0 ? 0 : -40);
-      const rowScale = rows === 1 ? 1 : (row === 0 ? 1 : 0.9);
+      const rowY = rows === 1 ? 0 : (row === 0 ? 70 : -80);
+      const rowScale = rows === 1 ? 1 : (row === 0 ? 1 : 0.85);
 
       for (let col = 0; col < rowCount; col++) {
         const name = names[idx];
@@ -100,7 +99,7 @@ function calculateLayout() {
         t.targetPos = {
           x: Math.sin(angle) * arcRadius,
           y: rowY,
-          z: -arcRadius + Math.cos(angle) * arcRadius + rowZ
+          z: Math.cos(angle) * arcRadius * 0.3 // slight depth, center closest to camera
         };
         t.morphStart = now;
         idx++;
@@ -138,6 +137,7 @@ function init() {
   renderer.domElement.addEventListener('mouseup', onMouseUp);
   renderer.domElement.addEventListener('mouseleave', onMouseLeave);
   renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
+  renderer.domElement.addEventListener('click', onSceneClick);
   document.addEventListener('keydown', onKeyDown);
 
   refreshSessions();
@@ -201,12 +201,17 @@ function onMouseMove(e) {
 
 function onMouseDown(e) {
   // Right-click, middle-click, or Ctrl/Shift+click to orbit
-  if (e.ctrlKey || e.shiftKey || e.button === 1 || e.button === 2) {
+  if (e.button === 1 || e.button === 2) {
     isDragging = true;
     dragStart.x = e.clientX;
     dragStart.y = e.clientY;
     e.preventDefault();
+  } else if ((e.ctrlKey || e.shiftKey) && e.button === 0) {
+    isDragging = true;
+    dragStart.x = e.clientX;
+    dragStart.y = e.clientY;
   }
+  // Normal left-click passes through to terminal click handlers
 }
 
 // Prevent context menu on right-click (we use it for orbit)
@@ -227,24 +232,52 @@ function onKeyDown(e) {
   }
 }
 
+function onSceneClick(e) {
+  // Don't handle if it was a drag
+  if (isDragging) return;
+  // Don't handle right/middle clicks
+  if (e.button !== 0) return;
+  // Don't handle ctrl/shift clicks (those are orbit)
+  if (e.ctrlKey || e.shiftKey) return;
+
+  // Find which terminal was clicked by checking bounding rects
+  let clicked = null;
+  let closestZ = -Infinity;
+  for (const [name, t] of terminals) {
+    const rect = t.dom.getBoundingClientRect();
+    if (rect.width < 10) continue; // not visible
+    if (e.clientX >= rect.left && e.clientX <= rect.right &&
+        e.clientY >= rect.top && e.clientY <= rect.bottom) {
+      // If multiple overlap, pick the one closest to camera (highest z in screen space)
+      const worldPos = new THREE.Vector3();
+      t.css3dObject.getWorldPosition(worldPos);
+      worldPos.project(camera);
+      if (worldPos.z > closestZ) {
+        closestZ = worldPos.z;
+        clicked = name;
+      }
+    }
+  }
+
+  if (clicked) {
+    focusTerminal(clicked);
+  } else if (focusedSession) {
+    // Clicked on background — unfocus
+    unfocusTerminal();
+  }
+}
+
 function onWheel(e) {
   e.preventDefault();
   const delta = e.deltaY * 0.5;
-  HOME_POS.z = Math.max(250, Math.min(1500, HOME_POS.z + delta));
-  if (!focusedSession && !cameraTween) {
-    updateCameraOrbit();
-  } else if (focusedSession) {
-    // When focused, zoom the focused terminal
-    const newDist = Math.max(150, Math.min(800, FOCUS_DIST + delta));
-    // We can't change const, so directly tween camera Z
-    cameraTween = {
-      from: camera.position.clone(),
-      to: new THREE.Vector3(camera.position.x, camera.position.y, Math.max(150, camera.position.z + delta)),
-      lookFrom: currentLookTarget.clone(),
-      lookTo: currentLookTarget.clone(),
-      start: clock.getElapsedTime(),
-      duration: 0.2
-    };
+  if (!focusedSession) {
+    HOME_POS.z = Math.max(250, Math.min(1500, HOME_POS.z + delta));
+    camera.position.z = Math.max(250, Math.min(1500, camera.position.z + delta));
+    camera.lookAt(currentLookTarget);
+  } else {
+    // Zoom toward/away from focused terminal — direct, no tween
+    camera.position.z = Math.max(100, Math.min(800, camera.position.z + delta));
+    camera.lookAt(currentLookTarget);
   }
 }
 
@@ -349,8 +382,11 @@ function addTerminal(sessionName) {
   const thumbnail = createThumbnail(sessionName);
 
   const css3dObj = new CSS3DObject(dom);
-  css3dObj.scale.setScalar(0.5);
+  css3dObj.scale.setScalar(0.5); // DOM is 2x for crisp rendering
   terminalGroup.add(css3dObj);
+
+  // Ensure terminal is interactive
+  dom.style.pointerEvents = 'auto';
 
   const shadowObj = new CSS3DObject(shadowDiv);
   shadowObj.rotation.x = -Math.PI / 2;
