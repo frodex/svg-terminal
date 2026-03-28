@@ -4,7 +4,7 @@
 
 import http from 'node:http';
 import { readFileSync } from 'node:fs';
-import { execFileSync, execFile as execFileCb } from 'node:child_process';
+import { execFile as execFileCb } from 'node:child_process';
 import { parseLine } from './sgr-parser.mjs';
 import { WebSocketServer } from 'ws';
 
@@ -328,18 +328,6 @@ async function handleTerminalWs(ws, session, pane) {
           lastState = null;
           await captureAndPush();
           return;
-        } else if (msg.scroll) {
-          // Relative scroll (legacy/PgUp/PgDn)
-          const step = msg.step || 3;
-          const current = getScrollOffset(session, pane);
-          if (msg.scroll === 'up') {
-            setScrollOffset(session, pane, current + step);
-          } else {
-            setScrollOffset(session, pane, Math.max(0, current - step));
-          }
-          lastState = null;
-          await captureAndPush();
-          return;
         } else if (msg.specialKey && isAllowedKey(msg.specialKey)) {
           // Any keystroke snaps back to live view
           setScrollOffset(session, pane, 0);
@@ -350,10 +338,14 @@ async function handleTerminalWs(ws, session, pane) {
         }
         setTimeout(captureAndPush, 5);
       }
-    } catch (err) {}
+    } catch (err) {
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'error', message: 'Input error: ' + err.message }));
+      }
+    }
   });
 
-  ws.on('close', () => { clearInterval(pollTimer); });
+  ws.on('close', () => { clearInterval(pollTimer); setScrollOffset(session, pane, 0); });
   ws.on('error', () => { clearInterval(pollTimer); });
 }
 

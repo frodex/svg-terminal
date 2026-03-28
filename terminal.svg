@@ -311,19 +311,6 @@
         };
       }
 
-      function sendInput(msg) {
-        if (ws && ws.readyState === 1) {
-          ws.send(JSON.stringify(msg));
-        } else {
-          var url = apiUrl('/api/input');
-          fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session: SESSION, pane: PANE, keys: msg.keys, specialKey: msg.specialKey })
-          }).catch(function() {});
-        }
-      }
-
       // -----------------------------------------------------------------------
       // Poll
       // -----------------------------------------------------------------------
@@ -365,6 +352,7 @@
                 anyChanged = true;
               }
             }
+            allLines = lines;  // keep allLines in sync for rebuildBgLayer after WS reconnect
 
             // Rebuild background layer if anything changed
             if (anyChanged) {
