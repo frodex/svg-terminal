@@ -1,10 +1,65 @@
-// dashboard.mjs — 3D Terminal Dashboard with Ring Layout
+// dashboard.mjs — 3D Terminal Dashboard
+//
+// ============================================================================
+// IMPORTANT NOTES FOR FUTURE AGENTS — READ BEFORE MODIFYING
+// ============================================================================
+//
+// 1. TEXT CRISPNESS: The entire purpose of this project is hyper-crisp terminal
+//    text on 3D objects in Chrome. The Nx scale trick (4x CSS size, 0.25 3D scale)
+//    is a deliberate workaround for Chrome's text rasterization under CSS3DRenderer.
+//    DO NOT remove the oversized DOM elements or the 0.25 scale — text will blur.
+//    See journal v0.2 and v0.3 for full explanation.
+//
+// 2. SVG IS THE TARGET FORMAT: Do NOT propose HTML overlays, crossfades, or
+//    projection-math text layers as crispness solutions. The user explicitly
+//    rejected this approach — SVG was chosen for cross-browser universality.
+//    Edge and Chrome render differently; layering HTML on 3D creates fragile
+//    browser-specific behavior.
+//
+// 3. EVENT ROUTING (ctrl+click): There are THREE click event paths that competed
+//    and caused bugs where ctrl+click would add 2 terminals or replace focus:
+//      a) onMouseUp (document) — handleCtrlClick for 3D scene
+//      b) onSceneClick (renderer.domElement) — regular click handler
+//      c) Thumbnail click handler (sidebar items) — direct sidebar clicks
+//    The solution uses mouseDownOnSidebar flag, suppressNextClick flag, and
+//    lastAddToFocusTime timestamp to prevent double-firing. DO NOT simplify
+//    this to a single handler — it was tried and failed because mouseup fires
+//    before click, bounding rects overlap in 3D, and sidebar/scene are
+//    different DOM trees. See journal v0.4 for the full debugging story.
+//
+// 4. DO NOT add per-terminal click handlers (el.addEventListener('click', ...))
+//    on the terminal DOM elements. This was the original cause of the double-fire
+//    bug — the per-element handler called focusTerminal() directly, bypassing
+//    all ctrl/multi-focus logic. All click routing goes through onSceneClick
+//    and onMouseUp.
+//
+// 5. ORBIT SNAP BUG: syncOrbitFromCamera() MUST be called when orbit drag starts.
+//    Without it, orbitAngle/orbitPitch/orbitDist contain stale values from a
+//    previous camera position (e.g., HOME_POS), and starting an orbit from a
+//    focused view snaps the camera to the wrong position. This was a hard bug.
+//
+// 6. FOCUS QUATERNION: focusQuatFrom captures the card's current rotation when
+//    focus starts. Without it, the focused card snaps flat instantly instead of
+//    slerping from its 3D angle to face-camera over the fly-in animation.
+//    The snap was visually jarring — card would rotate to 0 on Z axis THEN fly in.
+//
+// 7. RANDOM INITIAL ROTATION: Cards spawn with random 3D angles (rotation.set
+//    in addTerminal). This creates the 3D fly-in effect where cards rotate toward
+//    camera as they arrive. Without it, cards start face-on and the fly-in looks flat.
+//
+// 8. BILLBOARD ARRIVAL: billboardArrival tracks when a card finishes morphing to
+//    its ring position. During fly-in, billboard slerp ramps from near-zero to full.
+//    After arrival, normal billboard behavior takes over. This separation prevents
+//    cards from snapping face-on before they've finished moving.
+//
+// ============================================================================
+
 import * as THREE from 'three';
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
 import { easeInOutCubic, lerpPos } from './polyhedra.mjs';
 
 // Oscillate between from and to using sine wave. Speed 0 = static at from.
-// Exact function from ring-mega-saved.html design studio.
+// Exact function from ring-mega-saved.html design studio — do not modify.
 function osc(from, to, speed, time) {
   if (speed === 0) return from;
   var t = (Math.sin(time * speed * 0.05) + 1) / 2;
@@ -60,16 +115,19 @@ let outerAngle = 0, innerAngle = 0;
 let ringAssignments = { outer: [], inner: [] };
 
 // Mouse state
+// IMPORTANT: The interaction between these flags is load-bearing. See note 3 above.
+// dragMode 'ctrlPending' means ctrl+mousedown happened but we don't know if it's a
+// click (multi-focus) or drag (rotate-origin) yet. Resolved by dragDistance threshold.
 let isMouseActive = false;
 let lastMouseMove = 0;
 let isDragging = false;
-let dragMode = null; // 'orbit' | 'dollyXY' | 'rotateOrigin'
+let dragMode = null; // 'orbit' | 'dollyXY' | 'rotateOrigin' | 'ctrlPending'
 let dragStart = { x: 0, y: 0 };
-let dragDistance = 0;
-let ctrlHeld = false;
-let suppressNextClick = false;
-let lastAddToFocusTime = 0;
-let mouseDownOnSidebar = false;
+let dragDistance = 0;        // total px moved during drag — used to distinguish click vs drag
+let ctrlHeld = false;        // tracked via keydown/keyup because e.ctrlKey is unreliable in click events on Windows
+let suppressNextClick = false; // set in onMouseUp to prevent onSceneClick from double-handling
+let lastAddToFocusTime = 0;   // timestamp — blocks focusTerminal() for 200ms after addToFocus() to prevent replacement
+let mouseDownOnSidebar = false; // prevents handleCtrlClick from firing when clicking sidebar thumbnails
 let orbitAngle = 0;
 let orbitPitch = 0;
 let orbitDist = HOME_POS.z;
@@ -301,17 +359,24 @@ function onMouseMove(e) {
 }
 
 function onMouseDown(e) {
+  // Track whether mousedown started on sidebar — if so, the thumbnail's own click
+  // handler manages ctrl+click. Without this flag, handleCtrlClick in onMouseUp
+  // ALSO fires and finds a different terminal behind the sidebar via bounding rect
+  // hit detection, causing two terminals to be added per ctrl+click.
   const sidebar = document.getElementById('sidebar');
   mouseDownOnSidebar = sidebar && sidebar.contains(e.target);
   if (e.button === 0) {
     if (e.ctrlKey) {
-      // Don't commit to rotateOrigin yet — could be ctrl+click for multi-focus
+      // Don't commit to rotateOrigin yet — could be ctrl+click for multi-focus.
+      // If dragDistance stays < 5px, onMouseUp treats it as ctrl+click.
+      // If dragDistance exceeds 5px, onMouseMove promotes to 'rotateOrigin'.
       isDragging = true;
       dragMode = 'ctrlPending';
       dragDistance = 0;
       dragStart.x = e.clientX;
       dragStart.y = e.clientY;
-      // No preventDefault — let click event fire for ctrl+click
+      // IMPORTANT: No preventDefault here — it suppresses the click event entirely,
+      // which broke ctrl+click handling when we relied on onSceneClick.
     } else if (e.shiftKey) {
       isDragging = true;
       dragMode = 'dollyXY';
@@ -365,11 +430,16 @@ function onMouseUp(e) {
   dragMode = null;
 }
 
+// Find the closest non-focused terminal under the click point and add it to focus.
+// Skips already-focused terminals to prevent the overlapping bounding rect problem:
+// in 3D, focused terminals (centered, large) overlap unfocused ones in screen space.
+// Without the skip, ctrl+clicking near a focused terminal would re-add it (no-op) or
+// pick up a second terminal behind it.
 function handleCtrlClick(e) {
   let clicked = null;
   let closestZ = -Infinity;
   for (const [name, t] of terminals) {
-    if (focusedSessions.has(name)) continue; // skip already-focused
+    if (focusedSessions.has(name)) continue;
     const rect = t.dom.getBoundingClientRect();
     if (rect.width < 10) continue;
     if (e.clientX >= rect.left && e.clientX <= rect.right &&
@@ -422,7 +492,11 @@ function onKeyDown(e) {
 }
 
 function onSceneClick(e) {
-  // Ctrl+click is handled entirely in onMouseUp — skip here
+  // IMPORTANT: Ctrl+click is handled ENTIRELY in onMouseUp → handleCtrlClick.
+  // DO NOT add ctrl+click handling here — it causes double-fire because both
+  // onMouseUp and onSceneClick find different terminals via overlapping bounding
+  // rects in the 3D scene. This was the root cause of the "ctrl+click adds 2
+  // terminals" bug. See note 3 in header.
   if (suppressNextClick || ctrlHeld || e.ctrlKey) {
     suppressNextClick = false;
     return;
@@ -479,7 +553,10 @@ function onWheel(e) {
   }
 }
 
-// Derive orbitAngle/orbitPitch/orbitDist from camera's actual position relative to look target
+// Derive orbitAngle/orbitPitch/orbitDist from camera's actual position relative to look target.
+// CRITICAL: Must be called when orbit drag starts. Without this, starting an orbit from a
+// focused camera position (z=350) uses stale orbitDist from overview (z=900) and the camera
+// snaps violently. See note 5 in header. This was a hard-to-diagnose bug.
 function syncOrbitFromCamera() {
   const offset = camera.position.clone().sub(currentLookTarget);
   orbitDist = offset.length();
@@ -554,6 +631,10 @@ function createThumbnail(sessionName) {
   obj.data = '/terminal.svg?session=' + encodeURIComponent(sessionName);
   item.appendChild(obj);
 
+  // Sidebar thumbnail click handler.
+  // stopPropagation prevents this from also triggering onSceneClick on the renderer.
+  // lastAddToFocusTime prevents the subsequent focusTerminal call (from other event
+  // paths) from replacing the multi-focus selection. See note 3 in header.
   item.addEventListener('click', function (e) {
     e.stopPropagation();
     if (e.ctrlKey || ctrlHeld) {
@@ -628,8 +709,13 @@ function addTerminal(sessionName) {
   const thumbnail = createThumbnail(sessionName);
 
   const css3dObj = new CSS3DObject(dom);
+  // IMPORTANT: DOM element is 1280x992 (4x), scaled to 0.25 in 3D = 320x248 world units.
+  // This forces Chrome to rasterize text at 4x resolution before the 3D transform scales
+  // it down, producing sharper text than a native-size element. DO NOT change this to 1.0
+  // with a 320x248 DOM element — text will be blurry. See note 1 in header.
   css3dObj.scale.setScalar(0.25);
-  // Start tilted so the fly-in shows 3D angle, easing to face-camera on arrival
+  // Start tilted so the fly-in shows 3D angle. Without this, CSS3DObjects default to
+  // facing -Z (toward camera), so the fly-in looks flat. See note 7 in header.
   css3dObj.rotation.set(
     (40 + Math.random() * 30) * DEG2RAD,
     (-30 + Math.random() * 60) * DEG2RAD,
@@ -680,7 +766,11 @@ function removeTerminal(sessionName) {
 
 // === Focus / Unfocus ===
 
-// Focus a single terminal (replaces all focused)
+// Focus a single terminal (replaces all focused).
+// The lastAddToFocusTime guard prevents this from firing immediately after addToFocus().
+// Without it, the event sequence mouseup→click causes addToFocus (correct) then
+// focusTerminal (wrong, replaces everything). The 200ms window covers the gap between
+// mouseup and click events. See note 3 in header.
 function focusTerminal(sessionName) {
   if (performance.now() - lastAddToFocusTime < 200) {
     return;

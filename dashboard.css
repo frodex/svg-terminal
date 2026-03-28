@@ -1,4 +1,13 @@
-/* dashboard.css — 3D Terminal Dashboard styles */
+/* dashboard.css — 3D Terminal Dashboard styles
+ *
+ * IMPORTANT: Terminal panels are 1280x992 (4x oversized) with CSS3DObject.scale = 0.25.
+ * This is the "Nx scale trick" for text crispness — Chrome rasterizes at 4x resolution
+ * before applying the 3D transform, producing sharper text. DO NOT change these to
+ * native size (320x248) — text will be blurry under CSS3DRenderer's matrix3d().
+ * See dashboard.mjs header notes for full explanation.
+ *
+ * Border-radius, font sizes, dot sizes etc. are all 4x to match the oversized DOM.
+ */
 
 /* === Background === */
 html, body {
