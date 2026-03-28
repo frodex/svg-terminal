@@ -11,8 +11,8 @@ const BILLBOARD_SLERP = 0.05;
 const SIDEBAR_WIDTH = 140;
 
 // Camera positions
-const HOME_POS = new THREE.Vector3(0, 30, 600);
-const HOME_TARGET = new THREE.Vector3(0, 0, 0);
+const HOME_POS = new THREE.Vector3(-15, 20, 500);
+const HOME_TARGET = new THREE.Vector3(-15, 0, 0);
 const FOCUS_DIST = 350; // distance from focused terminal
 
 // === State ===
@@ -42,7 +42,7 @@ function calculateLayout() {
   if (count === 0) return;
 
   const now = clock.getElapsedTime();
-  const arcRadius = 300 + count * 15;
+  const arcRadius = 180 + count * 12;
 
   if (focusedSession) {
     // Focused layout: selected terminal at front-center,
@@ -115,7 +115,7 @@ function init() {
   camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 10000);
   camera.position.copy(HOME_POS);
   camera.lookAt(HOME_TARGET);
-  updateViewOffset();
+  // view offset removed
 
   renderer = new CSS3DRenderer();
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -146,34 +146,14 @@ function init() {
   animate();
 }
 
-// === Resize + View Offset ===
-// Shift the camera's viewport center to account for sidebar (right) and input bar (bottom)
-function updateViewOffset() {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
-  const inputBarH = focusedSession ? 50 : 0;
-
-  // The "usable" area is (0,0) to (w - SIDEBAR_WIDTH, h - inputBarH)
-  // Its center in full-window coordinates:
-  const usableCenterX = (w - SIDEBAR_WIDTH) / 2;
-  const usableCenterY = (h - inputBarH) / 2;
-
-  // The full window center:
-  const windowCenterX = w / 2;
-  const windowCenterY = h / 2;
-
-  // The offset is how far the usable center is from the window center
-  // setViewOffset shifts the rendered image so our usable center becomes the camera center
-  const offsetX = windowCenterX - usableCenterX; // positive = shift right
-  const offsetY = windowCenterY - usableCenterY; // positive = shift down
-
-  camera.setViewOffset(w, h, offsetX, offsetY, w, h);
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
+// Compute an X offset so content appears centered between left edge and sidebar
+function getCenterOffsetX() {
+  return -SIDEBAR_WIDTH / 2 * 0.15; // slight shift left in world units
 }
 
 function onResize() {
-  updateViewOffset();
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
@@ -272,8 +252,8 @@ function onWheel(e) {
   e.preventDefault();
   const delta = e.deltaY * 0.5;
   if (!focusedSession) {
-    HOME_POS.z = Math.max(250, Math.min(1500, HOME_POS.z + delta));
-    camera.position.z = Math.max(250, Math.min(1500, camera.position.z + delta));
+    HOME_POS.z = Math.max(150, Math.min(800, HOME_POS.z + delta));
+    camera.position.z = Math.max(150, Math.min(800, camera.position.z + delta));
     camera.lookAt(currentLookTarget);
   } else {
     // Zoom toward/away from focused terminal — direct, no tween
@@ -465,14 +445,14 @@ function focusTerminal(sessionName) {
   }
 
   calculateLayout();
-  updateViewOffset(); // shift center to account for input bar appearing
+  // view offset removed // shift center to account for input bar appearing
 
   // Tween camera to face the focused terminal at origin
   cameraTween = {
     from: camera.position.clone(),
-    to: new THREE.Vector3(0, 20, FOCUS_DIST),
+    to: new THREE.Vector3(-20, 20, FOCUS_DIST),
     lookFrom: currentLookTarget.clone(),
-    lookTo: new THREE.Vector3(0, 0, 0),
+    lookTo: new THREE.Vector3(-20, 0, 0),
     start: clock.getElapsedTime(),
     duration: 1.0
   };
@@ -505,7 +485,7 @@ function unfocusTerminal() {
   };
 
   document.getElementById('input-bar').classList.remove('visible');
-  updateViewOffset(); // shift center back (no input bar)
+  // view offset removed // shift center back (no input bar)
 }
 
 // === Animation Loop ===
@@ -563,8 +543,9 @@ function animate() {
     if (focusedSession === name) {
       t.css3dObject.lookAt(camera.position);
     } else {
+      // CSS3DObject faces -Z, so lookAt from camera toward terminal (not terminal toward camera)
       t.css3dObject.getWorldPosition(_worldPos);
-      _lookAtMat.lookAt(_worldPos, camera.position, _up);
+      _lookAtMat.lookAt(camera.position, _worldPos, _up);
       _targetQuat.setFromRotationMatrix(_lookAtMat);
 
       _driftEuler.set(
