@@ -1,6 +1,6 @@
 {
   "name": "svg-terminal",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Live SVG terminal viewer with 3D dashboard",
   "type": "module",
   "dependencies": {

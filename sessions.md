@@ -50,6 +50,11 @@ Key requirement: terminals should be oriented in 3D (not flat/locked), with lazy
 [2026-03-28] Event routing: separate paths for sidebar thumbnails vs 3D scene clicks, mouseDownOnSidebar flag prevents double-fire
 [2026-03-28] Scene lighting: gray gradient background, specular 0.4, floor Y=-300, dark shadows
 [2026-03-28] Text crispness: SVG is the target — no HTML overlays or crossfades, solve within SVG pipeline
+[2026-03-28] Interactive terminals: WebSocket via ws package (already in node_modules via puppeteer)
+[2026-03-28] Async tmux: execFileSync → async execFile wrapped in tmuxAsync() Promise helper
+[2026-03-28] Server-side diff: server polls at 30ms, pushes only changed lines via WebSocket
+[2026-03-28] Direct keystroke capture: document-level keydown replaces input bar text field
+[2026-03-28] Key translation: browser KeyboardEvent.key → tmux send-keys names (SPECIAL_KEY_MAP)
 
 ---
 
@@ -61,6 +66,18 @@ Key requirement: terminals should be oriented in 3D (not flat/locked), with lazy
 ---
 
 ## Session History (most recent first)
+
+### Session 2026-03-28 — Interactive Terminals (WebSocket)
+- Converted all tmux calls to async (execFileSync → tmuxAsync)
+- Added WebSocket server endpoint (/ws/terminal) with ws package
+- Server-side 30ms polling with line-level diff, pushes deltas
+- SVG client WebSocket with automatic polling fallback
+- Direct keystroke capture in dashboard (replaces input bar)
+- Key translation map for special keys and Ctrl combos
+- Paste support via clipboard API
+- Per-terminal input WebSocket opened on focus
+- Expanded special key whitelist (F1-F12, PgUp/PgDn, all Ctrl combos)
+- Version bumped to 0.3.0
 
 ### Session 2026-03-28 — 3D Controls + Multi-Focus + Lighting
 - Implemented full 3D mouse controls (orbit, pan, dolly, zoom)
