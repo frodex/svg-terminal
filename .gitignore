@@ -1,1 +1,8 @@
 .superpowers/
+node_modules/
+*.png
+puppeteer-*
+pp-*
+font-test.html
+terminal.html
+/tmp/
