@@ -102,18 +102,29 @@ function handleSvg(req, res) {
 
 async function capturePane(session, pane) {
   const target = session + ':' + pane;
-  const raw = await tmuxAsync('capture-pane', '-p', '-e', '-t', target);
-  const metaRaw = await tmuxAsync('display-message', '-p', '-t', target,
-    '#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{pane_title}');
+  // Atomic capture: display-message and capture-pane in a single tmux invocation
+  // using '\;' separator. This eliminates the race condition where cursor position
+  // and screen content get out of sync — previously two separate tmux calls meant
+  // the cursor could move between them, causing the visual cursor to appear offset
+  // from where input actually goes. The first line of output is metadata, the rest
+  // is the captured screen.
+  const combined = await tmuxAsync(
+    'display-message', '-p', '-t', target,
+    '#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{pane_title}',
+    ';', 'capture-pane', '-p', '-e', '-t', target
+  );
 
-  const metaParts = metaRaw.trim().split(' ');
+  const allLines = combined.split('\n');
+  const metaLine = allLines[0];
+  const metaParts = metaLine.trim().split(' ');
   const width = parseInt(metaParts[0], 10);
   const height = parseInt(metaParts[1], 10);
   const cursorX = parseInt(metaParts[2], 10);
   const cursorY = parseInt(metaParts[3], 10);
   const title = metaParts.slice(4).join(' ');
 
-  const rawLines = raw.split('\n');
+  // Screen content starts at line 1 (after metadata line)
+  const rawLines = allLines.slice(1);
   if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop();
   const lines = rawLines.map((line) => ({ spans: parseLine(line) }));
 
