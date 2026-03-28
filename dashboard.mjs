@@ -1,6 +1,6 @@
 // dashboard.mjs — 3D Terminal Dashboard
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js';
-import { CSS3DRenderer, CSS3DObject } from 'https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/renderers/CSS3DRenderer.js';
+import * as THREE from 'three';
+import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
 import { getVertices, lerpPos, easeInOutCubic, matchPositions } from './polyhedra.mjs';
 
 // === Constants ===
