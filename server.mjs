@@ -324,7 +324,7 @@ async function handleTerminalWs(ws, session, pane) {
         const target = session + ':' + pane;
         if (msg.scroll) {
           // Scroll: adjust shared offset and force all connections to re-capture
-          const step = 3;
+          const step = msg.step || 3;
           const current = getScrollOffset(session, pane);
           if (msg.scroll === 'up') {
             setScrollOffset(session, pane, current + step);

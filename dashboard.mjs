@@ -1195,6 +1195,16 @@ document.addEventListener('keydown', function(e) {
   const t = terminals.get(activeInputSession);
   if (!t) return;
 
+  // Page Up/Down: scroll the view (same as mouse wheel, but a full page)
+  if (e.key === 'PageUp') {
+    t.sendInput({ type: 'input', scroll: 'up', step: 24 });
+    return;
+  }
+  if (e.key === 'PageDown') {
+    t.sendInput({ type: 'input', scroll: 'down', step: 24 });
+    return;
+  }
+
   // Ctrl combos
   if (e.ctrlKey && e.key.length === 1) {
     t.sendInput({ type: 'input', specialKey: 'C-' + e.key.toLowerCase() });
