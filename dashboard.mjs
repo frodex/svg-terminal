@@ -142,6 +142,7 @@ function init() {
 
   refreshSessions();
   setInterval(refreshSessions, 5000);
+  setInterval(refreshTitles, 10000);
   animate();
 }
 
@@ -375,17 +376,41 @@ async function refreshSessions() {
   } catch (e) {}
 }
 
+async function refreshTitles() {
+  for (const name of terminals.keys()) {
+    const title = await fetchTitle(name);
+    if (title) updateTerminalTitle(name, title);
+  }
+}
+
 // === Add/Remove ===
+async function fetchTitle(sessionName) {
+  try {
+    const res = await fetch('/api/pane?session=' + encodeURIComponent(sessionName) + '&pane=0');
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.title || null;
+  } catch (e) { return null; }
+}
+
+function updateTerminalTitle(sessionName, title) {
+  const t = terminals.get(sessionName);
+  if (!t || !title) return;
+  const nameEl = t.dom.querySelector('.session-name');
+  if (nameEl) nameEl.textContent = title;
+  const thumbLabel = t.thumbnail.querySelector('.thumb-label');
+  if (thumbLabel) thumbLabel.textContent = title;
+}
+
 function addTerminal(sessionName) {
   const dom = createTerminalDOM(sessionName);
   const shadowDiv = createShadowDOM();
   const thumbnail = createThumbnail(sessionName);
 
   const css3dObj = new CSS3DObject(dom);
-  css3dObj.scale.setScalar(0.5); // DOM is 2x for crisp rendering
+  css3dObj.scale.setScalar(0.5);
   terminalGroup.add(css3dObj);
 
-  // Ensure terminal is interactive
   dom.style.pointerEvents = 'auto';
 
   const shadowObj = new CSS3DObject(shadowDiv);
@@ -403,6 +428,11 @@ function addTerminal(sessionName) {
     targetPos: { x: 0, y: 0, z: -200 },
     morphStart: clock.getElapsedTime(),
     morphFrom: { x: 0, y: 0, z: -200 }
+  });
+
+  // Fetch and display the pane title (async, updates when ready)
+  fetchTitle(sessionName).then(function(title) {
+    if (title) updateTerminalTitle(sessionName, title);
   });
 }
 

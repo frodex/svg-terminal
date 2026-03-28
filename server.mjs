@@ -107,15 +107,15 @@ function handlePane(req, res, params) {
       { encoding: 'utf8' }
     );
 
-    // Get dimensions and cursor position
+    // Get dimensions, cursor position, and pane title
     const infoRaw = execFileSync(
       'tmux',
       ['display-message', '-p', '-t', target,
-       '#{pane_width} #{pane_height} #{cursor_x} #{cursor_y}'],
+       '#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{pane_title}'],
       { encoding: 'utf8' }
     ).trim();
 
-    const [widthStr, heightStr, cxStr, cyStr] = infoRaw.split(' ');
+    const [widthStr, heightStr, cxStr, cyStr, ...titleParts] = infoRaw.split(' ');
     const width = parseInt(widthStr, 10);
     const height = parseInt(heightStr, 10);
     const cursorX = parseInt(cxStr, 10);
@@ -129,10 +129,13 @@ function handlePane(req, res, params) {
 
     const lines = rawLines.map((line) => ({ spans: parseLine(line) }));
 
+    const paneTitle = titleParts.join(' ') || '';
+
     sendJson(res, 200, {
       width,
       height,
       cursor: { x: cursorX, y: cursorY },
+      title: paneTitle,
       lines,
     });
   } catch (err) {
