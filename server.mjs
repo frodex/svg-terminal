@@ -262,6 +262,42 @@ function router(req, res) {
       }
       return;
     }
+    if (pathname === '/dashboard.css') {
+      try {
+        const content = readFileSync(staticPath('dashboard.css'));
+        setCors(res);
+        res.setHeader('Content-Type', 'text/css');
+        res.writeHead(200);
+        res.end(content);
+      } catch (err) {
+        sendError(res, 500, 'Failed to read dashboard.css');
+      }
+      return;
+    }
+    if (pathname === '/dashboard.mjs') {
+      try {
+        const content = readFileSync(staticPath('dashboard.mjs'));
+        setCors(res);
+        res.setHeader('Content-Type', 'application/javascript');
+        res.writeHead(200);
+        res.end(content);
+      } catch (err) {
+        sendError(res, 500, 'Failed to read dashboard.mjs');
+      }
+      return;
+    }
+    if (pathname === '/polyhedra.mjs') {
+      try {
+        const content = readFileSync(staticPath('polyhedra.mjs'));
+        setCors(res);
+        res.setHeader('Content-Type', 'application/javascript');
+        res.writeHead(200);
+        res.end(content);
+      } catch (err) {
+        sendError(res, 500, 'Failed to read polyhedra.mjs');
+      }
+      return;
+    }
   }
 
   if (req.method === 'POST' && pathname === '/api/input') {
