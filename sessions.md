@@ -45,19 +45,32 @@ Key requirement: terminals should be oriented in 3D (not flat/locked), with lazy
 [2026-03-27] `camera.setViewOffset()` doesn't work well with CSS3DRenderer — removed, using camera/target X offset instead
 [2026-03-27] Dashboard reverted from iframe back to `<object>` for terminal embedding — simpler, font issue is cosmetic
 [2026-03-27] Pane titles fetched from tmux `#{pane_title}` — shows Claude Code task names from claude-proxy OSC 0 sequences
+[2026-03-28] 3D mouse controls: drag=orbit, shift+drag=dollyXY, ctrl+drag=rotateOrigin, scroll=zoom, shift+scroll=dollyZ
+[2026-03-28] Multi-focus: ctrl+click adds terminals, grid layout, yellow neon border for input-active
+[2026-03-28] Event routing: separate paths for sidebar thumbnails vs 3D scene clicks, mouseDownOnSidebar flag prevents double-fire
+[2026-03-28] Scene lighting: gray gradient background, specular 0.4, floor Y=-300, dark shadows
+[2026-03-28] Text crispness: SVG is the target — no HTML overlays or crossfades, solve within SVG pipeline
 
 ---
 
 ## Pending Items
 
-[2026-03-28] Add lighting effects to the design studio (specular, shadows, ambient)
-[2026-03-28] Finalize ring layout parameters from design studio exploration
-[2026-03-28] Integrate finalized layout back into dashboard.mjs (Three.js)
-[2026-03-28] The design studio (ring-mega-saved.html) is the active design tool — keep iterating there
+[2026-03-28] Text crispness optimization within SVG pipeline (Nx scaling sweet spot)
+[2026-03-28] Integrate oscillation parameters from design studio into live dashboard
 
 ---
 
 ## Session History (most recent first)
+
+### Session 2026-03-28 — 3D Controls + Multi-Focus + Lighting
+- Implemented full 3D mouse controls (orbit, pan, dolly, zoom)
+- Added scene lighting (specular highlights, shadows, gray gradient background)
+- Built multi-focus system (ctrl+click to add, grid layout, yellow input-active border)
+- Fixed event routing: sidebar thumbnails vs 3D scene ctrl+click conflict
+- Fly-in animation: cards spawn at random 3D angles, slerp to face-camera
+- Help panel with frosted glass overlay (? button upper-left)
+- Discussed text crispness — decided SVG is the target, no HTML overlay hacks
+- User rejected ring layout rewrite — accepted current arc layout
 
 ### Session 2026-03-27 — 3D Dashboard + Layout Iteration
 - Implemented 3D dashboard with Three.js CSS3DRenderer
