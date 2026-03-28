@@ -10,8 +10,10 @@ const ROTATION_SPEED = 0.2;
 const MORPH_DURATION = 2.0;
 const BILLBOARD_SLERP = 0.03;
 const IDLE_TIMEOUT = 3000;
+const SIDEBAR_WIDTH = 140;
 const HOME_POS = new THREE.Vector3(0, 200, 800);
 const HOME_TARGET = new THREE.Vector3(0, 0, 0);
+let zoomDistance = 400; // distance from focused terminal, adjustable via wheel
 
 // === State ===
 let scene, camera, renderer;
@@ -56,6 +58,7 @@ function init() {
   window.addEventListener('resize', onResize);
   renderer.domElement.addEventListener('mousemove', onMouseMove);
   renderer.domElement.addEventListener('mouseleave', onMouseLeave);
+  renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
   document.addEventListener('keydown', onKeyDown);
 
   refreshSessions();
@@ -92,6 +95,37 @@ function onMouseLeave() {
 function onKeyDown(e) {
   if (e.key === 'Escape' && focusedSession) {
     unfocusTerminal();
+  }
+}
+
+function onWheel(e) {
+  e.preventDefault();
+  if (focusedSession) {
+    // Zoom toward/away from focused terminal
+    zoomDistance = Math.max(100, Math.min(1200, zoomDistance + e.deltaY * 0.5));
+    // Re-tween camera to new distance
+    const t = terminals.get(focusedSession);
+    if (t) {
+      const worldPos = new THREE.Vector3();
+      t.css3dObject.getWorldPosition(worldPos);
+      const dir = worldPos.clone().normalize();
+      if (dir.length() < 0.01) dir.set(0, 0, 1);
+      // Offset X to center between left edge and sidebar
+      const sidebarOffsetRatio = SIDEBAR_WIDTH / window.innerWidth;
+      const xOffset = sidebarOffsetRatio * zoomDistance * -0.5;
+      cameraTweenFrom = camera.position.clone();
+      cameraLookFrom = currentLookTarget.clone();
+      cameraTweenTo = worldPos.clone().add(dir.multiplyScalar(zoomDistance));
+      cameraTweenTo.x += xOffset;
+      cameraLookTo = worldPos.clone();
+      cameraTweenStart = clock.getElapsedTime();
+      cameraTweenDuration = 0.3; // fast for wheel zoom
+    }
+  } else {
+    // Zoom the overview
+    const zoomDelta = e.deltaY * 0.3;
+    camera.position.z = Math.max(300, Math.min(2000, camera.position.z + zoomDelta));
+    camera.lookAt(currentLookTarget);
   }
 }
 
@@ -189,6 +223,7 @@ function addTerminal(sessionName) {
   const thumbnail = createThumbnail(sessionName);
 
   const css3dObj = new CSS3DObject(dom);
+  css3dObj.scale.setScalar(0.5); // DOM is 2x size, scale down for crisp rendering
   polyhedronGroup.add(css3dObj);
 
   const shadowObj = new CSS3DObject(shadowDiv);
@@ -259,17 +294,24 @@ function focusTerminal(sessionName) {
     term.thumbnail.classList.toggle('active', name === sessionName);
   }
 
-  // Camera tween to in front of terminal
+  // Camera tween to in front of terminal, centered between left edge and sidebar
+  zoomDistance = 400; // reset zoom on new focus
   const worldPos = new THREE.Vector3();
   t.css3dObject.getWorldPosition(worldPos);
   const dir = worldPos.clone().normalize();
   if (dir.length() < 0.01) dir.set(0, 0, 1);
 
+  // Offset camera X to account for sidebar taking right 140px
+  const sidebarOffsetRatio = SIDEBAR_WIDTH / window.innerWidth;
+  const xOffset = sidebarOffsetRatio * zoomDistance * -0.5;
+
   cameraTweenFrom = camera.position.clone();
   cameraLookFrom = currentLookTarget.clone();
-  cameraTweenTo = worldPos.clone().add(dir.multiplyScalar(400));
+  cameraTweenTo = worldPos.clone().add(dir.multiplyScalar(zoomDistance));
+  cameraTweenTo.x += xOffset;
   cameraLookTo = worldPos.clone();
   cameraTweenStart = clock.getElapsedTime();
+  cameraTweenDuration = 1.0;
 
   // Show input bar
   const inputBar = document.getElementById('input-bar');
