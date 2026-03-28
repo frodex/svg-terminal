@@ -7,19 +7,21 @@
 
 **Repo:** svg-terminal (`/srv/svg-terminal`) — github.com/frodex/svg-terminal
 **Branch:** dev
-**What this is:** A standalone SVG-based terminal viewer that renders live tmux session output as vector graphics. Designed as a reusable component — first consumer is claude-proxy (SSH tmux multiplexer), eventual integration into PHAT TOAD's hierarchical agent dashboard.
+**What this is:** A standalone SVG-based terminal viewer with a 3D dashboard. Renders live tmux sessions as vector graphics. First consumer: claude-proxy. Future: PHAT TOAD hierarchical agent dashboard.
 
 ---
 
 ## Active Direction
 
-All 4 phases implemented and working:
-- Phase 1: SGR parser + HTTP server + SVG viewer with live polling
-- Phase 2: Visibility-aware polling (IntersectionObserver + cell size tiers)
-- Phase 3: Multi-session dashboard with auto-discovery and selection
-- Phase 4: Input box sending keystrokes to selected terminal
+3D dashboard is functional — Three.js CSS3DRenderer positions terminal panels in 3D space. Currently iterating on the layout/arrangement of terminals in the overview. The focus/unfocus, input bar, sidebar thumbnails, and session discovery all work.
 
-Current focus: fixing font rendering — Chrome blocks @font-face in standalone SVGs. Solution: serve terminals via HTML wrapper (`terminal.html`) with inline SVG, which allows embedded woff2 fonts. Dashboard updated to use `<iframe>` instead of `<object>`.
+**Current design decision:** Choosing between geometric layout patterns for the overview:
+- Nested rotating rings (terminals on counter-rotating circles)
+- Golden spiral (Fibonacci spiral, largest at center)
+- Hexagonal honeycomb (hex grid with center primary)
+- Fractal tree (maps to PHAT TOAD hierarchy)
+
+Key requirement: terminals should be oriented in 3D (not flat/locked), with lazy billboard drift toward viewer. Structure slowly rotates. No collisions. Most terminal faces visible.
 
 ---
 
@@ -27,42 +29,52 @@ Current focus: fixing font rendering — Chrome blocks @font-face in standalone 
 
 [2026-03-27] Use journaling, sessions, and bibliography skills for all design/research phases.
 [2026-03-27] Branch strategy: dev (active work) → test (staging/QA) → main (production releases). Repo: github.com/frodex/svg-terminal
+[2026-03-27] Public dev preview: needs port remapping from 51045 to whatever the brainstorm companion starts on (port not configurable)
 
 ---
 
 ## Key Technical Decisions
 
-[2026-03-27] Zero npm dependencies — Node built-in `http` module only
-[2026-03-27] SVG rendering: `dominant-baseline: text-before-edge`, explicit x-positioned `<tspan>` elements per span, runtime font measurement via getBBox()
+[2026-03-27] Zero npm dependencies for server — Node built-in `http` module only
+[2026-03-27] SVG rendering: `dominant-baseline: text-before-edge`, explicit x-positioned `<tspan>` per span, runtime font measurement via getBBox()
 [2026-03-27] Three-tier polling: >=4x6px char cells → 150ms, <4x6px → 2000ms, offscreen → stopped
-[2026-03-27] Faithful ANSI color rendering (16 + 256 + truecolor), CSS classes for standard 16 colors
-[2026-03-27] Embedded FiraCode Nerd Font Mono subset (31KB woff2, base64 data URI) for Unicode glyph coverage — covers ASCII, box-drawing, powerline, prompt symbols
-[2026-03-27] `textLength` attribute abandoned — caused character stretching. Replaced with per-tspan x positioning using measured cell width
-[2026-03-27] Standalone `.svg` cannot load fonts (Chrome security). Solution: HTML wrapper (`terminal.html`) with inline SVG inherits the @font-face from the HTML document context
-[2026-03-27] Dashboard uses `<iframe src="/terminal?session=X">` not `<object>` — iframes support font loading in their HTML content
+[2026-03-27] Embedded FiraCode Nerd Font Mono subset (31KB woff2, base64 data URI)
+[2026-03-27] 3D dashboard: Three.js CSS3DRenderer (not WebGL) — keeps SVG text as real DOM elements
+[2026-03-27] 2x CSS size (640x496) with CSS3DObject scale(0.5) — forces Chrome to rasterize at high res, fixes blur
+[2026-03-27] CSS3DObject billboarding: use `Matrix4.lookAt(camera, terminal, up)` not `(terminal, camera, up)` — CSS3DObject faces -Z
+[2026-03-27] `camera.setViewOffset()` doesn't work well with CSS3DRenderer — removed, using camera/target X offset instead
+[2026-03-27] Dashboard reverted from iframe back to `<object>` for terminal embedding — simpler, font issue is cosmetic
+[2026-03-27] Pane titles fetched from tmux `#{pane_title}` — shows Claude Code task names from claude-proxy OSC 0 sequences
 
 ---
 
 ## Pending Items
 
-[2026-03-27] Verify font rendering fix in Chrome with new terminal.html approach
-[2026-03-27] Clean up font-test artifacts (font-test.html, font-test tmux session)
-[2026-03-27] Push final changes to dev
+[2026-03-27] Choose and implement final geometric layout for overview mode
+[2026-03-27] Fix mouse orbit/parallax controls (partially working)
+[2026-03-27] Terminal centering in viewport (partially working via camera offset)
+[2026-03-27] Clean up puppeteer screenshots and test artifacts
 
 ---
 
 ## Session History (most recent first)
 
-### Session 2026-03-27 — Full Implementation
+### Session 2026-03-27 — 3D Dashboard + Layout Iteration
+- Implemented 3D dashboard with Three.js CSS3DRenderer
+- Debugged billboard facing (was 180° reversed), backface-visibility, blur (2x trick)
+- Debugged click detection (CSS3DRenderer intercepts events — solved with bounding rect hit testing)
+- Explored layout options via visual companion: arc, staggered grid, amphitheater, constellation, nested rings, golden spiral, honeycomb, fractal tree
+- User preference: geometric/fractal patterns with terminals at nodes, oriented in 3D not locked flat
+- Added pane title display from tmux (shows Claude Code task names)
+- Scroll zoom and right-click orbit added
+- Camera offset for sidebar centering (removed setViewOffset, using position offset)
+
+### Session 2026-03-27 — Full SVG Viewer Implementation
 - Implemented all 4 phases (11 tasks) via subagent-driven development
 - Phase 1: color-table.mjs, sgr-parser.mjs (22 tests), server.mjs (14 tests), terminal.svg
 - Phase 2: IntersectionObserver + measureTier() for visibility-aware polling
-- Phase 3: index.html dashboard with CSS grid, session auto-discovery, card selection
-- Phase 4: POST /api/input endpoint, input bar in dashboard with special key handling
-- Fixed default pane from '%0' to '0' (tmux uses pane index not ID)
-- Fixed character spacing: removed textLength, added runtime font measurement via getBBox()
-- Discovered Chrome blocks @font-face in standalone SVGs — created HTML wrapper approach
-- Embedded FiraCode Nerd Font Mono subset (31KB) for ❯, box-drawing, powerline glyphs
-- Created font-test.html diagnostic page confirming font works in HTML but not standalone SVG
-- Pivoted dashboard from `<object>` + `.svg` to `<iframe>` + `.html` for font support
+- Phase 3: index.html dashboard with session auto-discovery
+- Phase 4: POST /api/input endpoint, input bar with special key handling
+- Fixed default pane '%0' → '0', character spacing via runtime font measurement
+- Embedded FiraCode Nerd Font subset for Unicode glyph coverage
 - All 36 tests passing (22 SGR parser + 14 server)
