@@ -570,7 +570,10 @@ function onWheel(e) {
         t.sendInput({ type: 'input', specialKey: key });
       } else {
         // Scroll: adjust server-side scroll offset into tmux scrollback
-        t.sendInput({ type: 'input', scroll: delta > 0 ? 'down' : 'up' });
+        // Use deltaY magnitude for acceleration — fast scroll = bigger jumps
+        const absDelta = Math.abs(delta);
+        const step = absDelta > 300 ? 12 : absDelta > 150 ? 6 : absDelta > 50 ? 3 : 1;
+        t.sendInput({ type: 'input', scroll: delta > 0 ? 'down' : 'up', step: step });
       }
     }
     return;
