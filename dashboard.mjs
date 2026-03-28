@@ -61,9 +61,12 @@ let ringAssignments = { outer: [], inner: [] };
 let isMouseActive = false;
 let lastMouseMove = 0;
 let isDragging = false;
+let dragMode = null; // 'orbit' | 'dollyXY' | 'rotateOrigin'
 let dragStart = { x: 0, y: 0 };
+let dragDistance = 0;
 let orbitAngle = 0;
 let orbitPitch = 0;
+let orbitDist = HOME_POS.z;
 
 // Camera tween
 let cameraTween = null;
@@ -189,34 +192,78 @@ function onMouseMove(e) {
   isMouseActive = true;
   lastMouseMove = performance.now();
 
-  if (isDragging) {
-    const dx = (e.clientX - dragStart.x) * 0.005;
-    const dy = (e.clientY - dragStart.y) * 0.003;
-    orbitAngle -= dx;
-    orbitPitch = Math.max(-0.5, Math.min(0.5, orbitPitch - dy));
+  if (isDragging && dragMode) {
+    const dx = e.clientX - dragStart.x;
+    const dy = e.clientY - dragStart.y;
+    dragDistance += Math.abs(dx) + Math.abs(dy);
     dragStart.x = e.clientX;
     dragStart.y = e.clientY;
-    updateCameraOrbit();
-  } else if (!focusedSession && cameraTween === null) {
-    // Subtle parallax
-    const nx = (e.clientX / window.innerWidth - 0.5) * 2;
-    const ny = (e.clientY / window.innerHeight - 0.5) * 2;
-    camera.position.x = HOME_POS.x + Math.sin(orbitAngle) * HOME_POS.z - nx * 20;
-    camera.position.y = HOME_POS.y + orbitPitch * 200 + ny * 15;
-    camera.lookAt(currentLookTarget);
+
+    if (dragMode === 'orbit') {
+      // Orbit camera around its look target
+      orbitAngle -= dx * 0.005;
+      orbitPitch = Math.max(-1.2, Math.min(1.2, orbitPitch - dy * 0.005));
+      updateCameraOrbit();
+
+    } else if (dragMode === 'dollyXY') {
+      // Shift+drag: translate camera + target in screen-aligned X/Y
+      const right = new THREE.Vector3();
+      const up = new THREE.Vector3();
+      camera.getWorldDirection(_worldPos);
+      right.crossVectors(_worldPos, _up).normalize();
+      up.crossVectors(right, _worldPos).normalize();
+      const scale = orbitDist * 0.002;
+      const offset = right.multiplyScalar(-dx * scale).add(up.multiplyScalar(dy * scale));
+      camera.position.add(offset);
+      currentLookTarget.add(offset);
+      HOME_TARGET.add(offset);
+      camera.lookAt(currentLookTarget);
+
+    } else if (dragMode === 'rotateOrigin') {
+      // Ctrl+drag: rotate camera around world origin (0,0,0)
+      const origin = new THREE.Vector3(0, 0, 0);
+      const offset = camera.position.clone().sub(origin);
+      const rotY = new THREE.Matrix4().makeRotationY(-dx * 0.005);
+      const rotX = new THREE.Matrix4().makeRotationX(-dy * 0.005);
+      offset.applyMatrix4(rotY).applyMatrix4(rotX);
+      camera.position.copy(origin).add(offset);
+      currentLookTarget.copy(origin);
+      camera.lookAt(currentLookTarget);
+    }
   }
 }
 
 function onMouseDown(e) {
-  if (e.button === 1 || e.button === 2) {
-    isDragging = true;
+  if (e.button === 0) {
+    if (e.ctrlKey) {
+      isDragging = true;
+      dragMode = 'rotateOrigin';
+    } else if (e.shiftKey) {
+      isDragging = true;
+      dragMode = 'dollyXY';
+    } else {
+      // Plain left drag: orbit (with dead zone so clicks still work)
+      isDragging = true;
+      dragMode = 'orbit';
+      dragDistance = 0;
+    }
     dragStart.x = e.clientX;
     dragStart.y = e.clientY;
     e.preventDefault();
-  } else if ((e.ctrlKey || e.shiftKey) && e.button === 0) {
+  } else if (e.button === 1) {
+    // Middle button: pan
     isDragging = true;
+    dragMode = 'dollyXY';
     dragStart.x = e.clientX;
     dragStart.y = e.clientY;
+    e.preventDefault();
+  } else if (e.button === 2) {
+    // Right button: orbit
+    isDragging = true;
+    dragMode = 'orbit';
+    dragStart.x = e.clientX;
+    dragStart.y = e.clientY;
+    e.preventDefault();
   }
 }
 
@@ -224,11 +271,17 @@ document.addEventListener('contextmenu', function(e) { e.preventDefault(); });
 
 function onMouseUp() {
   isDragging = false;
+  dragMode = null;
+}
+
+function wasDrag() {
+  return dragDistance > 5;
 }
 
 function onMouseLeave() {
   isMouseActive = false;
   isDragging = false;
+  dragMode = null;
 }
 
 function onKeyDown(e) {
@@ -238,7 +291,7 @@ function onKeyDown(e) {
 }
 
 function onSceneClick(e) {
-  if (isDragging) return;
+  if (wasDrag()) return;
   if (e.button !== 0) return;
   if (e.ctrlKey || e.shiftKey) return;
 
@@ -268,22 +321,26 @@ function onSceneClick(e) {
 
 function onWheel(e) {
   e.preventDefault();
-  const delta = e.deltaY * 0.5;
-  if (!focusedSession) {
-    HOME_POS.z = Math.max(150, Math.min(800, HOME_POS.z + delta));
-    camera.position.z = Math.max(150, Math.min(800, camera.position.z + delta));
+  const delta = e.deltaY;
+
+  if (e.shiftKey) {
+    // Shift+scroll: dolly Z (move camera forward/backward along view direction)
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    camera.position.addScaledVector(dir, -delta * 0.5);
+    orbitDist = camera.position.distanceTo(currentLookTarget);
     camera.lookAt(currentLookTarget);
   } else {
-    camera.position.z = Math.max(100, Math.min(800, camera.position.z + delta));
-    camera.lookAt(currentLookTarget);
+    // Scroll: zoom (change FOV)
+    camera.fov = Math.max(10, Math.min(120, camera.fov + delta * 0.05));
+    camera.updateProjectionMatrix();
   }
 }
 
 function updateCameraOrbit() {
-  const dist = HOME_POS.z;
-  camera.position.x = HOME_TARGET.x + Math.sin(orbitAngle) * dist;
-  camera.position.y = HOME_POS.y + orbitPitch * 200;
-  camera.position.z = HOME_TARGET.z + Math.cos(orbitAngle) * dist;
+  camera.position.x = currentLookTarget.x + Math.sin(orbitAngle) * orbitDist;
+  camera.position.y = currentLookTarget.y + Math.sin(orbitPitch) * orbitDist;
+  camera.position.z = currentLookTarget.z + Math.cos(orbitAngle) * Math.cos(orbitPitch) * orbitDist;
   camera.lookAt(currentLookTarget);
 }
 
