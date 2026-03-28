@@ -573,22 +573,10 @@ function onWheel(e) {
         // 1) Apply immediate CSS translateY for visual smoothness
         // 2) Send scroll command to server for actual content update
         // 3) Reset translateY when server content arrives (handled in WebSocket onmessage)
+        // Acceleration-aware scroll — fast flick = bigger jumps
         const absDelta = Math.abs(delta);
         const step = absDelta > 300 ? 12 : absDelta > 150 ? 6 : absDelta > 50 ? 3 : 1;
-
-        // Track scroll offset locally so up/down are symmetric
-        if (!t._localScrollOffset) t._localScrollOffset = 0;
-        if (delta > 0) {
-          t._localScrollOffset = Math.max(0, t._localScrollOffset - step);
-        } else {
-          t._localScrollOffset += step;
-        }
-
-        // Server responds in ~30ms which is fast enough — no client-side
-        // pixel animation needed. CSS transform smoothing was tried but any
-        // non-zero offset caused visible bounce because the transform and
-        // server content update overlap in timing.
-        t.sendInput({ type: 'input', scrollTo: t._localScrollOffset });
+        t.scrollBy(delta < 0 ? step : -step);
       }
     }
     return;
@@ -801,6 +789,7 @@ function addTerminal(sessionName) {
     morphFrom: { x: 0, y: 0, z: -500 },
     billboardArrival: null,  // set when terminal first reaches its ring position
     inputWs: null,
+    scrollOffset: 0,
     sendInput: function(msg) {
       if (this.inputWs && this.inputWs.readyState === WebSocket.OPEN) {
         this.inputWs.send(JSON.stringify(msg));
@@ -811,6 +800,14 @@ function addTerminal(sessionName) {
           body: JSON.stringify({ session: sessionName, pane: '0', ...msg })
         }).catch(function() {});
       }
+    },
+    // Unified scroll — one offset, one method. Used by mouse wheel, PgUp/PgDn, etc.
+    scrollBy: function(lines) {
+      this.scrollOffset = Math.max(0, this.scrollOffset + lines);
+      this.sendInput({ type: 'input', scrollTo: this.scrollOffset });
+    },
+    scrollReset: function() {
+      this.scrollOffset = 0;
     }
   });
 
@@ -1213,18 +1210,18 @@ document.addEventListener('keydown', function(e) {
   const t = terminals.get(activeInputSession);
   if (!t) return;
 
-  // Page Up/Down: scroll the view (same as mouse wheel, but a full page)
+  // Page Up/Down: scroll by a full page
   if (e.key === 'PageUp') {
-    t.sendInput({ type: 'input', scroll: 'up', step: 24 });
+    t.scrollBy(24);
     return;
   }
   if (e.key === 'PageDown') {
-    t.sendInput({ type: 'input', scroll: 'down', step: 24 });
+    t.scrollBy(-24);
     return;
   }
 
   // Any keystroke resets scroll to live view
-  t._localScrollOffset = 0;
+  t.scrollReset();
 
   // Ctrl combos
   if (e.ctrlKey && e.key.length === 1) {
