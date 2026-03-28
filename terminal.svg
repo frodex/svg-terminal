@@ -116,6 +116,11 @@
       var pollInterval = 150;
       var RETRY_MS     = 2000;
 
+      var ws              = null;
+      var useWebSocket    = false;
+      var allLines        = [];
+      var wsReconnectTimer = null;
+
       // -----------------------------------------------------------------------
       // Helpers
       // -----------------------------------------------------------------------
@@ -237,10 +242,94 @@
       }
 
       // -----------------------------------------------------------------------
+      // WebSocket
+      // -----------------------------------------------------------------------
+      function connectWebSocket() {
+        var proto = (location.protocol === 'https:') ? 'wss:' : 'ws:';
+        var host = SERVER ? SERVER.replace(/^https?:\/\//, '') : location.host;
+        var wsUrl = proto + '//' + host + '/ws/terminal?session=' + encodeURIComponent(SESSION) + '&pane=' + encodeURIComponent(PANE);
+
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = function() {
+          useWebSocket = true;
+          if (pollTimer !== null) {
+            clearTimeout(pollTimer);
+            pollTimer = null;
+          }
+          hideError();
+        };
+
+        ws.onmessage = function(e) {
+          var msg = JSON.parse(e.data);
+
+          if (msg.type === 'screen') {
+            if (!initialized || columns !== msg.width || rows !== msg.height) {
+              initLayout(msg.width, msg.height);
+            }
+            allLines = msg.lines;
+            for (var i = 0; i < msg.lines.length; i++) {
+              updateLine(i, msg.lines[i].spans);
+              prevState[i] = JSON.stringify(msg.lines[i].spans);
+            }
+            rebuildBgLayer(msg.lines);
+            if (msg.cursor) {
+              cursorEl.setAttribute('x', (msg.cursor.x * CELL_W).toFixed(2));
+              cursorEl.setAttribute('y', msg.cursor.y * CELL_H);
+            }
+            hideError();
+
+          } else if (msg.type === 'delta') {
+            var keys = Object.keys(msg.changed);
+            for (var k = 0; k < keys.length; k++) {
+              var idx = parseInt(keys[k]);
+              var spans = msg.changed[keys[k]];
+              updateLine(idx, spans);
+              allLines[idx] = { spans: spans };
+              prevState[idx] = JSON.stringify(spans);
+            }
+            if (keys.length > 0) rebuildBgLayer(allLines);
+            if (msg.cursor) {
+              cursorEl.setAttribute('x', (msg.cursor.x * CELL_W).toFixed(2));
+              cursorEl.setAttribute('y', msg.cursor.y * CELL_H);
+            }
+
+          } else if (msg.type === 'error') {
+            showError();
+          }
+        };
+
+        ws.onclose = function() {
+          useWebSocket = false;
+          ws = null;
+          if (pollTimer === null) schedulePoll(pollInterval);
+          wsReconnectTimer = setTimeout(connectWebSocket, 2000);
+        };
+
+        ws.onerror = function() {
+          // onclose fires after onerror — reconnect handled there
+        };
+      }
+
+      function sendInput(msg) {
+        if (ws && ws.readyState === 1) {
+          ws.send(JSON.stringify(msg));
+        } else {
+          var url = apiUrl('/api/input');
+          fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session: SESSION, pane: PANE, keys: msg.keys, specialKey: msg.specialKey })
+          }).catch(function() {});
+        }
+      }
+
+      // -----------------------------------------------------------------------
       // Poll
       // -----------------------------------------------------------------------
       function poll() {
         pollTimer = null;
+        if (useWebSocket) return;
 
         var url = apiUrl('/api/pane?pane=' + encodeURIComponent(PANE));
         if (SESSION) {
@@ -354,7 +443,12 @@
       // -----------------------------------------------------------------------
       // Start
       // -----------------------------------------------------------------------
-      startPolling(150);
+      if (SESSION) {
+        connectWebSocket();
+        schedulePoll(pollInterval);  // safety net — WebSocket onopen will stop it
+      } else {
+        startPolling(150);
+      }
     })();
   ]]>
   </script>
