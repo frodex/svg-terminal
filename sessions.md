@@ -50,10 +50,10 @@ Key requirement: terminals should be oriented in 3D (not flat/locked), with lazy
 
 ## Pending Items
 
-[2026-03-27] Choose and implement final geometric layout for overview mode
-[2026-03-27] Fix mouse orbit/parallax controls (partially working)
-[2026-03-27] Terminal centering in viewport (partially working via camera offset)
-[2026-03-27] Clean up puppeteer screenshots and test artifacts
+[2026-03-28] Add lighting effects to the design studio (specular, shadows, ambient)
+[2026-03-28] Finalize ring layout parameters from design studio exploration
+[2026-03-28] Integrate finalized layout back into dashboard.mjs (Three.js)
+[2026-03-28] The design studio (ring-mega-saved.html) is the active design tool — keep iterating there
 
 ---
 
