@@ -88,6 +88,28 @@ const RING = {
     cardTilt: { x: 0, y: 0, z: 0 },
   }
 };
+// === Key Translation (browser KeyboardEvent → tmux send-keys) ===
+const SPECIAL_KEY_MAP = {
+  'Enter': 'Enter',
+  'Tab': 'Tab',
+  'Escape': 'Escape',
+  'Backspace': 'BSpace',
+  'Delete': 'DC',
+  'ArrowUp': 'Up',
+  'ArrowDown': 'Down',
+  'ArrowLeft': 'Left',
+  'ArrowRight': 'Right',
+  'Home': 'Home',
+  'End': 'End',
+  'PageUp': 'PgUp',
+  'PageDown': 'PgDn',
+  'Insert': 'IC',
+  'F1': 'F1', 'F2': 'F2', 'F3': 'F3', 'F4': 'F4',
+  'F5': 'F5', 'F6': 'F6', 'F7': 'F7', 'F8': 'F8',
+  'F9': 'F9', 'F10': 'F10', 'F11': 'F11', 'F12': 'F12',
+  ' ': 'Space',
+};
+
 // === Constants ===
 const LIGHT_DIR = new THREE.Vector3(-0.7, 0.7, -0.3).normalize();
 const FLOOR_Y = -300;
@@ -740,7 +762,19 @@ function addTerminal(sessionName) {
     targetPos: { x: 0, y: 0, z: -500 },
     morphStart: clock.getElapsedTime(),
     morphFrom: { x: 0, y: 0, z: -500 },
-    billboardArrival: null  // set when terminal first reaches its ring position
+    billboardArrival: null,  // set when terminal first reaches its ring position
+    inputWs: null,
+    sendInput: function(msg) {
+      if (this.inputWs && this.inputWs.readyState === WebSocket.OPEN) {
+        this.inputWs.send(JSON.stringify(msg));
+      } else {
+        fetch('/api/input', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session: sessionName, pane: '0', ...msg })
+        }).catch(function() {});
+      }
+    }
   });
 
   fetchTitle(sessionName).then(function(title) {
@@ -784,6 +818,9 @@ function focusTerminal(sessionName) {
   focusedSessions.add(sessionName);
   focusedSession = sessionName;
   activeInputSession = sessionName;
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  t.inputWs = new WebSocket(proto + '//' + location.host + '/ws/terminal?session=' + encodeURIComponent(sessionName) + '&pane=0');
 
   updateFocusStyles();
 
@@ -854,6 +891,9 @@ function addToFocus(sessionName) {
   if (!focusedSession) focusedSession = sessionName;
   activeInputSession = sessionName;
 
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  t.inputWs = new WebSocket(proto + '//' + location.host + '/ws/terminal?session=' + encodeURIComponent(sessionName) + '&pane=0');
+
   updateFocusStyles();
   calculateFocusedLayout();
 
@@ -893,6 +933,10 @@ function updateFocusStyles() {
 function restoreFocusedTerminal(name) {
   const term = terminals.get(name);
   if (!term) return;
+  if (term.inputWs) {
+    term.inputWs.close();
+    term.inputWs = null;
+  }
   const now = clock.getElapsedTime();
   term.dom.classList.remove('faded', 'focused', 'input-active');
   term.dom.style.width = '';
@@ -1105,61 +1149,62 @@ function animate() {
   renderer.render(scene, camera);
 }
 
-// === Input Bar ===
-const inputBox = document.getElementById('input-box');
-if (inputBox) {
-  inputBox.addEventListener('keydown', async function (e) {
-    if (!activeInputSession) return;
+// === Direct Keystroke Capture ===
+// When a terminal is focused, ALL keyboard events go to tmux via WebSocket.
+// Browser shortcuts (Ctrl+T, Ctrl+W, etc.) are excluded.
+// DO NOT add per-terminal click handlers — see note 4 in header.
+document.addEventListener('keydown', function(e) {
+  if (!activeInputSession) return;
+  if (focusedSessions.size === 0) return;
 
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const text = inputBox.value;
-      if (text) {
-        await sendKeys(activeInputSession, text);
-        inputBox.value = '';
-      }
-      await sendSpecialKey(activeInputSession, 'Enter');
-    } else if (e.ctrlKey && e.key === 'c') {
-      e.preventDefault();
-      await sendSpecialKey(activeInputSession, 'C-c');
-    } else if (e.ctrlKey && e.key === 'd') {
-      e.preventDefault();
-      await sendSpecialKey(activeInputSession, 'C-d');
-    } else if (e.ctrlKey && e.key === 'l') {
-      e.preventDefault();
-      await sendSpecialKey(activeInputSession, 'C-l');
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      await sendSpecialKey(activeInputSession, 'Up');
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      await sendSpecialKey(activeInputSession, 'Down');
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      unfocusTerminal();
-    }
-  });
-}
+  // Don't capture when help panel is open
+  if (document.getElementById('help-panel').classList.contains('visible')) return;
 
-async function sendKeys(session, keys) {
-  try {
-    await fetch('/api/input', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session: session, pane: '0', keys: keys })
-    });
-  } catch (e) {}
-}
+  // Let browser shortcuts through
+  if ((e.ctrlKey || e.metaKey) && ['t', 'w', 'n', 'r'].includes(e.key.toLowerCase())) return;
+  if (e.altKey && e.key === 'F4') return;
+  if (e.key === 'F12') return;
 
-async function sendSpecialKey(session, key) {
-  try {
-    await fetch('/api/input', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session: session, pane: '0', specialKey: key })
-    });
-  } catch (e) {}
-}
+  // Don't interfere with bare modifier presses
+  if (e.key === 'Control' || e.key === 'Shift' || e.key === 'Alt' || e.key === 'Meta') return;
+
+  // Escape: unfocus terminal (handled by existing onKeyDown)
+  if (e.key === 'Escape') return;
+
+  e.preventDefault();
+
+  const t = terminals.get(activeInputSession);
+  if (!t) return;
+
+  // Ctrl combos
+  if (e.ctrlKey && e.key.length === 1) {
+    t.sendInput({ type: 'input', specialKey: 'C-' + e.key.toLowerCase() });
+    return;
+  }
+
+  // Special keys
+  if (SPECIAL_KEY_MAP[e.key]) {
+    t.sendInput({ type: 'input', specialKey: SPECIAL_KEY_MAP[e.key] });
+    return;
+  }
+
+  // Regular printable characters
+  if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    t.sendInput({ type: 'input', keys: e.key });
+  }
+});
+
+// Paste support
+document.addEventListener('paste', function(e) {
+  if (!activeInputSession) return;
+  if (focusedSessions.size === 0) return;
+  e.preventDefault();
+  const text = e.clipboardData.getData('text');
+  if (text) {
+    const t = terminals.get(activeInputSession);
+    if (t) t.sendInput({ type: 'input', keys: text });
+  }
+});
 
 // === Start ===
 init();

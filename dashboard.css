@@ -288,20 +288,19 @@ html, body {
   font-family: 'FiraCode Nerd Font Mono', monospace;
 }
 
-.input-bar input {
-  flex: 1;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 4px;
-  color: #e0e0e0;
-  font-family: 'FiraCode Nerd Font Mono', monospace;
-  font-size: 14px;
-  padding: 6px 10px;
-  outline: none;
+.input-bar .status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #28c840;
+  display: inline-block;
+  flex-shrink: 0;
 }
 
-.input-bar input:focus {
-  border-color: #5c5cff;
+.input-bar .input-hint {
+  color: #555;
+  font-size: 11px;
+  margin-left: auto;
 }
 
 /* === Help Button + Panel (frosted glass) === */
