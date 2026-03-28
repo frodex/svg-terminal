@@ -379,9 +379,19 @@ function onMouseDown(e) {
   const sidebar = document.getElementById('sidebar');
   mouseDownOnSidebar = sidebar && sidebar.contains(e.target);
   if (e.button === 0) {
-    if (e.altKey) {
-      // Alt+click: text selection — handled by selection system below. Don't start drag.
+    if (focusedSessions.size > 0 && !e.altKey && !e.ctrlKey && !e.shiftKey) {
+      // Focused + plain drag: text selection — handled by selection system below.
+      // Alt+drag orbits when focused (swapped from unfocused behavior).
       return;
+    } else if (e.altKey && focusedSessions.size > 0) {
+      // Alt+drag when focused: orbit (same as plain drag when unfocused)
+      isDragging = true;
+      dragMode = 'orbit';
+      dragDistance = 0;
+      syncOrbitFromCamera();
+      dragStart.x = e.clientX;
+      dragStart.y = e.clientY;
+      e.preventDefault();
     } else if (e.ctrlKey) {
       // Don't commit to rotateOrigin yet — could be ctrl+click for multi-focus.
       // If dragDistance stays < 5px, onMouseUp treats it as ctrl+click.
@@ -539,7 +549,7 @@ function onSceneClick(e) {
   // onMouseUp and onSceneClick find different terminals via overlapping bounding
   // rects in the 3D scene. This was the root cause of the "ctrl+click adds 2
   // terminals" bug. See note 3 in header.
-  if (suppressNextClick || ctrlHeld || e.ctrlKey || e.altKey || altHeld) {
+  if (suppressNextClick || ctrlHeld || e.ctrlKey || altHeld) {
     suppressNextClick = false;
     return;
   }
@@ -893,10 +903,12 @@ function focusTerminal(sessionName) {
         });
         t.screenCols = msg.width || 80;
         t.screenRows = msg.height || 24;
+        if (msg.cursor) t._lastCursor = msg.cursor;
       } else if (msg.type === 'delta' && msg.changed) {
         for (const [idx, spans] of Object.entries(msg.changed)) {
           t.screenLines[parseInt(idx)] = spans.map(function(s) { return s.text; }).join('');
         }
+        if (msg.cursor) t._lastCursor = msg.cursor;
       }
     } catch (err) {}
   };
@@ -908,6 +920,14 @@ function focusTerminal(sessionName) {
   t.targetPos = { x: 0, y: 0, z: 0 };
   t.morphStart = now;
   t.focusQuatFrom = t.css3dObject.quaternion.clone();
+
+  // Reset camera FOV to default — prevents blurry focus from zoomed-in/out state
+  camera.fov = 50;
+  camera.updateProjectionMatrix();
+
+  // Also reset orbit state so unfocus returns to a clean position
+  orbitAngle = 0;
+  orbitPitch = 0;
 
   // 1:1 pixel mapping for single terminal focus
   const vFov = camera.fov * DEG2RAD;
@@ -980,10 +1000,12 @@ function addToFocus(sessionName) {
         });
         t.screenCols = msg.width || 80;
         t.screenRows = msg.height || 24;
+        if (msg.cursor) t._lastCursor = msg.cursor;
       } else if (msg.type === 'delta' && msg.changed) {
         for (const [idx, spans] of Object.entries(msg.changed)) {
           t.screenLines[parseInt(idx)] = spans.map(function(s) { return s.text; }).join('');
         }
+        if (msg.cursor) t._lastCursor = msg.cursor;
       }
     } catch (err) {}
   };
@@ -1269,6 +1291,59 @@ document.addEventListener('keydown', function(e) {
   const t = terminals.get(activeInputSession);
   if (!t) return;
 
+  // Shift+Arrow: keyboard text selection
+  if (e.shiftKey && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
+    // Get actual terminal dimensions from SVG
+    let cols = t.screenCols, rows = t.screenRows;
+    try {
+      const obj = t.dom.querySelector('object');
+      if (obj && obj.contentDocument) {
+        const svg = obj.contentDocument.getElementById('root');
+        const measure = obj.contentDocument.getElementById('measure');
+        if (svg && measure) {
+          const vb = svg.getAttribute('viewBox');
+          if (vb) {
+            const parts = vb.split(/\s+/);
+            const bbox = measure.getBBox();
+            if (bbox.width > 0) {
+              cols = Math.round(parseFloat(parts[2]) / (bbox.width / 10));
+              rows = Math.round(parseFloat(parts[3]) / bbox.height);
+            }
+          }
+        }
+      }
+    } catch (err) {}
+
+    // Initialize keyboard selection at cursor position if not started
+    if (!selStart) {
+      // Use server's cursor position, or default to 0,0
+      const cursor = t._lastCursor || { x: 0, y: 0 };
+      selStart = { row: cursor.y, col: cursor.x };
+      selEnd = { row: cursor.y, col: cursor.x };
+    }
+
+    // Extend selection
+    let r = selEnd.row, c = selEnd.col;
+    if (e.key === 'ArrowRight') { c++; if (c >= cols) { c = 0; r++; } }
+    else if (e.key === 'ArrowLeft') { c--; if (c < 0) { c = cols - 1; r--; } }
+    else if (e.key === 'ArrowDown') { r++; }
+    else if (e.key === 'ArrowUp') { r--; }
+    else if (e.key === 'Home') { c = 0; }
+    else if (e.key === 'End') { c = cols - 1; }
+    r = Math.max(0, Math.min(r, rows - 1));
+    c = Math.max(0, Math.min(c, cols - 1));
+    selEnd = { row: r, col: c };
+
+    // Draw the highlight — get render info for positioning
+    const renderInfo = getTermRenderInfo(t);
+    if (renderInfo) {
+      selEnd._render = renderInfo;
+      selStart._render = renderInfo;
+    }
+    drawSelHighlight(t);
+    return;
+  }
+
   // Page Up/Down: scroll by a full page
   if (e.key === 'PageUp') {
     t.scrollBy(24);
@@ -1282,11 +1357,17 @@ document.addEventListener('keydown', function(e) {
   // Any keystroke resets scroll to live view
   t.scrollReset();
 
-  // Ctrl+C with active text selection is handled by the selection system
-  // (see Text Selection + Copy section below). If no selection, falls through
-  // to send C-c to the terminal.
+  // Ctrl+C: if text is selected, copy instead of sending C-c to terminal
+  if (e.ctrlKey && e.key.toLowerCase() === 'c' && selStart) {
+    const text = getSelectedTextFromSvg(t);
+    if (text) {
+      copyToClipboard(text);
+    }
+    clearSel();
+    return;
+  }
 
-  // Ctrl combos
+  // Ctrl combos (C-c only reaches here if no selection)
   if (e.ctrlKey && e.key.length === 1) {
     t.sendInput({ type: 'input', specialKey: 'C-' + e.key.toLowerCase() });
     return;
@@ -1336,20 +1417,15 @@ function getSelOverlay() {
   return selOverlay;
 }
 
-function screenToCell(e, t) {
-  // Map screen pixel coordinates to terminal character row/col.
-  // Gets actual cols/rows from the SVG's viewBox and measured cell dimensions,
-  // not from dashboard state (which may be stale or default).
+function getTermRenderInfo(t) {
+  // Calculate the rendered SVG area dimensions for a terminal
   const obj = t.dom.querySelector('object');
   if (!obj) return null;
   const rect = obj.getBoundingClientRect();
   if (rect.width < 10 || rect.height < 10) return null;
 
-  // Try to read actual dimensions from the SVG document
-  let cols = t.screenCols;
-  let rows = t.screenRows;
-  let svgW = rect.width;
-  let svgH = rect.height;
+  let cols = t.screenCols, rows = t.screenRows;
+  let svgW = rect.width, svgH = rect.height;
 
   try {
     const svgDoc = obj.contentDocument;
@@ -1362,51 +1438,53 @@ function screenToCell(e, t) {
           svgW = parseFloat(parts[2]);
           svgH = parseFloat(parts[3]);
         }
-        // Get measured cell dimensions from the SVG's own measurement
         const measure = svgDoc.getElementById('measure');
         if (measure) {
           const bbox = measure.getBBox();
           if (bbox.width > 0) {
-            const cellW = bbox.width / 10;
-            const cellH = bbox.height;
-            cols = Math.round(svgW / cellW);
-            rows = Math.round(svgH / cellH);
+            cols = Math.round(svgW / (bbox.width / 10));
+            rows = Math.round(svgH / bbox.height);
           }
         }
       }
     }
-  } catch (err) {
-    // Cross-origin or security error — fall back to stored values
-  }
+  } catch (err) {}
 
-  // The SVG preserves aspect ratio inside the <object>, so it may not fill
-  // the entire rect. Calculate the actual rendered SVG area.
   const svgAspect = svgW / svgH;
   const objAspect = rect.width / rect.height;
   let renderW, renderH, offsetX, offsetY;
   if (objAspect > svgAspect) {
-    // Object is wider than SVG — SVG is height-constrained, centered horizontally
     renderH = rect.height;
     renderW = rect.height * svgAspect;
     offsetX = (rect.width - renderW) / 2;
     offsetY = 0;
   } else {
-    // Object is taller than SVG — SVG is width-constrained, centered vertically
     renderW = rect.width;
     renderH = rect.width / svgAspect;
     offsetX = 0;
     offsetY = (rect.height - renderH) / 2;
   }
 
-  const cellW = renderW / cols;
-  const cellH = renderH / rows;
-  const col = Math.floor((e.clientX - rect.left - offsetX) / cellW);
-  const row = Math.floor((e.clientY - rect.top - offsetY) / cellH);
   return {
-    row: Math.max(0, Math.min(row, rows - 1)),
-    col: Math.max(0, Math.min(col, cols - 1)),
-    // Pass render info for drawSelHighlight
-    _render: { left: rect.left + offsetX, top: rect.top + offsetY, cellW, cellH, cols, rows }
+    left: rect.left + offsetX,
+    top: rect.top + offsetY,
+    cellW: renderW / cols,
+    cellH: renderH / rows,
+    cols, rows
+  };
+}
+
+function screenToCell(e, t) {
+  // Map screen pixel coordinates to terminal character row/col
+  const r = getTermRenderInfo(t);
+  if (!r) return null;
+
+  const col = Math.floor((e.clientX - r.left) / r.cellW);
+  const row = Math.floor((e.clientY - r.top) / r.cellH);
+  return {
+    row: Math.max(0, Math.min(row, r.rows - 1)),
+    col: Math.max(0, Math.min(col, r.cols - 1)),
+    _render: r
   };
 }
 
@@ -1517,9 +1595,13 @@ function fallbackCopy(text) {
   document.body.removeChild(ta);
 }
 
-// Alt+mousedown on a focused terminal starts text selection
+// Plain mousedown on a focused terminal starts text selection.
+// When unfocused, plain drag orbits (handled by onMouseDown above).
+// Alt+drag orbits when focused (swapped).
 document.addEventListener('mousedown', function(e) {
-  if (!e.altKey || e.button !== 0) return;
+  if (e.button !== 0) return;
+  if (e.altKey || e.ctrlKey || e.shiftKey) return; // modifiers = camera controls
+  if (focusedSessions.size === 0) return; // not focused = orbit, not selection
   if (!activeInputSession) return;
   const t = terminals.get(activeInputSession);
   if (!t) return;
@@ -1561,20 +1643,16 @@ document.addEventListener('mouseup', function(e) {
   suppressNextClick = true;
 });
 
-// Clear selection on any keystroke (user is typing, not selecting)
+// Clear selection on any keystroke EXCEPT selection-related keys.
+// Ctrl+C copy is handled in the main keystroke handler above — not here.
 document.addEventListener('keydown', function(e) {
+  // Don't clear on shift+arrow (keyboard selection extending)
+  if (e.shiftKey && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+  // Don't clear on Ctrl+C — the main handler copies the selection
+  if (e.ctrlKey && e.key.toLowerCase() === 'c') return;
+  // Don't clear on bare modifiers
+  if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
   if (selStart && !e.altKey) {
-    // Ctrl+C with active selection: copy and clear
-    if (e.ctrlKey && e.key.toLowerCase() === 'c') {
-      // selTerminal is null after mouseup but selStart/selEnd still have the selection
-      const text = getSelectedTextFromSvg(terminals.get(activeInputSession));
-      if (text) {
-        copyToClipboard(text);
-      }
-      clearSel();
-      e.preventDefault();
-      return;
-    }
     clearSel();
   }
 });
