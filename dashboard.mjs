@@ -508,7 +508,7 @@ function onKeyDown(e) {
       unfocusTerminal();
     }
   }
-  if (e.key === '?') {
+  if (e.key === '?' && focusedSessions.size === 0) {
     toggleHelp();
   }
 }
@@ -561,6 +561,18 @@ function onWheel(e) {
   e.preventDefault();
   const delta = e.deltaY;
 
+  if (focusedSessions.size > 0 && activeInputSession && !e.shiftKey && !e.ctrlKey) {
+    // Focused terminal: scroll sends Up/Down for scrollback
+    const t = terminals.get(activeInputSession);
+    if (t) {
+      const key = delta > 0 ? 'Down' : 'Up';
+      for (let i = 0; i < 3; i++) {
+        t.sendInput({ type: 'input', specialKey: key });
+      }
+    }
+    return;
+  }
+
   if (e.shiftKey) {
     // Shift+scroll: dolly Z (move camera forward/backward along view direction)
     const dir = new THREE.Vector3();
@@ -568,8 +580,12 @@ function onWheel(e) {
     camera.position.addScaledVector(dir, -delta * 0.5);
     orbitDist = camera.position.distanceTo(currentLookTarget);
     camera.lookAt(currentLookTarget);
+  } else if (e.ctrlKey) {
+    // Ctrl+scroll: zoom (change FOV)
+    camera.fov = Math.max(10, Math.min(120, camera.fov + delta * 0.05));
+    camera.updateProjectionMatrix();
   } else {
-    // Scroll: zoom (change FOV)
+    // Scroll (no modifier, no focus): zoom (change FOV)
     camera.fov = Math.max(10, Math.min(120, camera.fov + delta * 0.05));
     camera.updateProjectionMatrix();
   }
