@@ -294,21 +294,31 @@ function focusTerminal(sessionName) {
     term.thumbnail.classList.toggle('active', name === sessionName);
   }
 
-  // Camera tween to in front of terminal, centered between left edge and sidebar
-  zoomDistance = 400; // reset zoom on new focus
+  // Camera tween to in front of terminal
+  // Centered horizontally between left edge and sidebar
+  // Centered vertically between top edge and input bar
+  zoomDistance = 400;
   const worldPos = new THREE.Vector3();
   t.css3dObject.getWorldPosition(worldPos);
   const dir = worldPos.clone().normalize();
   if (dir.length() < 0.01) dir.set(0, 0, 1);
 
-  // Offset camera X to account for sidebar taking right 140px
-  const sidebarOffsetRatio = SIDEBAR_WIDTH / window.innerWidth;
-  const xOffset = sidebarOffsetRatio * zoomDistance * -0.5;
+  // Horizontal offset: center in the space left of sidebar
+  const availWidth = window.innerWidth - SIDEBAR_WIDTH;
+  const xOffsetRatio = (SIDEBAR_WIDTH / window.innerWidth) * 0.5;
+  const xOffset = -xOffsetRatio * zoomDistance;
+
+  // Vertical offset: input bar is ~50px, shift camera up slightly
+  // so the terminal sits centered between top and input bar
+  const inputBarHeight = 50;
+  const yOffsetRatio = (inputBarHeight / window.innerHeight) * 0.5;
+  const yOffset = yOffsetRatio * zoomDistance * 0.3;
 
   cameraTweenFrom = camera.position.clone();
   cameraLookFrom = currentLookTarget.clone();
   cameraTweenTo = worldPos.clone().add(dir.multiplyScalar(zoomDistance));
   cameraTweenTo.x += xOffset;
+  cameraTweenTo.y += yOffset;
   cameraLookTo = worldPos.clone();
   cameraTweenStart = clock.getElapsedTime();
   cameraTweenDuration = 1.0;
@@ -358,12 +368,19 @@ function animate() {
     isMouseActive = false;
   }
 
-  // Rotation (attract mode)
-  if (!focusedSession && !isMouseActive) {
+  // Rotation — always rotates, slower when focused or mouse active
+  {
+    let targetSpeed = ROTATION_SPEED;
+    if (focusedSession) {
+      targetSpeed = ROTATION_SPEED * 0.3; // slow rotation behind focused terminal
+    } else if (isMouseActive) {
+      targetSpeed = 0;
+    }
+
     if (rotationResumeProgress < 1) {
       rotationResumeProgress = Math.min(1, rotationResumeProgress + delta * 0.5);
     }
-    const speed = ROTATION_SPEED * easeInOutCubic(Math.min(1, rotationResumeProgress));
+    const speed = targetSpeed * easeInOutCubic(Math.min(1, rotationResumeProgress));
     polyhedronGroup.rotation.y += delta * speed;
     polyhedronGroup.rotation.x = Math.sin(time * 0.1) * 0.05;
   }

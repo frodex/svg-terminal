@@ -36,7 +36,7 @@ html, body {
 }
 
 .terminal-3d.faded {
-  opacity: 0.3;
+  opacity: 0.5;
   pointer-events: none;
   transition: opacity 0.5s;
 }
