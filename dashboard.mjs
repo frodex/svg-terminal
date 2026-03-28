@@ -562,12 +562,15 @@ function onWheel(e) {
   const delta = e.deltaY;
 
   if (focusedSessions.size > 0 && activeInputSession && !e.shiftKey && !e.ctrlKey) {
-    // Focused terminal: scroll sends Up/Down for scrollback
     const t = terminals.get(activeInputSession);
     if (t) {
-      const key = delta > 0 ? 'Down' : 'Up';
-      for (let i = 0; i < 3; i++) {
+      if (e.altKey) {
+        // Alt+scroll: Up/Down arrow (command history at prompt)
+        const key = delta > 0 ? 'Down' : 'Up';
         t.sendInput({ type: 'input', specialKey: key });
+      } else {
+        // Scroll: adjust server-side scroll offset into tmux scrollback
+        t.sendInput({ type: 'input', scroll: delta > 0 ? 'down' : 'up' });
       }
     }
     return;

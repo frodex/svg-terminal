@@ -120,6 +120,35 @@ async function capturePane(session, pane) {
   return { width, height, cursor: { x: cursorX, y: cursorY }, title, lines };
 }
 
+// Capture pane at a scroll offset (lines above the bottom).
+// Uses tmux capture-pane -S/-E to grab a window of history.
+async function capturePaneAt(session, pane, offset) {
+  const target = session + ':' + pane;
+  const metaRaw = await tmuxAsync('display-message', '-p', '-t', target,
+    '#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{pane_title}');
+
+  const metaParts = metaRaw.trim().split(' ');
+  const width = parseInt(metaParts[0], 10);
+  const height = parseInt(metaParts[1], 10);
+  const title = metaParts.slice(4).join(' ');
+
+  // Capture a window of 'height' lines shifted up by 'offset' lines.
+  // tmux line 0 = first visible line, negative = scrollback history.
+  // offset=3 means show from line -3 to line (height-4), shifting the view up 3 lines.
+  const startLine = -offset;
+  const endLine = -offset + height - 1;
+
+  const raw = await tmuxAsync('capture-pane', '-p', '-e', '-t', target,
+    '-S', String(startLine), '-E', String(endLine));
+
+  const rawLines = raw.split('\n');
+  if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop();
+  const lines = rawLines.map((line) => ({ spans: parseLine(line) }));
+
+  // Cursor not meaningful when viewing history
+  return { width, height, cursor: { x: -1, y: -1 }, title, lines };
+}
+
 async function handlePane(req, res, params) {
   const session = params.get('session');
   const pane = params.get('pane') || '0';
@@ -219,6 +248,21 @@ async function handleSessions(req, res) {
 // WebSocket helpers
 // ---------------------------------------------------------------------------
 
+// Shared scroll offset per pane — all WebSocket connections to the same pane share this.
+// Without this, the dashboard's input WebSocket and the SVG's output WebSocket have
+// independent scroll offsets, so scrolling via input doesn't affect what the SVG renders.
+const paneScrollOffsets = new Map(); // key = "session:pane", value = number
+
+function getScrollOffset(session, pane) {
+  return paneScrollOffsets.get(session + ':' + pane) || 0;
+}
+
+function setScrollOffset(session, pane, offset) {
+  const key = session + ':' + pane;
+  if (offset <= 0) paneScrollOffsets.delete(key);
+  else paneScrollOffsets.set(key, offset);
+}
+
 function diffState(prev, curr) {
   if (!prev) return { type: 'screen', width: curr.width, height: curr.height,
     cursor: curr.cursor, title: curr.title, lines: curr.lines };
@@ -247,11 +291,19 @@ async function handleTerminalWs(ws, session, pane) {
   let lastState = null;
   let pollTimer = null;
 
+  // Capture pane at shared scroll offset and push to client
   async function captureAndPush() {
     try {
-      const state = await capturePane(session, pane);
+      const offset = getScrollOffset(session, pane);
+      let state;
+      if (offset > 0) {
+        state = await capturePaneAt(session, pane, offset);
+      } else {
+        state = await capturePane(session, pane);
+      }
       const diff = diffState(lastState, state);
       if (diff && ws.readyState === 1) {
+        diff.scrollOffset = offset;
         ws.send(JSON.stringify(diff));
         lastState = state;
       }
@@ -270,9 +322,24 @@ async function handleTerminalWs(ws, session, pane) {
       const msg = JSON.parse(data);
       if (msg.type === 'input') {
         const target = session + ':' + pane;
-        if (msg.specialKey && isAllowedKey(msg.specialKey)) {
+        if (msg.scroll) {
+          // Scroll: adjust shared offset and force all connections to re-capture
+          const step = 3;
+          const current = getScrollOffset(session, pane);
+          if (msg.scroll === 'up') {
+            setScrollOffset(session, pane, current + step);
+          } else {
+            setScrollOffset(session, pane, Math.max(0, current - step));
+          }
+          lastState = null;
+          await captureAndPush();
+          return;
+        } else if (msg.specialKey && isAllowedKey(msg.specialKey)) {
+          // Any keystroke snaps back to live view
+          setScrollOffset(session, pane, 0);
           await tmuxAsync('send-keys', '-t', target, msg.specialKey);
         } else if (msg.keys != null) {
+          setScrollOffset(session, pane, 0);
           await tmuxAsync('send-keys', '-t', target, '-l', String(msg.keys));
         }
         setTimeout(captureAndPush, 5);
