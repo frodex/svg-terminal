@@ -58,14 +58,6 @@ import * as THREE from 'three';
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
 import { easeInOutCubic, lerpPos } from './polyhedra.mjs';
 
-// Oscillate between from and to using sine wave. Speed 0 = static at from.
-// Exact function from ring-mega-saved.html design studio — do not modify.
-function osc(from, to, speed, time) {
-  if (speed === 0) return from;
-  var t = (Math.sin(time * speed * 0.05) + 1) / 2;
-  return from + (to - from) * t;
-}
-
 // === Ring Layout Preset (from design studio 2026-03-27 session) ===
 const DEG2RAD = Math.PI / 180;
 const RING = {
@@ -117,6 +109,7 @@ const MORPH_DURATION = 1.5;
 const BILLBOARD_SLERP = 0.08;
 const SIDEBAR_WIDTH = 140;
 const FOCUS_DIST = 350;
+const RENDER_SCALE = 2;
 
 // Camera position — closer to match original visual density
 const HOME_POS = new THREE.Vector3(-15, 20, 900);
@@ -127,7 +120,6 @@ let scene, camera, renderer;
 let terminalGroup, shadowGroup;
 const terminals = new Map();
 let sessionOrder = [];
-let focusedSession = null;
 let focusedSessions = new Set();
 let activeInputSession = null;
 const clock = new THREE.Clock();
@@ -140,8 +132,6 @@ let ringAssignments = { outer: [], inner: [] };
 // IMPORTANT: The interaction between these flags is load-bearing. See note 3 above.
 // dragMode 'ctrlPending' means ctrl+mousedown happened but we don't know if it's a
 // click (multi-focus) or drag (rotate-origin) yet. Resolved by dragDistance threshold.
-let isMouseActive = false;
-let lastMouseMove = 0;
 let isDragging = false;
 let dragMode = null; // 'orbit' | 'dollyXY' | 'rotateOrigin' | 'ctrlPending'
 let dragStart = { x: 0, y: 0 };
@@ -168,6 +158,11 @@ const _up = new THREE.Vector3(0, 1, 0);
 const _ringTiltEuler = new THREE.Euler();
 const _cardTiltEuler = new THREE.Euler();
 const _panelNormal = new THREE.Vector3();
+// Hot-path drag vectors — reused every mouse move to avoid allocation
+const _dragRight = new THREE.Vector3();
+const _dragUp = new THREE.Vector3();
+const _rotY = new THREE.Matrix4();
+const _rotX = new THREE.Matrix4();
 
 // === Ring Assignment ===
 // Distributes terminals across outer and inner rings
@@ -314,7 +309,6 @@ function init() {
   animate();
 }
 
-const RENDER_SCALE = 2;
 function onResize() {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
@@ -323,9 +317,6 @@ function onResize() {
 
 // === Mouse ===
 function onMouseMove(e) {
-  isMouseActive = true;
-  lastMouseMove = performance.now();
-
   if (isDragging && dragMode) {
     const dx = e.clientX - dragStart.x;
     const dy = e.clientY - dragStart.y;
@@ -346,13 +337,12 @@ function onMouseMove(e) {
 
     } else if (dragMode === 'dollyXY') {
       // Shift+drag: translate camera + target in screen-aligned X/Y
-      const right = new THREE.Vector3();
-      const up = new THREE.Vector3();
+      // Uses module-level _dragRight, _dragUp to avoid allocation in hot path
       camera.getWorldDirection(_worldPos);
-      right.crossVectors(_worldPos, _up).normalize();
-      up.crossVectors(right, _worldPos).normalize();
+      _dragRight.crossVectors(_worldPos, _up).normalize();
+      _dragUp.crossVectors(_dragRight, _worldPos).normalize();
       const scale = orbitDist * 0.002;
-      const offset = right.multiplyScalar(-dx * scale).add(up.multiplyScalar(dy * scale));
+      const offset = _dragRight.multiplyScalar(-dx * scale).add(_dragUp.multiplyScalar(dy * scale));
       camera.position.add(offset);
       currentLookTarget.add(offset);
       HOME_TARGET.add(offset);
@@ -370,9 +360,9 @@ function onMouseMove(e) {
         if (count > 0) origin.divideScalar(count);
       }
       const offset = camera.position.clone().sub(origin);
-      const rotY = new THREE.Matrix4().makeRotationY(-dx * 0.005);
-      const rotX = new THREE.Matrix4().makeRotationX(-dy * 0.005);
-      offset.applyMatrix4(rotY).applyMatrix4(rotX);
+      _rotY.makeRotationY(-dx * 0.005);
+      _rotX.makeRotationX(-dy * 0.005);
+      offset.applyMatrix4(_rotY).applyMatrix4(_rotX);
       camera.position.copy(origin).add(offset);
       currentLookTarget.copy(origin);
       camera.lookAt(currentLookTarget);
@@ -485,7 +475,6 @@ function wasDrag() {
 }
 
 function onMouseLeave() {
-  isMouseActive = false;
   isDragging = false;
   dragMode = null;
 }
@@ -589,12 +578,8 @@ function onWheel(e) {
     camera.position.addScaledVector(dir, -delta * 0.5);
     orbitDist = camera.position.distanceTo(currentLookTarget);
     camera.lookAt(currentLookTarget);
-  } else if (e.ctrlKey) {
-    // Ctrl+scroll: zoom (change FOV)
-    camera.fov = Math.max(10, Math.min(120, camera.fov + delta * 0.05));
-    camera.updateProjectionMatrix();
   } else {
-    // Scroll (no modifier, no focus): zoom (change FOV)
+    // Scroll (unfocused or ctrl+scroll): zoom (change FOV)
     camera.fov = Math.max(10, Math.min(120, camera.fov + delta * 0.05));
     camera.updateProjectionMatrix();
   }
@@ -850,7 +835,6 @@ function focusTerminal(sessionName) {
   restoreAllFocused();
 
   focusedSessions.add(sessionName);
-  focusedSession = sessionName;
   activeInputSession = sessionName;
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -922,7 +906,6 @@ function addToFocus(sessionName) {
   }
 
   focusedSessions.add(sessionName);
-  if (!focusedSession) focusedSession = sessionName;
   activeInputSession = sessionName;
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -994,7 +977,6 @@ function restoreAllFocused() {
 
 function unfocusTerminal() {
   restoreAllFocused();
-  focusedSession = null;
   activeInputSession = null;
   const now = clock.getElapsedTime();
 
@@ -1024,7 +1006,7 @@ function animate() {
   requestAnimationFrame(animate);
 
   const time = clock.getElapsedTime();
-  const delta = clock.getDelta();
+  clock.getDelta(); // advance clock internal state (side effect needed for accurate getElapsedTime)
 
   // Camera tween
   if (cameraTween) {
