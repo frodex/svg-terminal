@@ -20,7 +20,11 @@ html, body {
   overflow: hidden;
   position: relative;
   cursor: pointer;
-  transition: box-shadow 0.2s, transform 0.2s;
+  transition: box-shadow 0.2s;
+  /* Prevent Chrome from rasterizing at wrong resolution during 3D transforms */
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  will-change: transform;
 }
 
 .terminal-3d:hover {

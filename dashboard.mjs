@@ -424,9 +424,6 @@ if (inputBox) {
         inputBox.value = '';
       }
       await sendSpecialKey(focusedSession, 'Enter');
-    } else if (e.key === 'Backspace') {
-      e.preventDefault();
-      await sendSpecialKey(focusedSession, 'BSpace');
     } else if (e.ctrlKey && e.key === 'c') {
       e.preventDefault();
       await sendSpecialKey(focusedSession, 'C-c');
