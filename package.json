@@ -1,4 +1,8 @@
 {
+  "name": "svg-terminal",
+  "version": "0.2.0",
+  "description": "Live SVG terminal viewer with 3D dashboard",
+  "type": "module",
   "dependencies": {
     "puppeteer": "^24.40.0"
   }
