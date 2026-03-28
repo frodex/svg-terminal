@@ -6,6 +6,7 @@ import http from 'node:http';
 import { readFileSync } from 'node:fs';
 import { execFileSync, execFile as execFileCb } from 'node:child_process';
 import { parseLine } from './sgr-parser.mjs';
+import { WebSocketServer } from 'ws';
 
 // ---------------------------------------------------------------------------
 // Async tmux helper
@@ -99,57 +100,37 @@ function handleSvg(req, res) {
   }
 }
 
+async function capturePane(session, pane) {
+  const target = session + ':' + pane;
+  const raw = await tmuxAsync('capture-pane', '-p', '-e', '-t', target);
+  const metaRaw = await tmuxAsync('display-message', '-p', '-t', target,
+    '#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{pane_title}');
+
+  const metaParts = metaRaw.trim().split(' ');
+  const width = parseInt(metaParts[0], 10);
+  const height = parseInt(metaParts[1], 10);
+  const cursorX = parseInt(metaParts[2], 10);
+  const cursorY = parseInt(metaParts[3], 10);
+  const title = metaParts.slice(4).join(' ');
+
+  const rawLines = raw.split('\n');
+  if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop();
+  const lines = rawLines.map((line) => ({ spans: parseLine(line) }));
+
+  return { width, height, cursor: { x: cursorX, y: cursorY }, title, lines };
+}
+
 async function handlePane(req, res, params) {
   const session = params.get('session');
-  const pane = params.get('pane') ?? '0';
-
-  if (!validateParam(session)) {
-    return sendError(res, 400, 'Invalid session parameter');
-  }
-  if (!validateParam(pane)) {
-    return sendError(res, 400, 'Invalid pane parameter');
-  }
-
-  const target = `${session}:${pane}`;
-
+  const pane = params.get('pane') || '0';
+  if (!session) return sendError(res, 400, 'Missing session parameter');
+  if (!validateParam(session)) return sendError(res, 400, 'Invalid session name');
+  if (!validateParam(pane)) return sendError(res, 400, 'Invalid pane identifier');
   try {
-    // Capture pane output
-    const rawOutput = await tmuxAsync(
-      'capture-pane', '-p', '-e', '-t', target
-    );
-
-    // Get dimensions, cursor position, and pane title
-    const infoRaw = (await tmuxAsync(
-      'display-message', '-p', '-t', target,
-      '#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{pane_title}'
-    )).trim();
-
-    const [widthStr, heightStr, cxStr, cyStr, ...titleParts] = infoRaw.split(' ');
-    const width = parseInt(widthStr, 10);
-    const height = parseInt(heightStr, 10);
-    const cursorX = parseInt(cxStr, 10);
-    const cursorY = parseInt(cyStr, 10);
-
-    // Split by newline; remove trailing empty element from final \n
-    const rawLines = rawOutput.split('\n');
-    if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') {
-      rawLines.pop();
-    }
-
-    const lines = rawLines.map((line) => ({ spans: parseLine(line) }));
-
-    const paneTitle = titleParts.join(' ') || '';
-
-    sendJson(res, 200, {
-      width,
-      height,
-      cursor: { x: cursorX, y: cursorY },
-      title: paneTitle,
-      lines,
-    });
+    const state = await capturePane(session, pane);
+    sendJson(res, 200, state);
   } catch (err) {
-    // tmux errors (no such session, etc.)
-    sendError(res, 500, `tmux error: ${err.message}`);
+    sendError(res, 500, 'tmux error: ' + err.message);
   }
 }
 
@@ -232,6 +213,75 @@ async function handleSessions(req, res) {
   } catch (err) {
     sendError(res, 500, `tmux error: ${err.message}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket helpers
+// ---------------------------------------------------------------------------
+
+function diffState(prev, curr) {
+  if (!prev) return { type: 'screen', width: curr.width, height: curr.height,
+    cursor: curr.cursor, title: curr.title, lines: curr.lines };
+  if (prev.width !== curr.width || prev.height !== curr.height) {
+    return { type: 'screen', width: curr.width, height: curr.height,
+      cursor: curr.cursor, title: curr.title, lines: curr.lines };
+  }
+  const changed = {};
+  let anyChanged = false;
+  for (let i = 0; i < curr.lines.length; i++) {
+    const a = JSON.stringify(prev.lines[i]);
+    const b = JSON.stringify(curr.lines[i]);
+    if (a !== b) {
+      changed[i] = curr.lines[i].spans;
+      anyChanged = true;
+    }
+  }
+  if (!anyChanged && prev.cursor.x === curr.cursor.x && prev.cursor.y === curr.cursor.y
+      && prev.title === curr.title) {
+    return null;
+  }
+  return { type: 'delta', cursor: curr.cursor, title: curr.title, changed };
+}
+
+async function handleTerminalWs(ws, session, pane) {
+  let lastState = null;
+  let pollTimer = null;
+
+  async function captureAndPush() {
+    try {
+      const state = await capturePane(session, pane);
+      const diff = diffState(lastState, state);
+      if (diff && ws.readyState === 1) {
+        ws.send(JSON.stringify(diff));
+        lastState = state;
+      }
+    } catch (err) {
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'error', message: err.message }));
+      }
+    }
+  }
+
+  await captureAndPush();
+  pollTimer = setInterval(captureAndPush, 30);
+
+  ws.on('message', async (data) => {
+    try {
+      const msg = JSON.parse(data);
+      if (msg.type === 'input') {
+        const target = session + ':' + pane;
+        if (msg.specialKey && isAllowedKey(msg.specialKey)) {
+          await tmuxAsync('send-keys', '-t', target, msg.specialKey);
+        } else if (msg.keys != null) {
+          await tmuxAsync('send-keys', '-t', target, '-l', String(msg.keys));
+        }
+        setTimeout(captureAndPush, 5);
+      }
+    } catch (err) {}
+  });
+
+  ws.on('close', () => { clearInterval(pollTimer); });
+  ws.on('error', () => { clearInterval(pollTimer); });
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +384,26 @@ function router(req, res) {
 // ---------------------------------------------------------------------------
 
 const server = http.createServer(router);
+
+const wss = new WebSocketServer({ noServer: true });
+
+server.on('upgrade', (req, socket, head) => {
+  const url = new URL(req.url, 'http://localhost');
+  if (url.pathname === '/ws/terminal') {
+    const session = url.searchParams.get('session');
+    const pane = url.searchParams.get('pane') || '0';
+    if (!session || !validateParam(session) || !validateParam(pane)) {
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      handleTerminalWs(ws, session, pane);
+    });
+  } else {
+    socket.destroy();
+  }
+});
+
 server.listen(port, () => {
   process.stderr.write(`svg-terminal server listening on port ${port}\n`);
 });

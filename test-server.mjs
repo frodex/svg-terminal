@@ -159,3 +159,54 @@ test('rejects invalid special key', async () => {
   });
   assert.equal(res.status, 400);
 });
+
+test('WebSocket /ws/terminal connects and receives screen event', async () => {
+  const sessRes = await get('/api/sessions');
+  const sessions = await sessRes.json();
+  if (sessions.length === 0) return;
+  const session = sessions[0].name;
+
+  const ws = new WebSocket('ws://127.0.0.1:' + TEST_PORT + '/ws/terminal?session=' + session + '&pane=0');
+
+  const firstMsg = await new Promise((resolve, reject) => {
+    ws.onmessage = (e) => resolve(JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString()));
+    ws.onerror = () => reject(new Error('WebSocket error'));
+    setTimeout(() => reject(new Error('Timeout')), 5000);
+  });
+
+  assert.equal(firstMsg.type, 'screen');
+  assert.ok(typeof firstMsg.width === 'number');
+  assert.ok(typeof firstMsg.height === 'number');
+  assert.ok(Array.isArray(firstMsg.lines));
+  assert.ok(firstMsg.cursor);
+
+  ws.close();
+});
+
+test('WebSocket input sends keys and receives update', async () => {
+  const sessRes = await get('/api/sessions');
+  const sessions = await sessRes.json();
+  if (sessions.length === 0) return;
+  const session = sessions[0].name;
+
+  const ws = new WebSocket('ws://127.0.0.1:' + TEST_PORT + '/ws/terminal?session=' + session + '&pane=0');
+
+  await new Promise((resolve, reject) => {
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString());
+      if (msg.type === 'screen') resolve();
+    };
+    ws.onerror = () => reject(new Error('WebSocket error'));
+    setTimeout(() => reject(new Error('Timeout')), 5000);
+  });
+
+  ws.send(JSON.stringify({ type: 'input', keys: ' ' }));
+
+  const response = await new Promise((resolve, reject) => {
+    ws.onmessage = (e) => resolve(JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString()));
+    setTimeout(() => reject(new Error('No response after input')), 2000);
+  });
+
+  assert.ok(response.type === 'screen' || response.type === 'delta');
+  ws.close();
+});
