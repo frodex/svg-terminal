@@ -569,11 +569,26 @@ function onWheel(e) {
         const key = delta > 0 ? 'Down' : 'Up';
         t.sendInput({ type: 'input', specialKey: key });
       } else {
-        // Scroll: adjust server-side scroll offset into tmux scrollback
-        // Use deltaY magnitude for acceleration — fast scroll = bigger jumps
+        // Scroll: server-side scrollback with client-side smooth animation.
+        // 1) Apply immediate CSS translateY for visual smoothness
+        // 2) Send scroll command to server for actual content update
+        // 3) Reset translateY when server content arrives (handled in WebSocket onmessage)
         const absDelta = Math.abs(delta);
         const step = absDelta > 300 ? 12 : absDelta > 150 ? 6 : absDelta > 50 ? 3 : 1;
-        t.sendInput({ type: 'input', scroll: delta > 0 ? 'down' : 'up', step: step });
+
+        // Track scroll offset locally so up/down are symmetric
+        if (!t._localScrollOffset) t._localScrollOffset = 0;
+        if (delta > 0) {
+          t._localScrollOffset = Math.max(0, t._localScrollOffset - step);
+        } else {
+          t._localScrollOffset += step;
+        }
+
+        // Server responds in ~30ms which is fast enough — no client-side
+        // pixel animation needed. CSS transform smoothing was tried but any
+        // non-zero offset caused visible bounce because the transform and
+        // server content update overlap in timing.
+        t.sendInput({ type: 'input', scrollTo: t._localScrollOffset });
       }
     }
     return;
@@ -1207,6 +1222,9 @@ document.addEventListener('keydown', function(e) {
     t.sendInput({ type: 'input', scroll: 'down', step: 24 });
     return;
   }
+
+  // Any keystroke resets scroll to live view
+  t._localScrollOffset = 0;
 
   // Ctrl combos
   if (e.ctrlKey && e.key.length === 1) {

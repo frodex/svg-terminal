@@ -322,8 +322,14 @@ async function handleTerminalWs(ws, session, pane) {
       const msg = JSON.parse(data);
       if (msg.type === 'input') {
         const target = session + ':' + pane;
-        if (msg.scroll) {
-          // Scroll: adjust shared offset and force all connections to re-capture
+        if (msg.scrollTo != null) {
+          // Absolute scroll offset — set directly
+          setScrollOffset(session, pane, Math.max(0, msg.scrollTo));
+          lastState = null;
+          await captureAndPush();
+          return;
+        } else if (msg.scroll) {
+          // Relative scroll (legacy/PgUp/PgDn)
           const step = msg.step || 3;
           const current = getScrollOffset(session, pane);
           if (msg.scroll === 'up') {
