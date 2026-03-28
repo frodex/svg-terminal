@@ -1,38 +1,113 @@
-// dashboard.mjs — 3D Terminal Dashboard
+// dashboard.mjs — 3D Terminal Dashboard (Vision Pro style)
 import * as THREE from 'three';
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
-import { getVertices, lerpPos, easeInOutCubic, matchPositions } from './polyhedra.mjs';
+import { easeInOutCubic, lerpPos } from './polyhedra.mjs';
 
 // === Constants ===
 const LIGHT_DIR = new THREE.Vector3(-0.7, 0.7, -0.3).normalize();
 const FLOOR_Y = -200;
-const ROTATION_SPEED = 0.2;
-const MORPH_DURATION = 2.0;
-const BILLBOARD_SLERP = 0.03;
-const IDLE_TIMEOUT = 3000;
+const MORPH_DURATION = 1.5;
+const BILLBOARD_SLERP = 0.05;
 const SIDEBAR_WIDTH = 140;
-const HOME_POS = new THREE.Vector3(0, 100, 500);
+
+// Camera positions
+const HOME_POS = new THREE.Vector3(0, 30, 600);
 const HOME_TARGET = new THREE.Vector3(0, 0, 0);
-let zoomDistance = 400; // distance from focused terminal, adjustable via wheel
+const FOCUS_DIST = 350; // distance from focused terminal
 
 // === State ===
 let scene, camera, renderer;
-let polyhedronGroup, shadowGroup;
-const terminals = new Map();
+let terminalGroup, shadowGroup;
+const terminals = new Map(); // sessionName → terminal state
+let sessionOrder = []; // ordered list of session names
 let focusedSession = null;
-let isMouseActive = false;
-let lastMouseMove = 0;
-let rotationResumeProgress = 1;
 const clock = new THREE.Clock();
 
-// Camera tween state
-let cameraTweenStart = null;
-let cameraTweenDuration = 1.0;
-let cameraTweenFrom = null;
-let cameraTweenTo = null;
-let cameraLookFrom = null;
-let cameraLookTo = null;
+// Mouse state
+let isMouseActive = false;
+let lastMouseMove = 0;
+let isDragging = false;
+let dragStart = { x: 0, y: 0 };
+let orbitAngle = 0; // horizontal orbit angle
+let orbitPitch = 0.1; // vertical pitch
+
+// Camera tween
+let cameraTween = null; // { from, to, lookFrom, lookTo, start, duration }
 let currentLookTarget = HOME_TARGET.clone();
+
+// === Layout: calculate positions for all terminals ===
+function calculateLayout() {
+  const names = sessionOrder;
+  const count = names.length;
+  if (count === 0) return;
+
+  const now = clock.getElapsedTime();
+  const arcRadius = 300 + count * 15;
+
+  if (focusedSession) {
+    // Focused layout: selected terminal at front-center,
+    // others in an arc behind it
+    const focusedIdx = names.indexOf(focusedSession);
+    const others = names.filter(n => n !== focusedSession);
+
+    // Focused terminal: directly in front of camera, at origin
+    const ft = terminals.get(focusedSession);
+    if (ft) {
+      ft.morphFrom = { ...ft.currentPos };
+      ft.targetPos = { x: 0, y: 0, z: 0 };
+      ft.morphStart = now;
+    }
+
+    // Others: arc behind the focused terminal
+    const arcSpan = Math.min(Math.PI * 0.8, others.length * 0.3); // arc width
+    for (let i = 0; i < others.length; i++) {
+      const t = terminals.get(others[i]);
+      if (!t) continue;
+      const frac = others.length === 1 ? 0.5 : i / (others.length - 1);
+      const angle = (frac - 0.5) * arcSpan;
+      const depth = -arcRadius * 0.6; // behind the focused terminal
+      t.morphFrom = { ...t.currentPos };
+      t.targetPos = {
+        x: Math.sin(angle) * arcRadius * 0.7,
+        y: (Math.random() - 0.5) * 40, // slight Y scatter
+        z: depth + Math.cos(angle) * arcRadius * 0.3
+      };
+      t.morphStart = now;
+    }
+  } else {
+    // Overview layout: gentle arc/sphere facing the camera
+    // Like a curved display wall
+    const arcSpan = Math.min(Math.PI * 0.9, count * 0.35);
+    const rows = count <= 4 ? 1 : 2;
+    const perRow = Math.ceil(count / rows);
+
+    let idx = 0;
+    for (let row = 0; row < rows; row++) {
+      const rowCount = Math.min(perRow, count - idx);
+      const rowY = rows === 1 ? 0 : (row === 0 ? 60 : -70);
+      const rowZ = rows === 1 ? 0 : (row === 0 ? 0 : -40);
+      const rowScale = rows === 1 ? 1 : (row === 0 ? 1 : 0.9);
+
+      for (let col = 0; col < rowCount; col++) {
+        const name = names[idx];
+        const t = terminals.get(name);
+        if (!t) { idx++; continue; }
+
+        const frac = rowCount === 1 ? 0.5 : col / (rowCount - 1);
+        const angle = (frac - 0.5) * arcSpan * rowScale;
+
+        t.morphFrom = { ...t.currentPos };
+        t.targetPos = {
+          x: Math.sin(angle) * arcRadius,
+          y: rowY,
+          z: -arcRadius + Math.cos(angle) * arcRadius + rowZ
+        };
+        t.morphStart = now;
+        idx++;
+      }
+    }
+  }
+}
 
 // === Init ===
 function init() {
@@ -50,13 +125,16 @@ function init() {
   renderer.domElement.style.zIndex = '1';
   document.body.appendChild(renderer.domElement);
 
-  polyhedronGroup = new THREE.Group();
-  scene.add(polyhedronGroup);
+  terminalGroup = new THREE.Group();
+  scene.add(terminalGroup);
   shadowGroup = new THREE.Group();
   scene.add(shadowGroup);
 
+  // Events
   window.addEventListener('resize', onResize);
   renderer.domElement.addEventListener('mousemove', onMouseMove);
+  renderer.domElement.addEventListener('mousedown', onMouseDown);
+  renderer.domElement.addEventListener('mouseup', onMouseUp);
   renderer.domElement.addEventListener('mouseleave', onMouseLeave);
   renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
   document.addEventListener('keydown', onKeyDown);
@@ -77,19 +155,41 @@ function onResize() {
 function onMouseMove(e) {
   isMouseActive = true;
   lastMouseMove = performance.now();
-  rotationResumeProgress = 0;
 
-  if (!focusedSession && cameraTweenStart === null) {
+  if (isDragging) {
+    const dx = (e.clientX - dragStart.x) * 0.005;
+    const dy = (e.clientY - dragStart.y) * 0.003;
+    orbitAngle -= dx;
+    orbitPitch = Math.max(-0.5, Math.min(0.5, orbitPitch - dy));
+    dragStart.x = e.clientX;
+    dragStart.y = e.clientY;
+    updateCameraOrbit();
+  } else if (!focusedSession && cameraTween === null) {
+    // Subtle parallax
     const nx = (e.clientX / window.innerWidth - 0.5) * 2;
     const ny = (e.clientY / window.innerHeight - 0.5) * 2;
-    camera.position.x = HOME_POS.x - nx * 30;
-    camera.position.y = HOME_POS.y + ny * 20;
+    camera.position.x = HOME_POS.x + Math.sin(orbitAngle) * HOME_POS.z - nx * 20;
+    camera.position.y = HOME_POS.y + orbitPitch * 200 + ny * 15;
     camera.lookAt(currentLookTarget);
   }
 }
 
+function onMouseDown(e) {
+  if (e.ctrlKey || e.shiftKey || e.button === 1) {
+    isDragging = true;
+    dragStart.x = e.clientX;
+    dragStart.y = e.clientY;
+    e.preventDefault();
+  }
+}
+
+function onMouseUp() {
+  isDragging = false;
+}
+
 function onMouseLeave() {
   isMouseActive = false;
+  isDragging = false;
 }
 
 function onKeyDown(e) {
@@ -100,33 +200,19 @@ function onKeyDown(e) {
 
 function onWheel(e) {
   e.preventDefault();
-  if (focusedSession) {
-    // Zoom toward/away from focused terminal
-    zoomDistance = Math.max(100, Math.min(1200, zoomDistance + e.deltaY * 0.5));
-    // Re-tween camera to new distance
-    const t = terminals.get(focusedSession);
-    if (t) {
-      const worldPos = new THREE.Vector3();
-      t.css3dObject.getWorldPosition(worldPos);
-      const dir = worldPos.clone().normalize();
-      if (dir.length() < 0.01) dir.set(0, 0, 1);
-      // Offset X to center between left edge and sidebar
-      const sidebarOffsetRatio = SIDEBAR_WIDTH / window.innerWidth;
-      const xOffset = sidebarOffsetRatio * zoomDistance * -0.5;
-      cameraTweenFrom = camera.position.clone();
-      cameraLookFrom = currentLookTarget.clone();
-      cameraTweenTo = worldPos.clone().add(dir.multiplyScalar(zoomDistance));
-      cameraTweenTo.x += xOffset;
-      cameraLookTo = worldPos.clone();
-      cameraTweenStart = clock.getElapsedTime();
-      cameraTweenDuration = 0.3; // fast for wheel zoom
-    }
-  } else {
-    // Zoom the overview
-    const zoomDelta = e.deltaY * 0.3;
-    camera.position.z = Math.max(300, Math.min(2000, camera.position.z + zoomDelta));
-    camera.lookAt(currentLookTarget);
+  const delta = e.deltaY * 0.5;
+  HOME_POS.z = Math.max(200, Math.min(1500, HOME_POS.z + delta));
+  if (!focusedSession) {
+    updateCameraOrbit();
   }
+}
+
+function updateCameraOrbit() {
+  const dist = HOME_POS.z;
+  camera.position.x = Math.sin(orbitAngle) * dist;
+  camera.position.y = HOME_POS.y + orbitPitch * 200;
+  camera.position.z = Math.cos(orbitAngle) * dist;
+  camera.lookAt(currentLookTarget);
 }
 
 // === Terminal DOM ===
@@ -160,7 +246,6 @@ function createTerminalDOM(sessionName) {
   el.appendChild(obj);
 
   el.addEventListener('click', function () { focusTerminal(sessionName); });
-
   return el;
 }
 
@@ -186,7 +271,6 @@ function createThumbnail(sessionName) {
   item.appendChild(obj);
 
   item.addEventListener('click', function () { focusTerminal(sessionName); });
-
   document.getElementById('sidebar').appendChild(item);
   return item;
 }
@@ -200,20 +284,21 @@ async function refreshSessions() {
     const currentNames = new Set(sessions.map(function (s) { return s.name; }));
     const existingNames = new Set(terminals.keys());
 
+    let changed = false;
     for (const session of sessions) {
       if (!existingNames.has(session.name)) {
         addTerminal(session.name);
+        changed = true;
       }
     }
-
     for (const name of existingNames) {
       if (!currentNames.has(name)) {
         removeTerminal(name);
+        changed = true;
       }
     }
-  } catch (e) {
-    // Server unreachable
-  }
+    if (changed) calculateLayout();
+  } catch (e) {}
 }
 
 // === Add/Remove ===
@@ -223,58 +308,36 @@ function addTerminal(sessionName) {
   const thumbnail = createThumbnail(sessionName);
 
   const css3dObj = new CSS3DObject(dom);
-  css3dObj.scale.setScalar(0.5); // DOM is 2x size, scale down for crisp rendering
-  polyhedronGroup.add(css3dObj);
+  css3dObj.scale.setScalar(0.5);
+  terminalGroup.add(css3dObj);
 
   const shadowObj = new CSS3DObject(shadowDiv);
   shadowObj.rotation.x = -Math.PI / 2;
   shadowGroup.add(shadowObj);
 
+  sessionOrder.push(sessionName);
   terminals.set(sessionName, {
     css3dObject: css3dObj,
     shadowObject: shadowObj,
     shadowDiv: shadowDiv,
     dom: dom,
     thumbnail: thumbnail,
-    currentPos: { x: 0, y: 0, z: 0 },
-    targetPos: { x: 0, y: 0, z: 0 },
+    currentPos: { x: 0, y: 0, z: -200 },
+    targetPos: { x: 0, y: 0, z: -200 },
     morphStart: clock.getElapsedTime(),
-    morphFrom: { x: 0, y: 0, z: 0 }
+    morphFrom: { x: 0, y: 0, z: -200 }
   });
-
-  recalculatePositions();
 }
 
 function removeTerminal(sessionName) {
   const t = terminals.get(sessionName);
   if (!t) return;
-  polyhedronGroup.remove(t.css3dObject);
+  terminalGroup.remove(t.css3dObject);
   shadowGroup.remove(t.shadowObject);
   t.thumbnail.remove();
   terminals.delete(sessionName);
+  sessionOrder = sessionOrder.filter(n => n !== sessionName);
   if (focusedSession === sessionName) unfocusTerminal();
-  recalculatePositions();
-}
-
-function recalculatePositions() {
-  const names = Array.from(terminals.keys());
-  const count = names.length;
-  if (count === 0) return;
-
-  const newVerts = getVertices(count);
-  const currentPositions = names.map(function (n) { return terminals.get(n).currentPos; });
-  const result = matchPositions(currentPositions, newVerts);
-  const now = clock.getElapsedTime();
-
-  for (let i = 0; i < names.length; i++) {
-    const t = terminals.get(names[i]);
-    const targetIdx = result.mapping[i];
-    if (targetIdx !== null && targetIdx >= 0) {
-      t.morphFrom = { x: t.currentPos.x, y: t.currentPos.y, z: t.currentPos.z };
-      t.targetPos = newVerts[targetIdx];
-      t.morphStart = now;
-    }
-  }
 }
 
 // === Focus / Unfocus ===
@@ -294,40 +357,20 @@ function focusTerminal(sessionName) {
     term.thumbnail.classList.toggle('active', name === sessionName);
   }
 
-  // Camera tween to in front of terminal
-  // Centered horizontally between left edge and sidebar
-  // Centered vertically between top edge and input bar
-  zoomDistance = 400;
-  const worldPos = new THREE.Vector3();
-  t.css3dObject.getWorldPosition(worldPos);
-  const dir = worldPos.clone().normalize();
-  if (dir.length() < 0.01) dir.set(0, 0, 1);
+  calculateLayout();
 
-  // Horizontal offset: center in the space left of sidebar
-  const availWidth = window.innerWidth - SIDEBAR_WIDTH;
-  const xOffsetRatio = (SIDEBAR_WIDTH / window.innerWidth) * 0.5;
-  const xOffset = -xOffsetRatio * zoomDistance;
+  // Tween camera to face the focused terminal at origin
+  cameraTween = {
+    from: camera.position.clone(),
+    to: new THREE.Vector3(0, 20, FOCUS_DIST),
+    lookFrom: currentLookTarget.clone(),
+    lookTo: new THREE.Vector3(0, 0, 0),
+    start: clock.getElapsedTime(),
+    duration: 1.0
+  };
 
-  // Vertical offset: input bar is ~50px, shift camera up slightly
-  // so the terminal sits centered between top and input bar
-  const inputBarHeight = 50;
-  const yOffsetRatio = (inputBarHeight / window.innerHeight) * 0.5;
-  const yOffset = yOffsetRatio * zoomDistance * 0.3;
-
-  cameraTweenFrom = camera.position.clone();
-  cameraLookFrom = currentLookTarget.clone();
-  cameraTweenTo = worldPos.clone().add(dir.multiplyScalar(zoomDistance));
-  cameraTweenTo.x += xOffset;
-  cameraTweenTo.y += yOffset;
-  cameraLookTo = worldPos.clone();
-  cameraTweenStart = clock.getElapsedTime();
-  cameraTweenDuration = 1.0;
-
-  // Show input bar
-  const inputBar = document.getElementById('input-bar');
-  const inputTarget = document.getElementById('input-target');
-  inputBar.classList.add('visible');
-  inputTarget.textContent = sessionName;
+  document.getElementById('input-bar').classList.add('visible');
+  document.getElementById('input-target').textContent = sessionName;
 }
 
 function unfocusTerminal() {
@@ -338,14 +381,22 @@ function unfocusTerminal() {
     term.thumbnail.classList.remove('active');
   }
 
-  cameraTweenFrom = camera.position.clone();
-  cameraLookFrom = currentLookTarget.clone();
-  cameraTweenTo = HOME_POS.clone();
-  cameraLookTo = HOME_TARGET.clone();
-  cameraTweenStart = clock.getElapsedTime();
+  calculateLayout();
+
+  cameraTween = {
+    from: camera.position.clone(),
+    to: new THREE.Vector3(
+      Math.sin(orbitAngle) * HOME_POS.z,
+      HOME_POS.y + orbitPitch * 200,
+      Math.cos(orbitAngle) * HOME_POS.z
+    ),
+    lookFrom: currentLookTarget.clone(),
+    lookTo: HOME_TARGET.clone(),
+    start: clock.getElapsedTime(),
+    duration: 1.0
+  };
 
   document.getElementById('input-bar').classList.remove('visible');
-  rotationResumeProgress = 0;
 }
 
 // === Animation Loop ===
@@ -363,58 +414,41 @@ function animate() {
   const time = clock.getElapsedTime();
   const delta = clock.getDelta();
 
-  // Mouse idle check
-  if (isMouseActive && performance.now() - lastMouseMove > IDLE_TIMEOUT) {
-    isMouseActive = false;
-  }
-
-  // Rotation — always rotates, slower when focused or mouse active
-  {
-    let targetSpeed = ROTATION_SPEED;
-    if (focusedSession) {
-      targetSpeed = ROTATION_SPEED * 0.3; // slow rotation behind focused terminal
-    } else if (isMouseActive) {
-      targetSpeed = 0;
-    }
-
-    if (rotationResumeProgress < 1) {
-      rotationResumeProgress = Math.min(1, rotationResumeProgress + delta * 0.5);
-    }
-    const speed = targetSpeed * easeInOutCubic(Math.min(1, rotationResumeProgress));
-    polyhedronGroup.rotation.y += delta * speed;
-    polyhedronGroup.rotation.x = Math.sin(time * 0.1) * 0.05;
-  }
-
   // Camera tween
-  if (cameraTweenStart !== null) {
-    const elapsed = time - cameraTweenStart;
-    const t = Math.min(1, elapsed / cameraTweenDuration);
+  if (cameraTween) {
+    const elapsed = time - cameraTween.start;
+    const t = Math.min(1, elapsed / cameraTween.duration);
     const eased = easeInOutCubic(t);
 
-    camera.position.lerpVectors(cameraTweenFrom, cameraTweenTo, eased);
-    currentLookTarget.lerpVectors(cameraLookFrom, cameraLookTo, eased);
+    camera.position.lerpVectors(cameraTween.from, cameraTween.to, eased);
+    currentLookTarget.lerpVectors(cameraTween.lookFrom, cameraTween.lookTo, eased);
     camera.lookAt(currentLookTarget);
 
-    if (t >= 1) {
-      cameraTweenStart = null;
-      // Reset home position for parallax if unfocused
-      if (!focusedSession) {
-        camera.position.copy(HOME_POS);
-        currentLookTarget.copy(HOME_TARGET);
-        camera.lookAt(HOME_TARGET);
-      }
-    }
+    if (t >= 1) cameraTween = null;
   }
 
   // Per-terminal updates
   let idx = 0;
   for (const [name, t] of terminals) {
-    // Morph interpolation
+    // Morph position
     const morphElapsed = time - t.morphStart;
     const morphT = Math.min(1, morphElapsed / MORPH_DURATION);
-    const easedMorph = easeInOutCubic(morphT);
-    t.currentPos = lerpPos(t.morphFrom, t.targetPos, easedMorph);
-    t.css3dObject.position.set(t.currentPos.x, t.currentPos.y, t.currentPos.z);
+    const eased = easeInOutCubic(morphT);
+    t.currentPos = lerpPos(t.morphFrom, t.targetPos, eased);
+
+    // Add gentle float to non-focused terminals
+    let floatY = 0;
+    let floatX = 0;
+    if (name !== focusedSession) {
+      floatY = Math.sin(time * 0.4 + idx * 1.3) * 8;
+      floatX = Math.cos(time * 0.3 + idx * 1.7) * 5;
+    }
+
+    t.css3dObject.position.set(
+      t.currentPos.x + floatX,
+      t.currentPos.y + floatY,
+      t.currentPos.z
+    );
 
     // Billboarding
     if (focusedSession === name) {
@@ -424,31 +458,27 @@ function animate() {
       _lookAtMat.lookAt(_worldPos, camera.position, _up);
       _targetQuat.setFromRotationMatrix(_lookAtMat);
 
-      // Add lazy drift
       _driftEuler.set(
-        Math.sin(time * 0.3 + idx * 1.5) * 0.08,
-        Math.cos(time * 0.2 + idx * 1.7) * 0.12,
+        Math.sin(time * 0.3 + idx * 1.5) * 0.06,
+        Math.cos(time * 0.2 + idx * 1.7) * 0.08,
         0
       );
       _driftQuat.setFromEuler(_driftEuler);
       _targetQuat.multiply(_driftQuat);
-
       t.css3dObject.quaternion.slerp(_targetQuat, BILLBOARD_SLERP);
     }
 
     // Shadow
-    const heightAboveFloor = t.currentPos.y - FLOOR_Y;
+    const heightAboveFloor = t.currentPos.y + floatY - FLOOR_Y;
     const absHeight = Math.abs(heightAboveFloor);
-    const shadowScale = 1 + absHeight * 0.003;
-    const shadowBlur = 15 + absHeight * 0.1;
-    const shadowOpacity = Math.max(0.05, 0.3 - absHeight * 0.001);
+    const shadowScale = 1 + absHeight * 0.002;
+    const shadowBlur = 15 + absHeight * 0.08;
+    const shadowOpacity = Math.max(0.05, 0.25 - absHeight * 0.0008);
 
-    const lightOffsetX = LIGHT_DIR.x * absHeight * 0.3;
-    const lightOffsetZ = LIGHT_DIR.z * absHeight * 0.3;
     t.shadowObject.position.set(
-      t.currentPos.x + lightOffsetX,
+      t.currentPos.x + floatX + LIGHT_DIR.x * absHeight * 0.2,
       FLOOR_Y,
-      t.currentPos.z + lightOffsetZ
+      t.currentPos.z + LIGHT_DIR.z * absHeight * 0.2
     );
     t.shadowDiv.style.filter = 'blur(' + shadowBlur.toFixed(0) + 'px)';
     t.shadowDiv.style.opacity = shadowOpacity.toFixed(3);
@@ -466,11 +496,9 @@ function animate() {
     idx++;
   }
 
-  // Always ensure camera looks at current target when not tweening
-  if (cameraTweenStart === null && !focusedSession) {
+  // Ensure camera looks at target when not tweening
+  if (!cameraTween) {
     camera.lookAt(currentLookTarget);
-  } else if (cameraTweenStart === null && focusedSession) {
-    camera.lookAt(cameraLookTo);
   }
 
   renderer.render(scene, camera);
@@ -519,7 +547,7 @@ async function sendKeys(session, keys) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session: session, pane: '0', keys: keys })
     });
-  } catch (e) { /* silently fail */ }
+  } catch (e) {}
 }
 
 async function sendSpecialKey(session, key) {
@@ -529,7 +557,7 @@ async function sendSpecialKey(session, key) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session: session, pane: '0', specialKey: key })
     });
-  } catch (e) { /* silently fail */ }
+  } catch (e) {}
 }
 
 // === Start ===
