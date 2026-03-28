@@ -200,13 +200,17 @@ function onMouseMove(e) {
 }
 
 function onMouseDown(e) {
-  if (e.ctrlKey || e.shiftKey || e.button === 1) {
+  // Right-click, middle-click, or Ctrl/Shift+click to orbit
+  if (e.ctrlKey || e.shiftKey || e.button === 1 || e.button === 2) {
     isDragging = true;
     dragStart.x = e.clientX;
     dragStart.y = e.clientY;
     e.preventDefault();
   }
 }
+
+// Prevent context menu on right-click (we use it for orbit)
+document.addEventListener('contextmenu', function(e) { e.preventDefault(); });
 
 function onMouseUp() {
   isDragging = false;
@@ -226,9 +230,21 @@ function onKeyDown(e) {
 function onWheel(e) {
   e.preventDefault();
   const delta = e.deltaY * 0.5;
-  HOME_POS.z = Math.max(200, Math.min(1500, HOME_POS.z + delta));
-  if (!focusedSession) {
+  HOME_POS.z = Math.max(250, Math.min(1500, HOME_POS.z + delta));
+  if (!focusedSession && !cameraTween) {
     updateCameraOrbit();
+  } else if (focusedSession) {
+    // When focused, zoom the focused terminal
+    const newDist = Math.max(150, Math.min(800, FOCUS_DIST + delta));
+    // We can't change const, so directly tween camera Z
+    cameraTween = {
+      from: camera.position.clone(),
+      to: new THREE.Vector3(camera.position.x, camera.position.y, Math.max(150, camera.position.z + delta)),
+      lookFrom: currentLookTarget.clone(),
+      lookTo: currentLookTarget.clone(),
+      start: clock.getElapsedTime(),
+      duration: 0.2
+    };
   }
 }
 
