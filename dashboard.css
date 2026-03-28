@@ -12,18 +12,27 @@ html, body {
 }
 
 /* === Terminal Panel === */
-/* Render at 2x size, CSS3DObject scales to 0.5 — forces Chrome to rasterize at high res */
+/* Render at 4x size, CSS3DObject scales to 0.25. setSharpness() changes both in sync. */
 .terminal-3d {
-  width: 640px;
-  height: 496px;
+  width: 1280px;
+  height: 992px;
   background: #1c1c1e;
-  border-radius: 24px;
+  border-radius: 48px;
   overflow: hidden;
   position: relative;
   cursor: pointer;
   transition: box-shadow 0.2s;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edges;
+}
+
+.terminal-inner {
+  width: 1280px;
+  height: 992px;
+  transform-origin: 0 0;
+  position: absolute;
+  top: 0;
+  left: 0;
 }
 
 .terminal-3d:hover {
@@ -79,11 +88,11 @@ html, body {
 /* === SVG Object inside panel === */
 .terminal-3d object {
   width: 100%;
-  height: 440px;
+  height: 936px;
   display: block;
   pointer-events: none;
-  border-bottom-left-radius: 24px;
-  border-bottom-right-radius: 24px;
+  border-bottom-left-radius: 48px;
+  border-bottom-right-radius: 48px;
 }
 
 /* === Specular Highlight Overlay === */
@@ -94,7 +103,7 @@ html, body {
   right: 0;
   bottom: 0;
   pointer-events: none;
-  border-radius: 24px;
+  border-radius: 48px;
   background: linear-gradient(135deg, rgba(255,255,255,0.08) 0%, transparent 60%);
 }
 
@@ -104,6 +113,73 @@ html, body {
   height: 40px;
   background: radial-gradient(ellipse, rgba(0,0,0,0.25) 0%, transparent 70%);
   position: absolute;
+  pointer-events: none;
+}
+
+/* === Focus Overlay (native DOM, no CSS3D — pixel-perfect text) === */
+.focus-overlay {
+  display: none;
+  position: fixed;
+  z-index: 50;
+  background: #1c1c1e;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5), 0 0 30px rgba(92, 92, 255, 0.3);
+}
+
+.focus-overlay .specular-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(255,255,255,0.08) 0%, transparent 60%);
+  z-index: 1;
+}
+
+.focus-overlay.visible {
+  display: block;
+}
+
+.focus-overlay header {
+  height: 28px;
+  background: #2a2a2c;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  gap: 8px;
+  user-select: none;
+}
+
+.focus-overlay .dots {
+  display: flex;
+  gap: 5px;
+}
+
+.focus-overlay .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.focus-overlay .dot.red { background: #ff5f57; }
+.focus-overlay .dot.yellow { background: #febc2e; }
+.focus-overlay .dot.green { background: #28c840; }
+
+.focus-overlay .session-name {
+  color: #808080;
+  font-size: 11px;
+  font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.focus-overlay object {
+  width: 100%;
+  display: block;
   pointer-events: none;
 }
 
@@ -213,3 +289,4 @@ html, body {
 .input-bar input:focus {
   border-color: #5c5cff;
 }
+

@@ -18,11 +18,15 @@
   <!-- Thumbnail sidebar -->
   <div class="thumbnail-sidebar" id="sidebar"></div>
 
+  <!-- Focus overlay: native DOM rendering for pixel-perfect focused terminal -->
+  <div class="focus-overlay" id="focus-overlay"></div>
+
   <!-- Input bar (hidden until terminal focused) -->
   <div class="input-bar" id="input-bar">
     <span class="target" id="input-target"></span>
     <input type="text" id="input-box" placeholder="Type here...">
   </div>
+
 
   <script type="module" src="/dashboard.mjs"></script>
 </body>

@@ -1,4 +1,4 @@
-// dashboard.mjs — 3D Terminal Dashboard (Vision Pro style)
+// dashboard.mjs — 3D Terminal Dashboard with Ring Layout
 import * as THREE from 'three';
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
 import { easeInOutCubic, lerpPos } from './polyhedra.mjs';
@@ -11,145 +11,129 @@ function osc(from, to, speed, time) {
   return from + (to - from) * t;
 }
 
+// === Ring Layout Preset (from design studio 2026-03-27 session) ===
+const DEG2RAD = Math.PI / 180;
 const RING = {
   outer: {
-    radius: 345,
-    mode: 0,           // 0=Upright
+    radius: 500,
+    mode: 0,
     faceCamera: true,
     spinSpeed: 0.008,
-    spinDir: 1,         // Forward
-    ringTilt: {
-      x: { from: 73, to: 73, speed: 0 },
-      y: { from: -5, to: -5, speed: 0 },
-      z: { from: 0, to: 0, speed: 0 },
-    },
-    cardTilt: {
-      x: { from: -5, to: -5, speed: 0 },
-      y: { from: -5, to: -5, speed: 24 },
-      z: { from: -5, to: -5, speed: 44 },
-    },
+    spinDir: 1,
+    ringTilt: { x: 73, y: -5, z: 0 },
+    cardTilt: { x: -5, y: -5, z: -5 },
   },
   inner: {
-    radius: 219,
-    mode: 0,           // 0=Upright
+    radius: 300,
+    mode: 0,           // Upright
     faceCamera: false,
     spinSpeed: 0.012,
-    spinDir: -1,        // Reverse
-    ringTilt: {
-      x: { from: 21, to: 21, speed: 0 },
-      y: { from: 0, to: 0, speed: 0 },
-      z: { from: 19, to: 19, speed: 26 },
-    },
-    cardTilt: {
-      x: { from: 0, to: 0, speed: 33 },
-      y: { from: 0, to: 0, speed: 39 },
-      z: { from: 0, to: 0, speed: 29 },
-    },
-  },
+    spinDir: -1,       // Reverse
+    ringTilt: { x: 21, y: 0, z: 19 },
+    cardTilt: { x: 0, y: 0, z: 0 },
+  }
 };
-
 // === Constants ===
 const LIGHT_DIR = new THREE.Vector3(-0.7, 0.7, -0.3).normalize();
-const FLOOR_Y = -200;
+const FLOOR_Y = -600;
 const MORPH_DURATION = 1.5;
-const BILLBOARD_SLERP = 0.05;
+const BILLBOARD_SLERP = 0.08;
 const SIDEBAR_WIDTH = 140;
+const FOCUS_DIST = 350;
 
-// Camera positions
-const HOME_POS = new THREE.Vector3(-15, 20, 500);
+// Camera position — closer to match original visual density
+const HOME_POS = new THREE.Vector3(-15, 20, 900);
 const HOME_TARGET = new THREE.Vector3(-15, 0, 0);
-const FOCUS_DIST = 350; // distance from focused terminal
 
 // === State ===
 let scene, camera, renderer;
 let terminalGroup, shadowGroup;
-const terminals = new Map(); // sessionName → terminal state
-let sessionOrder = []; // ordered list of session names
+const terminals = new Map();
+let sessionOrder = [];
 let focusedSession = null;
 const clock = new THREE.Clock();
+
+// Ring state
+let outerAngle = 0, innerAngle = 0;
+let ringAssignments = { outer: [], inner: [] };
 
 // Mouse state
 let isMouseActive = false;
 let lastMouseMove = 0;
 let isDragging = false;
 let dragStart = { x: 0, y: 0 };
-let orbitAngle = 0; // horizontal orbit angle
-let orbitPitch = 0.1; // vertical pitch
+let orbitAngle = 0;
+let orbitPitch = 0;
 
 // Camera tween
-let cameraTween = null; // { from, to, lookFrom, lookTo, start, duration }
+let cameraTween = null;
 let currentLookTarget = HOME_TARGET.clone();
 
-// === Layout: calculate positions for all terminals ===
-function calculateLayout() {
+// Reusable Three.js objects
+const _worldPos = new THREE.Vector3();
+const _lookAtMat = new THREE.Matrix4();
+const _targetQuat = new THREE.Quaternion();
+const _driftQuat = new THREE.Quaternion();
+const _driftEuler = new THREE.Euler();
+const _up = new THREE.Vector3(0, 1, 0);
+const _ringTiltEuler = new THREE.Euler();
+const _cardTiltEuler = new THREE.Euler();
+const _panelNormal = new THREE.Vector3();
+
+// === Ring Assignment ===
+// Distributes terminals across outer and inner rings
+function assignRings() {
   const names = sessionOrder;
   const count = names.length;
-  if (count === 0) return;
-
-  const now = clock.getElapsedTime();
-  const arcRadius = 180 + count * 12;
-
-  if (focusedSession) {
-    // Focused layout: selected terminal at front-center,
-    // others in an arc behind it
-    const focusedIdx = names.indexOf(focusedSession);
-    const others = names.filter(n => n !== focusedSession);
-
-    // Focused terminal: directly in front of camera, at origin
-    const ft = terminals.get(focusedSession);
-    if (ft) {
-      ft.morphFrom = { ...ft.currentPos };
-      ft.targetPos = { x: 0, y: 0, z: 0 };
-      ft.morphStart = now;
-    }
-
-    // Others: arc behind the focused terminal (negative Z = further from camera)
-    const arcSpan = Math.min(Math.PI * 0.7, others.length * 0.25);
-    for (let i = 0; i < others.length; i++) {
-      const t = terminals.get(others[i]);
-      if (!t) continue;
-      const frac = others.length === 1 ? 0.5 : i / (others.length - 1);
-      const angle = (frac - 0.5) * arcSpan;
-      t.morphFrom = { ...t.currentPos };
-      t.targetPos = {
-        x: Math.sin(angle) * arcRadius * 0.6,
-        y: 20 + Math.sin(i * 1.3) * 30,
-        z: -200 + Math.cos(angle) * 60 // behind origin, visible from camera at z=350
-      };
-      t.morphStart = now;
-    }
+  if (count <= 3) {
+    ringAssignments.outer = [...names];
+    ringAssignments.inner = [];
   } else {
-    // Overview layout: curved wall facing the camera
-    // Camera is at z=600, so terminals should be around z=0 to z=200
-    // Arc curves away from camera (sides go to lower z values)
-    const arcSpan = Math.min(Math.PI * 0.8, count * 0.3);
-    const rows = count <= 4 ? 1 : 2;
-    const perRow = Math.ceil(count / rows);
+    const innerCount = Math.min(3, Math.floor(count / 4));
+    ringAssignments.inner = names.slice(0, innerCount);
+    ringAssignments.outer = names.slice(innerCount);
+  }
+}
 
-    let idx = 0;
-    for (let row = 0; row < rows; row++) {
-      const rowCount = Math.min(perRow, count - idx);
-      const rowY = rows === 1 ? 0 : (row === 0 ? 70 : -80);
-      const rowScale = rows === 1 ? 1 : (row === 0 ? 1 : 0.85);
+function getRingInfo(name) {
+  if (ringAssignments.inner.includes(name)) {
+    return { config: RING.inner, names: ringAssignments.inner, angle: innerAngle };
+  }
+  return { config: RING.outer, names: ringAssignments.outer, angle: outerAngle };
+}
 
-      for (let col = 0; col < rowCount; col++) {
-        const name = names[idx];
-        const t = terminals.get(name);
-        if (!t) { idx++; continue; }
+// Compute world-space position for a terminal on a ring
+function computeRingPos(index, total, config, angle) {
+  const theta = -Math.PI / 2 + (2 * Math.PI * index) / total;
+  const spunTheta = theta + angle;
 
-        const frac = rowCount === 1 ? 0.5 : col / (rowCount - 1);
-        const angle = (frac - 0.5) * arcSpan * rowScale;
+  // Position on flat circle (XY plane, Y negated for Three.js Y-up convention)
+  const x = Math.cos(spunTheta) * config.radius;
+  const y = -Math.sin(spunTheta) * config.radius;
 
-        t.morphFrom = { ...t.currentPos };
-        t.targetPos = {
-          x: Math.sin(angle) * arcRadius,
-          y: rowY,
-          z: Math.cos(angle) * arcRadius * 0.3 // slight depth, center closest to camera
-        };
-        t.morphStart = now;
-        idx++;
-      }
-    }
+  // Apply ring tilt rotation to get world-space position
+  const v = new THREE.Vector3(x, y, 0);
+  _ringTiltEuler.set(
+    config.ringTilt.x * DEG2RAD,
+    config.ringTilt.y * DEG2RAD,
+    config.ringTilt.z * DEG2RAD
+  );
+  v.applyEuler(_ringTiltEuler);
+
+  return { x: v.x, y: v.y, z: v.z };
+}
+
+// === Focused Layout ===
+// Only the focused terminal flies out to origin; camera offsets to center it in usable area
+function calculateFocusedLayout() {
+  const now = clock.getElapsedTime();
+
+  const ft = terminals.get(focusedSession);
+  if (ft) {
+    ft.morphFrom = { ...ft.currentPos };
+    ft.targetPos = { x: 0, y: 0, z: 0 };
+    ft.morphStart = now;
+    ft.focusQuatFrom = ft.css3dObject.quaternion.clone(); // capture current rotation for slerp
   }
 }
 
@@ -160,14 +144,16 @@ function init() {
   camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 10000);
   camera.position.copy(HOME_POS);
   camera.lookAt(HOME_TARGET);
-  // view offset removed
 
+  // Renderer at 2x size, scaled down — forces Chrome to rasterize at 2x resolution
   renderer = new CSS3DRenderer();
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setSize(window.innerWidth * RENDER_SCALE, window.innerHeight * RENDER_SCALE);
   renderer.domElement.style.position = 'fixed';
   renderer.domElement.style.top = '0';
   renderer.domElement.style.left = '0';
   renderer.domElement.style.zIndex = '1';
+  renderer.domElement.style.transformOrigin = '0 0';
+  renderer.domElement.style.transform = 'scale(' + (1 / RENDER_SCALE) + ')';
   document.body.appendChild(renderer.domElement);
 
   terminalGroup = new THREE.Group();
@@ -191,15 +177,11 @@ function init() {
   animate();
 }
 
-// Compute an X offset so content appears centered between left edge and sidebar
-function getCenterOffsetX() {
-  return -SIDEBAR_WIDTH / 2 * 0.15; // slight shift left in world units
-}
-
+const RENDER_SCALE = 2;
 function onResize() {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setSize(window.innerWidth * RENDER_SCALE, window.innerHeight * RENDER_SCALE);
 }
 
 // === Mouse ===
@@ -226,7 +208,6 @@ function onMouseMove(e) {
 }
 
 function onMouseDown(e) {
-  // Right-click, middle-click, or Ctrl/Shift+click to orbit
   if (e.button === 1 || e.button === 2) {
     isDragging = true;
     dragStart.x = e.clientX;
@@ -237,10 +218,8 @@ function onMouseDown(e) {
     dragStart.x = e.clientX;
     dragStart.y = e.clientY;
   }
-  // Normal left-click passes through to terminal click handlers
 }
 
-// Prevent context menu on right-click (we use it for orbit)
 document.addEventListener('contextmenu', function(e) { e.preventDefault(); });
 
 function onMouseUp() {
@@ -259,22 +238,17 @@ function onKeyDown(e) {
 }
 
 function onSceneClick(e) {
-  // Don't handle if it was a drag
   if (isDragging) return;
-  // Don't handle right/middle clicks
   if (e.button !== 0) return;
-  // Don't handle ctrl/shift clicks (those are orbit)
   if (e.ctrlKey || e.shiftKey) return;
 
-  // Find which terminal was clicked by checking bounding rects
   let clicked = null;
   let closestZ = -Infinity;
   for (const [name, t] of terminals) {
     const rect = t.dom.getBoundingClientRect();
-    if (rect.width < 10) continue; // not visible
+    if (rect.width < 10) continue;
     if (e.clientX >= rect.left && e.clientX <= rect.right &&
         e.clientY >= rect.top && e.clientY <= rect.bottom) {
-      // If multiple overlap, pick the one closest to camera (highest z in screen space)
       const worldPos = new THREE.Vector3();
       t.css3dObject.getWorldPosition(worldPos);
       worldPos.project(camera);
@@ -288,7 +262,6 @@ function onSceneClick(e) {
   if (clicked) {
     focusTerminal(clicked);
   } else if (focusedSession) {
-    // Clicked on background — unfocus
     unfocusTerminal();
   }
 }
@@ -301,7 +274,6 @@ function onWheel(e) {
     camera.position.z = Math.max(150, Math.min(800, camera.position.z + delta));
     camera.lookAt(currentLookTarget);
   } else {
-    // Zoom toward/away from focused terminal — direct, no tween
     camera.position.z = Math.max(100, Math.min(800, camera.position.z + delta));
     camera.lookAt(currentLookTarget);
   }
@@ -309,9 +281,9 @@ function onWheel(e) {
 
 function updateCameraOrbit() {
   const dist = HOME_POS.z;
-  camera.position.x = Math.sin(orbitAngle) * dist;
+  camera.position.x = HOME_TARGET.x + Math.sin(orbitAngle) * dist;
   camera.position.y = HOME_POS.y + orbitPitch * 200;
-  camera.position.z = Math.cos(orbitAngle) * dist;
+  camera.position.z = HOME_TARGET.z + Math.cos(orbitAngle) * dist;
   camera.lookAt(currentLookTarget);
 }
 
@@ -321,9 +293,13 @@ function createTerminalDOM(sessionName) {
   el.className = 'terminal-3d';
   el.dataset.session = sessionName;
 
+  // Inner wrapper — content is always at 4x layout, wrapper scales to fit outer
+  const inner = document.createElement('div');
+  inner.className = 'terminal-inner';
+
   const specular = document.createElement('div');
   specular.className = 'specular-overlay';
-  el.appendChild(specular);
+  inner.appendChild(specular);
 
   const header = document.createElement('header');
   const dots = document.createElement('span');
@@ -338,13 +314,14 @@ function createTerminalDOM(sessionName) {
   name.className = 'session-name';
   name.textContent = sessionName;
   header.appendChild(name);
-  el.appendChild(header);
+  inner.appendChild(header);
 
   const obj = document.createElement('object');
   obj.type = 'image/svg+xml';
   obj.data = '/terminal.svg?session=' + encodeURIComponent(sessionName);
-  el.appendChild(obj);
+  inner.appendChild(obj);
 
+  el.appendChild(inner);
   el.addEventListener('click', function () { focusTerminal(sessionName); });
   return el;
 }
@@ -397,7 +374,10 @@ async function refreshSessions() {
         changed = true;
       }
     }
-    if (changed) calculateLayout();
+    if (changed) {
+      assignRings();
+      if (focusedSession) calculateFocusedLayout();
+    }
   } catch (e) {}
 }
 
@@ -433,7 +413,13 @@ function addTerminal(sessionName) {
   const thumbnail = createThumbnail(sessionName);
 
   const css3dObj = new CSS3DObject(dom);
-  css3dObj.scale.setScalar(0.5);
+  css3dObj.scale.setScalar(0.25);
+  // Start tilted so the fly-in shows 3D angle, easing to face-camera on arrival
+  css3dObj.rotation.set(
+    (40 + Math.random() * 30) * DEG2RAD,
+    (-30 + Math.random() * 60) * DEG2RAD,
+    (-20 + Math.random() * 40) * DEG2RAD
+  );
   terminalGroup.add(css3dObj);
 
   dom.style.pointerEvents = 'auto';
@@ -449,13 +435,13 @@ function addTerminal(sessionName) {
     shadowDiv: shadowDiv,
     dom: dom,
     thumbnail: thumbnail,
-    currentPos: { x: 0, y: 0, z: -200 },
-    targetPos: { x: 0, y: 0, z: -200 },
+    currentPos: { x: 0, y: 0, z: -500 },
+    targetPos: { x: 0, y: 0, z: -500 },
     morphStart: clock.getElapsedTime(),
-    morphFrom: { x: 0, y: 0, z: -200 }
+    morphFrom: { x: 0, y: 0, z: -500 },
+    billboardArrival: null  // set when terminal first reaches its ring position
   });
 
-  // Fetch and display the pane title (async, updates when ready)
   fetchTitle(sessionName).then(function(title) {
     if (title) updateTerminalTitle(sessionName, title);
   });
@@ -477,6 +463,24 @@ function focusTerminal(sessionName) {
   const t = terminals.get(sessionName);
   if (!t) return;
 
+  // Restore the previously focused terminal before focusing the new one
+  const now = clock.getElapsedTime();
+  if (focusedSession && focusedSession !== sessionName) {
+    const prev = terminals.get(focusedSession);
+    if (prev) {
+      prev.dom.classList.remove('faded', 'focused');
+      prev.dom.style.width = '';
+      prev.dom.style.height = '';
+      prev.dom.style.borderRadius = '';
+      const inner = prev.dom.querySelector('.terminal-inner');
+      if (inner) inner.style.transform = '';
+      prev.css3dObject.scale.setScalar(0.25);
+      prev.morphFrom = { ...prev.currentPos };
+      prev.morphStart = now;
+      prev.billboardArrival = null;
+    }
+  }
+
   focusedSession = sessionName;
 
   for (const [name, term] of terminals) {
@@ -489,15 +493,36 @@ function focusTerminal(sessionName) {
     term.thumbnail.classList.toggle('active', name === sessionName);
   }
 
-  calculateLayout();
-  // view offset removed // shift center to account for input bar appearing
+  calculateFocusedLayout();
 
-  // Tween camera to face the focused terminal at origin
+  // Camera offset so terminal appears centered in usable area
+  const vFov = camera.fov * DEG2RAD;
+  const visH = 2 * FOCUS_DIST * Math.tan(vFov / 2);
+  const pxToWorld = visH / window.innerHeight;
+  const offX = (SIDEBAR_WIDTH / 2) * pxToWorld;
+  const offY = -(50 / 2) * pxToWorld;
+
+  // 1:1 pixel mapping: resize outer to match exact screen pixel count
+  // Inner wrapper scales to fit — all internal proportions stay identical
+  const worldH = 248;
+  const worldW = 320;
+  const screenH = Math.round((worldH / visH) * window.innerHeight);
+  const screenW = Math.round(screenH * (worldW / worldH));
+  const innerScale = screenW / 1280; // scale 4x layout to fit screen size
+
+  t.dom.style.width = screenW + 'px';
+  t.dom.style.height = screenH + 'px';
+  t.dom.style.borderRadius = Math.round(48 * innerScale) + 'px';
+  const inner = t.dom.querySelector('.terminal-inner');
+  if (inner) inner.style.transform = 'scale(' + innerScale + ')';
+
+  t.css3dObject.scale.setScalar(worldH / screenH);
+
   cameraTween = {
     from: camera.position.clone(),
-    to: new THREE.Vector3(-20, 20, FOCUS_DIST),
+    to: new THREE.Vector3(offX, offY, FOCUS_DIST),
     lookFrom: currentLookTarget.clone(),
-    lookTo: new THREE.Vector3(-20, 0, 0),
+    lookTo: new THREE.Vector3(offX, offY, 0),
     start: clock.getElapsedTime(),
     duration: 1.0
   };
@@ -507,41 +532,44 @@ function focusTerminal(sessionName) {
 }
 
 function unfocusTerminal() {
+  const wasFocused = focusedSession;
   focusedSession = null;
+  const now = clock.getElapsedTime();
 
   for (const [name, term] of terminals) {
     term.dom.classList.remove('faded', 'focused');
     term.thumbnail.classList.remove('active');
-  }
+    if (name === wasFocused) {
+      // Restore 4x CSS size
+      term.dom.style.width = '';
+      term.dom.style.height = '';
+      term.dom.style.borderRadius = '';
+      const inner = term.dom.querySelector('.terminal-inner');
+      if (inner) inner.style.transform = '';
+      term.css3dObject.scale.setScalar(0.25);
 
-  calculateLayout();
+      term.morphFrom = { ...term.currentPos };
+      term.morphStart = now;
+    }
+  }
 
   cameraTween = {
     from: camera.position.clone(),
     to: new THREE.Vector3(
-      Math.sin(orbitAngle) * HOME_POS.z,
+      HOME_TARGET.x + Math.sin(orbitAngle) * HOME_POS.z,
       HOME_POS.y + orbitPitch * 200,
-      Math.cos(orbitAngle) * HOME_POS.z
+      HOME_TARGET.z + Math.cos(orbitAngle) * HOME_POS.z
     ),
     lookFrom: currentLookTarget.clone(),
     lookTo: HOME_TARGET.clone(),
-    start: clock.getElapsedTime(),
+    start: now,
     duration: 1.0
   };
 
   document.getElementById('input-bar').classList.remove('visible');
-  // view offset removed // shift center back (no input bar)
 }
 
 // === Animation Loop ===
-const _worldPos = new THREE.Vector3();
-const _lookAtMat = new THREE.Matrix4();
-const _targetQuat = new THREE.Quaternion();
-const _driftQuat = new THREE.Quaternion();
-const _driftEuler = new THREE.Euler();
-const _up = new THREE.Vector3(0, 1, 0);
-const _panelNormal = new THREE.Vector3();
-
 function animate() {
   requestAnimationFrame(animate);
 
@@ -561,65 +589,131 @@ function animate() {
     if (t >= 1) cameraTween = null;
   }
 
+  // Advance ring rotation
+  outerAngle += RING.outer.spinSpeed * RING.outer.spinDir;
+  innerAngle += RING.inner.spinSpeed * RING.inner.spinDir;
+
   // Per-terminal updates
   let idx = 0;
   for (const [name, t] of terminals) {
-    // Morph position
-    const morphElapsed = time - t.morphStart;
-    const morphT = Math.min(1, morphElapsed / MORPH_DURATION);
-    const eased = easeInOutCubic(morphT);
-    t.currentPos = lerpPos(t.morphFrom, t.targetPos, eased);
+    let pos;
 
-    // Add gentle float to non-focused terminals
-    let floatY = 0;
-    let floatX = 0;
+    if (focusedSession && name === focusedSession) {
+      // Focused terminal: morph to center position
+      const morphElapsed = time - t.morphStart;
+      const morphT = Math.min(1, morphElapsed / MORPH_DURATION);
+      const eased = easeInOutCubic(morphT);
+      t.currentPos = lerpPos(t.morphFrom, t.targetPos, eased);
+      pos = t.currentPos;
+    } else {
+      // Ring layout (both overview and non-focused terminals during focus)
+      const { config, names: ringNames, angle } = getRingInfo(name);
+      const ringIdx = ringNames.indexOf(name);
+      if (ringIdx < 0) { idx++; continue; }
+      const ringPos = computeRingPos(ringIdx, ringNames.length, config, angle);
+
+      // Smooth return from focus (morph toward ring position)
+      const morphElapsed = time - t.morphStart;
+      if (morphElapsed < MORPH_DURATION) {
+        const morphT = easeInOutCubic(morphElapsed / MORPH_DURATION);
+        t.currentPos = lerpPos(t.morphFrom, ringPos, morphT);
+      } else {
+        t.currentPos = ringPos;
+      }
+      pos = t.currentPos;
+    }
+
+    // Gentle float
+    let floatY = 0, floatX = 0;
     if (name !== focusedSession) {
-      floatY = Math.sin(time * 0.4 + idx * 1.3) * 8;
-      floatX = Math.cos(time * 0.3 + idx * 1.7) * 5;
+      floatY = Math.sin(time * 0.4 + idx * 1.3) * 5;
+      floatX = Math.cos(time * 0.3 + idx * 1.7) * 3;
     }
 
     t.css3dObject.position.set(
-      t.currentPos.x + floatX,
-      t.currentPos.y + floatY,
-      t.currentPos.z
+      pos.x + floatX,
+      pos.y + floatY,
+      pos.z
     );
 
-    // Billboarding
+    // === Orientation ===
     if (focusedSession === name) {
-      t.css3dObject.lookAt(camera.position);
+      // Focused terminal: slerp from captured rotation to face-camera over the fly-in
+      const morphElapsed = time - t.morphStart;
+      const morphT = Math.min(1, morphElapsed / MORPH_DURATION);
+      const eased = easeInOutCubic(morphT);
+      if (t.focusQuatFrom) {
+        _targetQuat.copy(camera.quaternion);
+        t.css3dObject.quaternion.copy(t.focusQuatFrom).slerp(_targetQuat, eased);
+      } else {
+        t.css3dObject.quaternion.copy(camera.quaternion);
+      }
     } else {
-      // CSS3DObject faces -Z, so lookAt from camera toward terminal (not terminal toward camera)
+      // Billboard toward camera, but only ease in after morph completes
+      const morphElapsed = time - t.morphStart;
+      const morphDone = morphElapsed >= MORPH_DURATION;
+
+      // Target: face camera
       t.css3dObject.getWorldPosition(_worldPos);
       _lookAtMat.lookAt(camera.position, _worldPos, _up);
       _targetQuat.setFromRotationMatrix(_lookAtMat);
 
+      // Apply card tilt from ring config
+      const { config } = getRingInfo(name);
+      const ct = config.cardTilt;
+      if (ct.x !== 0 || ct.y !== 0 || ct.z !== 0) {
+        _cardTiltEuler.set(ct.x * DEG2RAD, ct.y * DEG2RAD, ct.z * DEG2RAD);
+        _driftQuat.setFromEuler(_cardTiltEuler);
+        _targetQuat.multiply(_driftQuat);
+      }
+
+      // Gentle lazy drift
       _driftEuler.set(
-        Math.sin(time * 0.3 + idx * 1.5) * 0.06,
-        Math.cos(time * 0.2 + idx * 1.7) * 0.08,
+        Math.sin(time * 0.3 + idx * 1.5) * 0.03,
+        Math.cos(time * 0.2 + idx * 1.7) * 0.04,
         0
       );
       _driftQuat.setFromEuler(_driftEuler);
       _targetQuat.multiply(_driftQuat);
-      t.css3dObject.quaternion.slerp(_targetQuat, BILLBOARD_SLERP);
+
+      // Track when terminal arrives at its ring position
+      if (morphDone && t.billboardArrival === null) {
+        t.billboardArrival = time;
+      }
+      if (!morphDone) {
+        t.billboardArrival = null; // reset if morphing again
+      }
+
+      if (t.billboardArrival === null) {
+        // Flying in: rotate toward camera while moving (smooth concurrent motion)
+        const morphProgress = Math.min(1, morphElapsed / MORPH_DURATION);
+        const easedProgress = easeInOutCubic(morphProgress);
+        // Slerp ramps from 0.01 to BILLBOARD_SLERP over the fly-in
+        const flySlerp = 0.01 + easedProgress * (BILLBOARD_SLERP - 0.01);
+        t.css3dObject.quaternion.slerp(_targetQuat, flySlerp);
+      } else {
+        // At rest: normal billboard slerp
+        t.css3dObject.quaternion.slerp(_targetQuat, BILLBOARD_SLERP);
+      }
     }
 
-    // Shadow
-    const heightAboveFloor = t.currentPos.y + floatY - FLOOR_Y;
+    // === Shadow ===
+    const heightAboveFloor = pos.y + floatY - FLOOR_Y;
     const absHeight = Math.abs(heightAboveFloor);
-    const shadowScale = 1 + absHeight * 0.002;
-    const shadowBlur = 15 + absHeight * 0.08;
-    const shadowOpacity = Math.max(0.05, 0.25 - absHeight * 0.0008);
+    const shadowScale = 1 + absHeight * 0.001;
+    const shadowBlur = 15 + absHeight * 0.04;
+    const shadowOpacity = Math.max(0.03, 0.2 - absHeight * 0.0003);
 
     t.shadowObject.position.set(
-      t.currentPos.x + floatX + LIGHT_DIR.x * absHeight * 0.2,
+      pos.x + floatX + LIGHT_DIR.x * absHeight * 0.15,
       FLOOR_Y,
-      t.currentPos.z + LIGHT_DIR.z * absHeight * 0.2
+      pos.z + LIGHT_DIR.z * absHeight * 0.15
     );
     t.shadowDiv.style.filter = 'blur(' + shadowBlur.toFixed(0) + 'px)';
     t.shadowDiv.style.opacity = shadowOpacity.toFixed(3);
     t.shadowObject.scale.setScalar(shadowScale);
 
-    // Specular
+    // === Specular ===
     const specular = t.dom.querySelector('.specular-overlay');
     if (specular) {
       _panelNormal.set(0, 0, 1).applyQuaternion(t.css3dObject.quaternion);
