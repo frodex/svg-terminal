@@ -116,6 +116,7 @@ function init() {
   camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 10000);
   camera.position.copy(HOME_POS);
   camera.lookAt(HOME_TARGET);
+  updateViewOffset();
 
   renderer = new CSS3DRenderer();
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -144,10 +145,34 @@ function init() {
   animate();
 }
 
-// === Resize ===
-function onResize() {
-  camera.aspect = window.innerWidth / window.innerHeight;
+// === Resize + View Offset ===
+// Shift the camera's viewport center to account for sidebar (right) and input bar (bottom)
+function updateViewOffset() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const inputBarH = focusedSession ? 50 : 0;
+
+  // The "usable" area is (0,0) to (w - SIDEBAR_WIDTH, h - inputBarH)
+  // Its center in full-window coordinates:
+  const usableCenterX = (w - SIDEBAR_WIDTH) / 2;
+  const usableCenterY = (h - inputBarH) / 2;
+
+  // The full window center:
+  const windowCenterX = w / 2;
+  const windowCenterY = h / 2;
+
+  // The offset is how far the usable center is from the window center
+  // setViewOffset shifts the rendered image so our usable center becomes the camera center
+  const offsetX = windowCenterX - usableCenterX; // positive = shift right
+  const offsetY = windowCenterY - usableCenterY; // positive = shift down
+
+  camera.setViewOffset(w, h, offsetX, offsetY, w, h);
+  camera.aspect = w / h;
   camera.updateProjectionMatrix();
+}
+
+function onResize() {
+  updateViewOffset();
   renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
@@ -358,6 +383,7 @@ function focusTerminal(sessionName) {
   }
 
   calculateLayout();
+  updateViewOffset(); // shift center to account for input bar appearing
 
   // Tween camera to face the focused terminal at origin
   cameraTween = {
@@ -397,6 +423,7 @@ function unfocusTerminal() {
   };
 
   document.getElementById('input-bar').classList.remove('visible');
+  updateViewOffset(); // shift center back (no input bar)
 }
 
 // === Animation Loop ===
