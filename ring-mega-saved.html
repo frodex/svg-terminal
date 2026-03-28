@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: linear-gradient(180deg, #f8f8fa 0%, #e8e6e2 100%); min-height: 100vh; font-family: -apple-system, sans-serif; overflow: hidden; }
+
+.ring-container { position: absolute; pointer-events: none; overflow: visible; transform-style: preserve-3d; }
+.ring-container .card { pointer-events: auto; }
+.ring-wire { position: absolute; border: 1px solid rgba(0,0,0,0.07); border-radius: 50%; pointer-events: none; left: 0; top: 0; }
+.center-mark { position: absolute; width: 6px; height: 6px; border-radius: 50%; background: rgba(0,0,0,0.08); pointer-events: none; }
+
+.card { position: absolute; background: #1c1c1e; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.25); font-family: 'Courier New', monospace; font-size: 9px; color: #aaa; overflow: hidden; }
+.card.inner { box-shadow: 0 14px 40px rgba(0,0,0,0.35); }
+.card .chrome { display: flex; align-items: center; gap: 3px; padding: 4px 6px; background: #2a2a2c; }
+.card .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+.card .r { background: #ff5f57; } .card .y { background: #febc2e; } .card .g { background: #28c840; }
+.card .nm { color: #666; font-size: 7px; margin-left: 3px; }
+.card .body { padding: 4px 6px; line-height: 1.4; }
+.card .pr { color: #0f0; }
+
+/* Panel */
+.panel { position: fixed; right: 12px; top: 12px; bottom: 12px; background: rgba(0,0,0,0.75); backdrop-filter: blur(12px); border-radius: 12px; padding: 0; z-index: 100; color: #ccc; font-size: 11px; width: 260px; overflow-y: auto; overflow-x: hidden; }
+.panel::-webkit-scrollbar { width: 4px; }
+.panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+.panel .section { padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.panel h3 { color: #fff; font-size: 11px; font-weight: 600; margin-bottom: 6px; }
+.panel label { display: block; margin-bottom: 2px; color: #888; font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; }
+.panel .row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.panel .pair { display: flex; gap: 6px; margin-bottom: 4px; }
+.panel .pair > div { flex: 1; }
+.panel .pair label { font-size: 8px; margin-bottom: 1px; }
+.panel input[type=range] { width: 100%; height: 3px; -webkit-appearance: none; background: rgba(255,255,255,0.12); border-radius: 2px; outline: none; }
+.panel input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #5c5cff; cursor: pointer; }
+.panel .val { min-width: 28px; text-align: right; color: #777; font-family: monospace; font-size: 10px; }
+.panel select { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.12); color: #ddd; padding: 2px 4px; border-radius: 4px; font-size: 10px; width: 100%; }
+.panel .btns { display: flex; gap: 3px; }
+.panel .btns button { flex: 1; padding: 3px; border: none; border-radius: 3px; background: rgba(255,255,255,0.08); color: #999; font-size: 10px; cursor: pointer; }
+.panel .btns button:hover { background: rgba(255,255,255,0.15); }
+.panel .btns button.active { background: #5c5cff; color: #fff; }
+.panel .osc-row { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
+.panel .osc-row label { font-size: 8px; margin: 0; color: #666; }
+.panel .osc-row input[type=range] { flex: 1; }
+.panel .lock-btn { width: 18px; height: 18px; border: none; border-radius: 3px; background: rgba(255,255,255,0.08); color: #555; font-size: 10px; cursor: pointer; padding: 0; line-height: 18px; text-align: center; flex-shrink: 0; }
+.panel .lock-btn:hover { background: rgba(255,255,255,0.15); }
+.panel .lock-btn.locked { background: #5c5cff; color: #fff; }
+</style>
+</head>
+<body>
+
+<div class="panel" id="panel">
+
+  <!-- OUTER RING -->
+  <div class="section">
+    <h3>⬡ Outer Ring</h3>
+
+    <div class="pair">
+      <div>
+        <label>Cards</label>
+        <div class="row"><input type="range" min="1" max="12" value="5" id="oCount" oninput="rebuildOuter()"><span class="val" id="oCountV">5</span></div>
+      </div>
+      <div>
+        <label>Radius</label>
+        <div class="row"><input type="range" min="80" max="1600" value="220" id="oRadius" oninput="V()"><span class="val" id="oRadiusV">220</span></div>
+      </div>
+    </div>
+
+    <label>Mode</label>
+    <select id="oMode"><option value="0">Upright</option><option value="1">Locked to Ring</option><option value="2">Gravity Pull</option><option value="4">Free Spin</option></select>
+
+    <div class="btns" style="margin-top:4px;">
+      <button onclick="toggleFace('o')" id="oFace">Face Camera: OFF</button>
+    </div>
+
+    <label style="margin-top:6px;">Spin</label>
+    <div class="btns">
+      <button onclick="setSpin('o',-1)" id="oSpinN">← Rev</button>
+      <button onclick="setSpin('o',0)" id="oSpin0">Stop</button>
+      <button onclick="setSpin('o',1)" id="oSpinP" class="active">Fwd →</button>
+    </div>
+
+    <label style="margin-top:8px;">Ring Tilt X</label>
+    <div class="pair">
+      <div><label>From</label><div class="row"><input type="range" min="-180" max="180" value="0" id="oRTX1" oninput="sync('oRTX');V()"><span class="val" id="oRTX1V">0</span></div></div>
+      <button class="lock-btn" onclick="toggleLock('oRTX')" id="oRTXL">🔓</button>
+      <div><label>To</label><div class="row"><input type="range" min="-180" max="180" value="0" id="oRTX2" oninput="sync('oRTX',true);V()"><span class="val" id="oRTX2V">0</span></div></div>
+    </div>
+    <div class="osc-row"><label>Speed</label><input type="range" min="0" max="100" value="0" id="oRTXS" oninput="V()"><span class="val" id="oRTXSV">0</span></div>
+
+    <label>Ring Tilt Y</label>
+    <div class="pair">
+      <div><label>From</label><div class="row"><input type="range" min="-180" max="180" value="0" id="oRTY1" oninput="sync('oRTY');V()"><span class="val" id="oRTY1V">0</span></div></div>
+      <button class="lock-btn" onclick="toggleLock('oRTY')" id="oRTYL">🔓</button>
+      <div><label>To</label><div class="row"><input type="range" min="-180" max="180" value="0" id="oRTY2" oninput="sync('oRTY',true);V()"><span class="val" id="oRTY2V">0</span></div></div>
+    </div>
+    <div class="osc-row"><label>Speed</label><input type="range" min="0" max="100" value="0" id="oRTYS" oninput="V()"><span class="val" id="oRTYSV">0</span></div>
+
+    <label>Ring Tilt Z</label>
+    <div class="pair">
+      <div><label>From</label><div class="row"><input type="range" min="-180" max="180" value="0" id="oRTZ1" oninput="sync('oRTZ');V()"><span class="val" id="oRTZ1V">0</span></div></div>
+      <button class="lock-btn" onclick="toggleLock('oRTZ')" id="oRTZL">🔓</button>
+      <div><label>To</label><div class="row"><input type="range" min="-180" max="180" value="0" id="oRTZ2" oninput="sync('oRTZ',true);V()"><span class="val" id="oRTZ2V">0</span></div></div>
+    </div>
+    <div class="osc-row"><label>Speed</label><input type="range" min="0" max="100" value="0" id="oRTZS" oninput="V()"><span class="val" id="oRTZSV">0</span></div>
+
+    <label>Card Tilt X</label>
+    <div class="pair">
+      <div><label>From</label><div class="row"><input type="range" min="-180" max="180" value="0" id="oCTX1" oninput="sync('oCTX');V()"><span class="val" id="oCTX1V">0</span></div></div>
+      <button class="lock-btn" onclick="toggleLock('oCTX')" id="oCTXL">🔓</button>
+      <div><label>To</label><div class="row"><input type="range" min="-180" max="180" value="0" id="oCTX2" oninput="sync('oCTX',true);V()"><span class="val" id="oCTX2V">0</span></div></div>
+    </div>
+    <div class="osc-row"><label>Speed</label><input type="range" min="0" max="100" value="0" id="oCTXS" oninput="V()"><span class="val" id="oCTXSV">0</span></div>
+
+    <label>Card Tilt Y</label>
+    <div class="pair">
+      <div><label>From</label><div class="row"><input type="range" min="-180" max="180" value="0" id="oCTY1" oninput="sync('oCTY');V()"><span class="val" id="oCTY1V">0</span></div></div>
+      <button class="lock-btn" onclick="toggleLock('oCTY')" id="oCTYL">🔓</button>
+      <div><label>To</label><div class="row"><input type="range" min="-180" max="180" value="0" id="oCTY2" oninput="sync('oCTY',true);V()"><span class="val" id="oCTY2V">0</span></div></div>
+    </div>
+    <div class="osc-row"><label>Speed</label><input type="range" min="0" max="100" value="0" id="oCTYS" oninput="V()"><span class="val" id="oCTYSV">0</span></div>
+
+    <label>Card Tilt Z</label>
+    <div class="pair">
+      <div><label>From</label><div class="row"><input type="range" min="-180" max="180" value="0" id="oCTZ1" oninput="sync('oCTZ');V()"><span class="val" id="oCTZ1V">0</span></div></div>
+      <button class="lock-btn" onclick="toggleLock('oCTZ')" id="oCTZL">🔓</button>
+      <div><label>To</label><div class="row"><input type="range" min="-180" max="180" value="0" id="oCTZ2" oninput="sync('oCTZ',true);V()"><span class="val" id="oCTZ2V">0</span></div></div>
+    </div>
+    <div class="osc-row"><label>Speed</label><input type="range" min="0" max="100" value="0" id="oCTZS" oninput="V()"><span class="val" id="oCTZSV">0</span></div>
+  </div>
+
+  <!-- INNER RING -->
+  <div class="section">
+    <h3>◯ Inner Ring</h3>
+
+    <div class="pair">
+      <div>
+        <label>Cards</label>
+        <div class="row"><input type="range" min="1" max="8" value="2" id="iCount" oninput="rebuildInner()"><span class="val" id="iCountV">2</span></div>
+      </div>
+      <div>
+        <label>Radius</label>
+        <div class="row"><input type="range" min="40" max="1200" value="110" id="iRadius" oninput="V()"><span class="val" id="iRadiusV">110</span></div>
+      </div>
+    </div>
+
+    <label>Mode</label>
+    <select id="iMode"><option value="0">Upright</option><option value="1">Locked to Ring</option><option value="2">Gravity Pull</option><option value="4">Free Spin</option></select>
+
+    <div class="btns" style="margin-top:4px;">
+      <button onclick="toggleFace('i')" id="iFace">Face Camera: OFF</button>
+    </div>
+
+    <label style="margin-top:6px;">Spin</label>
+    <div class="btns">
+      <button onclick="setSpin('i',-1)" id="iSpinN" class="active">← Rev</button>
+      <button onclick="setSpin('i',0)" id="iSpin0">Stop</button>
+      <button onclick="setSpin('i',1)" id="iSpinP">Fwd →</button>
+    </div>
+
+    <label style="margin-top:8px;">Ring Tilt X</label>
+    <div class="pair">
+      <div><label>From</label><div class="row"><input type="range" min="-180" max="180" value="0" id="iRTX1" oninput="sync('iRTX');V()"><span class="val" id="iRTX1V">0</span></div></div>
+      <button class="lock-btn" onclick="toggleLock('iRTX')" id="iRTXL">🔓</button>
+      <div><label>To</label><div class="row"><input type="range" min="-180" max="180" value="0" id="iRTX2" oninput="sync('iRTX',true);V()"><span class="val" id="iRTX2V">0</span></div></div>
+    </div>
+    <div class="osc-row"><label>Speed</label><input type="range" min="0" max="100" value="0" id="iRTXS" oninput="V()"><span class="val" id="iRTXSV">0</span></div>
+
+    <label>Ring Tilt Y</label>
+    <div class="pair">
+      <div><label>From</label><div class="row"><input type="range" min="-180" max="180" value="0" id="iRTY1" oninput="sync('iRTY');V()"><span class="val" id="iRTY1V">0</span></div></div>
+      <button class="lock-btn" onclick="toggleLock('iRTY')" id="iRTYL">🔓</button>
+      <div><label>To</label><div class="row"><input type="range" min="-180" max="180" value="0" id="iRTY2" oninput="sync('iRTY',true);V()"><span class="val" id="iRTY2V">0</span></div></div>
+    </div>
+    <div class="osc-row"><label>Speed</label><input type="range" min="0" max="100" value="0" id="iRTYS" oninput="V()"><span class="val" id="iRTYSV">0</span></div>
+
+    <label>Ring Tilt Z</label>
+    <div class="pair">
+      <div><label>From</label><div class="row"><input type="range" min="-180" max="180" value="0" id="iRTZ1" oninput="sync('iRTZ');V()"><span class="val" id="iRTZ1V">0</span></div></div>
+      <button class="lock-btn" onclick="toggleLock('iRTZ')" id="iRTZL">🔓</button>
+      <div><label>To</label><div class="row"><input type="range" min="-180" max="180" value="0" id="iRTZ2" oninput="sync('iRTZ',true);V()"><span class="val" id="iRTZ2V">0</span></div></div>
+    </div>
+    <div class="osc-row"><label>Speed</label><input type="range" min="0" max="100" value="0" id="iRTZS" oninput="V()"><span class="val" id="iRTZSV">0</span></div>
+
+    <label>Card Tilt X</label>
+    <div class="pair">
+      <div><label>From</label><div class="row"><input type="range" min="-180" max="180" value="0" id="iCTX1" oninput="sync('iCTX');V()"><span class="val" id="iCTX1V">0</span></div></div>
+      <button class="lock-btn" onclick="toggleLock('iCTX')" id="iCTXL">🔓</button>
+      <div><label>To</label><div class="row"><input type="range" min="-180" max="180" value="0" id="iCTX2" oninput="sync('iCTX',true);V()"><span class="val" id="iCTX2V">0</span></div></div>
+    </div>
+    <div class="osc-row"><label>Speed</label><input type="range" min="0" max="100" value="0" id="iCTXS" oninput="V()"><span class="val" id="iCTXSV">0</span></div>
+
+    <label>Card Tilt Y</label>
+    <div class="pair">
+      <div><label>From</label><div class="row"><input type="range" min="-180" max="180" value="0" id="iCTY1" oninput="sync('iCTY');V()"><span class="val" id="iCTY1V">0</span></div></div>
+      <button class="lock-btn" onclick="toggleLock('iCTY')" id="iCTYL">🔓</button>
+      <div><label>To</label><div class="row"><input type="range" min="-180" max="180" value="0" id="iCTY2" oninput="sync('iCTY',true);V()"><span class="val" id="iCTY2V">0</span></div></div>
+    </div>
+    <div class="osc-row"><label>Speed</label><input type="range" min="0" max="100" value="0" id="iCTYS" oninput="V()"><span class="val" id="iCTYSV">0</span></div>
+
+    <label>Card Tilt Z</label>
+    <div class="pair">
+      <div><label>From</label><div class="row"><input type="range" min="-180" max="180" value="0" id="iCTZ1" oninput="sync('iCTZ');V()"><span class="val" id="iCTZ1V">0</span></div></div>
+      <button class="lock-btn" onclick="toggleLock('iCTZ')" id="iCTZL">🔓</button>
+      <div><label>To</label><div class="row"><input type="range" min="-180" max="180" value="0" id="iCTZ2" oninput="sync('iCTZ',true);V()"><span class="val" id="iCTZ2V">0</span></div></div>
+    </div>
+    <div class="osc-row"><label>Speed</label><input type="range" min="0" max="100" value="0" id="iCTZS" oninput="V()"><span class="val" id="iCTZSV">0</span></div>
+  </div>
+
+  <!-- CAMERA -->
+  <div class="section">
+    <h3>📷 Camera</h3>
+    <label>Zoom</label>
+    <div class="row"><input type="range" min="20" max="400" value="100" id="camZoom" oninput="V()"><span class="val" id="camZoomV">100</span></div>
+    <label>Push (in/out)</label>
+    <div class="row"><input type="range" min="-1000" max="1000" value="0" id="camPush" oninput="V()"><span class="val" id="camPushV">0</span></div>
+    <label>Pan X</label>
+    <div class="row"><input type="range" min="-500" max="500" value="0" id="camPanX" oninput="V()"><span class="val" id="camPanXV">0</span></div>
+    <label>Pan Y</label>
+    <div class="row"><input type="range" min="-500" max="500" value="0" id="camPanY" oninput="V()"><span class="val" id="camPanYV">0</span></div>
+  </div>
+</div>
+
+<script>
+// === State ===
+var OUTER_W = 130, OUTER_H = 90, INNER_W = 160, INNER_H = 110;
+var cx, cy;
+var outerAngle = 0, innerAngle = 0;
+var spins = { o: 1, i: -1 };
+var outerSpeed = 0.008, innerSpeed = 0.012;
+var planeTime = 0;
+var outerCards = [], innerCards = [];
+var outerContainer, innerContainer;
+
+var outerNames = ['w-01','w-02','w-03','w-04','w-05','w-06','w-07','w-08','w-09','w-10','w-11','w-12'];
+var innerNames = ['primary','manager','ctrl-01','ctrl-02','ctrl-03','ctrl-04','ctrl-05','ctrl-06'];
+var outerTexts = ['❯ build\ncompile','testing\n14/22','deploy\n████░░','watching\nidle','❯ logs','lint\npass','format\ndone','bench\n2.3ms','scan\nclean','pack\n98KB','serve\n:3200','audit\nok'];
+var innerTexts = ['❯ claude\nthinking\n⠸ work','dispatch\n3 active','monitor\nall ok','backup\nrunning','sync\npending','cache\nwarm','queue\nempty','health\n✓ ok'];
+
+// === Helpers ===
+function $(id) { return document.getElementById(id); }
+function N(id) { return parseFloat($(id).value); }
+
+// Lock state
+var locks = {};
+
+function toggleLock(prefix) {
+  locks[prefix] = !locks[prefix];
+  var btn = $(prefix + 'L');
+  btn.classList.toggle('locked', locks[prefix]);
+  btn.textContent = locks[prefix] ? '🔒' : '🔓';
+  if (locks[prefix]) {
+    // Snap: copy From value to To
+    $(prefix + '2').value = $(prefix + '1').value;
+    V();
+  }
+}
+
+function sync(prefix, fromTo) {
+  if (!locks[prefix]) return;
+  if (fromTo) {
+    $(prefix + '1').value = $(prefix + '2').value;
+  } else {
+    $(prefix + '2').value = $(prefix + '1').value;
+  }
+}
+
+// Face camera toggle
+var faceCamera = { o: false, i: false };
+
+function toggleFace(ring) {
+  faceCamera[ring] = !faceCamera[ring];
+  var btn = $(ring + 'Face');
+  btn.textContent = 'Face Camera: ' + (faceCamera[ring] ? 'ON' : 'OFF');
+  btn.classList.toggle('active', faceCamera[ring]);
+}
+
+// Update all value displays
+function V() {
+  var ids = ['oCount','oRadius','iCount','iRadius',
+    'oRTX1','oRTX2','oRTXS','oRTY1','oRTY2','oRTYS','oRTZ1','oRTZ2','oRTZS',
+    'oCTX1','oCTX2','oCTXS','oCTY1','oCTY2','oCTYS','oCTZ1','oCTZ2','oCTZS',
+    'iRTX1','iRTX2','iRTXS','iRTY1','iRTY2','iRTYS','iRTZ1','iRTZ2','iRTZS',
+    'iCTX1','iCTX2','iCTXS','iCTY1','iCTY2','iCTYS','iCTZ1','iCTZ2','iCTZS',
+    'camZoom','camPush','camPanX','camPanY'];
+  ids.forEach(function(id) { $(id + 'V').textContent = $(id).value; });
+}
+
+// Oscillate between from/to at speed
+function osc(from, to, speed, time) {
+  if (speed === 0) return from;
+  var t = (Math.sin(time * speed * 0.05) + 1) / 2; // 0 to 1
+  return from + (to - from) * t;
+}
+
+function makeCard(name, text, isInner) {
+  var el = document.createElement('div');
+  el.className = 'card' + (isInner ? ' inner' : '');
+  el.style.width = (isInner ? INNER_W : OUTER_W) + 'px';
+  el.style.height = (isInner ? INNER_H : OUTER_H) + 'px';
+  el.innerHTML =
+    '<div class="chrome"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>' +
+    '<span class="nm">' + name + '</span></div>' +
+    '<div class="body">' + text.replace(/\n/g,'<br>').replace(/❯/g,'<span class="pr">❯</span>') + '</div>';
+  return el;
+}
+
+function rebuildOuter() {
+  var n = parseInt($('oCount').value);
+  $('oCountV').textContent = n;
+  outerCards.forEach(function(el) { el.remove(); });
+  outerCards = [];
+  for (var i = 0; i < n; i++) {
+    var el = makeCard(outerNames[i], outerTexts[i], false);
+    outerContainer.appendChild(el);
+    outerCards.push(el);
+  }
+}
+
+function rebuildInner() {
+  var n = parseInt($('iCount').value);
+  $('iCountV').textContent = n;
+  innerCards.forEach(function(el) { el.remove(); });
+  innerCards = [];
+  for (var i = 0; i < n; i++) {
+    var el = makeCard(innerNames[i], innerTexts[i], true);
+    innerContainer.appendChild(el);
+    innerCards.push(el);
+  }
+}
+
+function setSpin(ring, val) {
+  spins[ring] = val;
+  $(ring + 'SpinN').classList.toggle('active', val === -1);
+  $(ring + 'Spin0').classList.toggle('active', val === 0);
+  $(ring + 'SpinP').classList.toggle('active', val === 1);
+}
+
+// === Positioning (real 3D) ===
+// Cards are positioned in 2D on the circle, ring tilt is handled by the container's 3D transform
+function positionCard(el, theta, ringAngle, radius, w, h, mode, ctx, cty, ctz, rtx, rty, rtz, faceCam) {
+  var spunTheta = theta + ringAngle;
+
+  // Position on the flat circle (container handles the 3D tilt)
+  var px = radius + Math.cos(spunTheta) * radius;
+  var py = radius + Math.sin(spunTheta) * radius;
+
+  // Float
+  var fx = 0, fy = 0;
+  if (mode !== 1) {
+    fx = Math.sin(planeTime * 0.4 + theta * 3) * 3;
+    fy = Math.cos(planeTime * 0.35 + theta * 2) * 4;
+  }
+
+  // Card rotation (mode)
+  var rotDeg = 0;
+  switch (mode) {
+    case 0: rotDeg = 0; break;
+    case 1:
+      rotDeg = (theta - Math.PI / 2 + ringAngle) * 180 / Math.PI;
+      break;
+    case 2:
+      rotDeg = (theta - Math.PI / 2 + ringAngle) * 0.3 * 180 / Math.PI;
+      break;
+    case 4:
+      rotDeg = ringAngle * 180 / Math.PI;
+      break;
+  }
+
+  // Card tilt: applied uniformly to all cards
+  var cardTilt = '';
+  if (ctx !== 0 || cty !== 0 || ctz !== 0) {
+    cardTilt = ' rotateX(' + ctx + 'deg) rotateY(' + cty + 'deg) rotateZ(' + ctz + 'deg)';
+  }
+
+  // Face camera: counter-rotate by the ring's tilt so card always faces viewer
+  var faceTransform = '';
+  if (faceCam) {
+    // Reverse the container's rotation on each card
+    // Apply in reverse order: Z, Y, X (opposite of container's X, Y, Z)
+    faceTransform = ' rotateZ(' + (-rtz) + 'deg) rotateY(' + (-rty) + 'deg) rotateX(' + (-rtx) + 'deg)';
+  }
+
+  el.style.left = (px - w / 2 + fx) + 'px';
+  el.style.top = (py - h / 2 + fy) + 'px';
+  el.style.transformOrigin = '50% 50%';
+  el.style.transform = 'rotate(' + rotDeg + 'deg)' + faceTransform + cardTilt;
+}
+
+// === Layout ===
+function layout() {
+  cx = window.innerWidth / 2 - 130;
+  cy = window.innerHeight / 2;
+  var oR = N('oRadius'), iR = N('iRadius');
+
+  outerContainer.style.width = (oR * 2) + 'px';
+  outerContainer.style.height = (oR * 2) + 'px';
+  outerContainer.style.left = (cx - oR) + 'px';
+  outerContainer.style.top = (cy - oR) + 'px';
+
+  innerContainer.style.width = (iR * 2) + 'px';
+  innerContainer.style.height = (iR * 2) + 'px';
+  innerContainer.style.left = (cx - iR) + 'px';
+  innerContainer.style.top = (cy - iR) + 'px';
+
+  $('centerMark').style.left = (cx - 3) + 'px';
+  $('centerMark').style.top = (cy - 3) + 'px';
+}
+
+// === Animate ===
+function animate() {
+  requestAnimationFrame(animate);
+  outerAngle += outerSpeed * spins.o;
+  innerAngle += innerSpeed * spins.i;
+  planeTime += 0.016;
+
+  var oR = N('oRadius'), iR = N('iRadius');
+  var oMode = parseInt($('oMode').value);
+  var iMode = parseInt($('iMode').value);
+
+  // Oscillating ring tilts (outer)
+  var oRTX = osc(N('oRTX1'), N('oRTX2'), N('oRTXS'), planeTime);
+  var oRTY = osc(N('oRTY1'), N('oRTY2'), N('oRTYS'), planeTime);
+  var oRTZ = osc(N('oRTZ1'), N('oRTZ2'), N('oRTZS'), planeTime);
+  // Oscillating card tilts (outer)
+  var oCTX = osc(N('oCTX1'), N('oCTX2'), N('oCTXS'), planeTime);
+  var oCTY = osc(N('oCTY1'), N('oCTY2'), N('oCTYS'), planeTime);
+  var oCTZ = osc(N('oCTZ1'), N('oCTZ2'), N('oCTZS'), planeTime);
+
+  // Oscillating ring tilts (inner)
+  var iRTX = osc(N('iRTX1'), N('iRTX2'), N('iRTXS'), planeTime);
+  var iRTY = osc(N('iRTY1'), N('iRTY2'), N('iRTYS'), planeTime);
+  var iRTZ = osc(N('iRTZ1'), N('iRTZ2'), N('iRTZS'), planeTime);
+  // Oscillating card tilts (inner)
+  var iCTX = osc(N('iCTX1'), N('iCTX2'), N('iCTXS'), planeTime);
+  var iCTY = osc(N('iCTY1'), N('iCTY2'), N('iCTYS'), planeTime);
+  var iCTZ = osc(N('iCTZ1'), N('iCTZ2'), N('iCTZS'), planeTime);
+
+  // Ring tilt: applied to the CONTAINER (real 3D via preserve-3d)
+  // Cards inside inherit the 3D transform — no faking
+  outerContainer.style.width = (oR * 2) + 'px';
+  outerContainer.style.height = (oR * 2) + 'px';
+  outerContainer.style.left = (cx - oR) + 'px';
+  outerContainer.style.top = (cy - oR) + 'px';
+  outerContainer.style.transform = 'rotateX(' + oRTX + 'deg) rotateY(' + oRTY + 'deg) rotateZ(' + oRTZ + 'deg)';
+
+  innerContainer.style.width = (iR * 2) + 'px';
+  innerContainer.style.height = (iR * 2) + 'px';
+  innerContainer.style.left = (cx - iR) + 'px';
+  innerContainer.style.top = (cy - iR) + 'px';
+  innerContainer.style.transform = 'rotateX(' + iRTX + 'deg) rotateY(' + iRTY + 'deg) rotateZ(' + iRTZ + 'deg)';
+
+  // Wireframe rings: match the container tilt but as a visual circle
+  var outerWire = outerContainer.querySelector('.ring-wire');
+  if (outerWire) outerWire.style.transform = 'none'; // container handles tilt
+  var innerWire = innerContainer.querySelector('.ring-wire');
+  if (innerWire) innerWire.style.transform = 'none';
+
+  // Position cards (2D on the circle — container does the 3D)
+  for (var i = 0; i < outerCards.length; i++) {
+    var theta = -Math.PI / 2 + (2 * Math.PI * i) / outerCards.length;
+    positionCard(outerCards[i], theta, outerAngle, oR, OUTER_W, OUTER_H, oMode, oCTX, oCTY, oCTZ, oRTX, oRTY, oRTZ, faceCamera.o);
+  }
+  for (var i = 0; i < innerCards.length; i++) {
+    var theta = -Math.PI / 2 + (2 * Math.PI * i) / innerCards.length;
+    positionCard(innerCards[i], theta, innerAngle, iR, INNER_W, INNER_H, iMode, iCTX, iCTY, iCTZ, iRTX, iRTY, iRTZ, faceCamera.i);
+  }
+
+  // Camera: zoom + push (translateZ into the 3D scene) + pan
+  var camZoom = N('camZoom') / 100;
+  var camPush = N('camPush');
+  var camPanX = N('camPanX');
+  var camPanY = N('camPanY');
+  sceneWrap.style.transform = 'perspective(800px) translate3d(' + camPanX + 'px, ' + camPanY + 'px, ' + camPush + 'px) scale(' + camZoom.toFixed(3) + ')';
+}
+
+// === Init ===
+// Scene wrapper for camera transforms
+var sceneWrap = document.createElement('div');
+sceneWrap.id = 'sceneWrap';
+sceneWrap.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;transform-origin:center center;transform-style:preserve-3d;';
+document.body.appendChild(sceneWrap);
+
+outerContainer = document.createElement('div');
+outerContainer.className = 'ring-container';
+var ow = document.createElement('div'); ow.className = 'ring-wire'; ow.style.width = '100%'; ow.style.height = '100%';
+outerContainer.appendChild(ow);
+sceneWrap.appendChild(outerContainer);
+
+innerContainer = document.createElement('div');
+innerContainer.className = 'ring-container';
+var iw = document.createElement('div'); iw.className = 'ring-wire'; iw.style.width = '100%'; iw.style.height = '100%';
+innerContainer.appendChild(iw);
+sceneWrap.appendChild(innerContainer);
+
+var cm = document.createElement('div'); cm.className = 'center-mark'; cm.id = 'centerMark';
+sceneWrap.appendChild(cm);
+
+rebuildOuter();
+rebuildInner();
+layout();
+V();
+window.addEventListener('resize', layout);
+animate();
+</script>
+</body>
+</html>
