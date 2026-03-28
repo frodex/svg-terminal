@@ -4,8 +4,21 @@
 
 import http from 'node:http';
 import { readFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execFile as execFileCb } from 'node:child_process';
 import { parseLine } from './sgr-parser.mjs';
+
+// ---------------------------------------------------------------------------
+// Async tmux helper
+// ---------------------------------------------------------------------------
+
+function tmuxAsync(...args) {
+  return new Promise((resolve, reject) => {
+    execFileCb('tmux', args, { timeout: 5000 }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(stdout);
+    });
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Config
@@ -86,7 +99,7 @@ function handleSvg(req, res) {
   }
 }
 
-function handlePane(req, res, params) {
+async function handlePane(req, res, params) {
   const session = params.get('session');
   const pane = params.get('pane') ?? '0';
 
@@ -101,19 +114,15 @@ function handlePane(req, res, params) {
 
   try {
     // Capture pane output
-    const rawOutput = execFileSync(
-      'tmux',
-      ['capture-pane', '-p', '-e', '-t', target],
-      { encoding: 'utf8' }
+    const rawOutput = await tmuxAsync(
+      'capture-pane', '-p', '-e', '-t', target
     );
 
     // Get dimensions, cursor position, and pane title
-    const infoRaw = execFileSync(
-      'tmux',
-      ['display-message', '-p', '-t', target,
-       '#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{pane_title}'],
-      { encoding: 'utf8' }
-    ).trim();
+    const infoRaw = (await tmuxAsync(
+      'display-message', '-p', '-t', target,
+      '#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{pane_title}'
+    )).trim();
 
     const [widthStr, heightStr, cxStr, cyStr, ...titleParts] = infoRaw.split(' ');
     const width = parseInt(widthStr, 10);
@@ -144,15 +153,22 @@ function handlePane(req, res, params) {
   }
 }
 
-const ALLOWED_SPECIAL_KEYS = [
-  'Enter', 'Tab', 'Escape', 'C-c', 'C-d', 'C-z', 'C-l',
-  'Up', 'Down', 'Left', 'Right', 'Home', 'End', 'BSpace', 'DC',
-];
+const ALLOWED_SPECIAL_KEYS = new Set([
+  'Enter', 'Tab', 'Escape', 'BSpace', 'DC', 'IC', 'Space',
+  'Up', 'Down', 'Left', 'Right',
+  'Home', 'End', 'PgUp', 'PgDn',
+  'F1', 'F2', 'F3', 'F4', 'F5', 'F6',
+  'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
+]);
 
-function handleInput(req, res) {
+function isAllowedKey(key) {
+  return ALLOWED_SPECIAL_KEYS.has(key) || /^C-[a-z]$/.test(key);
+}
+
+async function handleInput(req, res) {
   let body = '';
   req.on('data', (chunk) => { body += chunk; });
-  req.on('end', () => {
+  req.on('end', async () => {
     let parsed;
     try {
       parsed = JSON.parse(body);
@@ -172,11 +188,11 @@ function handleInput(req, res) {
     const target = `${session}:${pane}`;
 
     if (specialKey !== undefined) {
-      if (!ALLOWED_SPECIAL_KEYS.includes(specialKey)) {
+      if (!isAllowedKey(specialKey)) {
         return sendError(res, 400, `Invalid specialKey: ${specialKey}`);
       }
       try {
-        execFileSync('tmux', ['send-keys', '-t', target, specialKey]);
+        await tmuxAsync('send-keys', '-t', target, specialKey);
         return sendJson(res, 200, { ok: true });
       } catch (err) {
         return sendError(res, 500, `tmux error: ${err.message}`);
@@ -185,7 +201,7 @@ function handleInput(req, res) {
 
     if (typeof keys === 'string' && keys.length > 0) {
       try {
-        execFileSync('tmux', ['send-keys', '-t', target, '-l', keys]);
+        await tmuxAsync('send-keys', '-t', target, '-l', keys);
         return sendJson(res, 200, { ok: true });
       } catch (err) {
         return sendError(res, 500, `tmux error: ${err.message}`);
@@ -196,13 +212,11 @@ function handleInput(req, res) {
   });
 }
 
-function handleSessions(req, res) {
+async function handleSessions(req, res) {
   try {
-    const raw = execFileSync(
-      'tmux',
-      ['list-sessions', '-F', '#{session_name} #{session_windows}'],
-      { encoding: 'utf8' }
-    ).trim();
+    const raw = (await tmuxAsync(
+      'list-sessions', '-F', '#{session_name} #{session_windows}'
+    )).trim();
 
     const sessions = raw
       .split('\n')
@@ -248,10 +262,12 @@ function router(req, res) {
       return;
     }
     if (pathname === '/api/pane') {
-      return handlePane(req, res, url.searchParams);
+      handlePane(req, res, url.searchParams).catch(err => sendError(res, 500, err.message));
+      return;
     }
     if (pathname === '/api/sessions') {
-      return handleSessions(req, res);
+      handleSessions(req, res).catch(err => sendError(res, 500, err.message));
+      return;
     }
     if (pathname === '/font-test.html') {
       try {
@@ -304,7 +320,8 @@ function router(req, res) {
   }
 
   if (req.method === 'POST' && pathname === '/api/input') {
-    return handleInput(req, res);
+    handleInput(req, res).catch(err => sendError(res, 500, err.message));
+    return;
   }
 
   setCors(res);
