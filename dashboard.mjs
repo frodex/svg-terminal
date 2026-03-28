@@ -35,7 +35,7 @@ const RING = {
 };
 // === Constants ===
 const LIGHT_DIR = new THREE.Vector3(-0.7, 0.7, -0.3).normalize();
-const FLOOR_Y = -600;
+const FLOOR_Y = -300;
 const MORPH_DURATION = 1.5;
 const BILLBOARD_SLERP = 0.08;
 const SIDEBAR_WIDTH = 140;
@@ -200,7 +200,7 @@ function onMouseMove(e) {
     dragStart.y = e.clientY;
 
     if (dragMode === 'orbit') {
-      // Orbit camera around its look target
+      // Orbit camera around its look target at current distance
       orbitAngle -= dx * 0.005;
       orbitPitch = Math.max(-1.2, Math.min(1.2, orbitPitch - dy * 0.005));
       updateCameraOrbit();
@@ -242,10 +242,11 @@ function onMouseDown(e) {
       isDragging = true;
       dragMode = 'dollyXY';
     } else {
-      // Plain left drag: orbit (with dead zone so clicks still work)
+      // Plain left drag: orbit
       isDragging = true;
       dragMode = 'orbit';
       dragDistance = 0;
+      syncOrbitFromCamera();
     }
     dragStart.x = e.clientX;
     dragStart.y = e.clientY;
@@ -263,6 +264,7 @@ function onMouseDown(e) {
     dragMode = 'orbit';
     dragStart.x = e.clientX;
     dragStart.y = e.clientY;
+    syncOrbitFromCamera();
     e.preventDefault();
   }
 }
@@ -335,6 +337,14 @@ function onWheel(e) {
     camera.fov = Math.max(10, Math.min(120, camera.fov + delta * 0.05));
     camera.updateProjectionMatrix();
   }
+}
+
+// Derive orbitAngle/orbitPitch/orbitDist from camera's actual position relative to look target
+function syncOrbitFromCamera() {
+  const offset = camera.position.clone().sub(currentLookTarget);
+  orbitDist = offset.length();
+  orbitAngle = Math.atan2(offset.x, offset.z);
+  orbitPitch = Math.asin(Math.max(-1, Math.min(1, offset.y / orbitDist)));
 }
 
 function updateCameraOrbit() {
@@ -757,9 +767,9 @@ function animate() {
     // === Shadow ===
     const heightAboveFloor = pos.y + floatY - FLOOR_Y;
     const absHeight = Math.abs(heightAboveFloor);
-    const shadowScale = 1 + absHeight * 0.001;
-    const shadowBlur = 15 + absHeight * 0.04;
-    const shadowOpacity = Math.max(0.03, 0.2 - absHeight * 0.0003);
+    const shadowScale = 1.5 + absHeight * 0.002;
+    const shadowBlur = 20 + absHeight * 0.05;
+    const shadowOpacity = Math.max(0.4, 1.0 - absHeight * 0.0003);
 
     t.shadowObject.position.set(
       pos.x + floatX + LIGHT_DIR.x * absHeight * 0.15,
@@ -775,7 +785,7 @@ function animate() {
     if (specular) {
       _panelNormal.set(0, 0, 1).applyQuaternion(t.css3dObject.quaternion);
       const dot = _panelNormal.dot(LIGHT_DIR);
-      const intensity = Math.max(0, dot) * 0.12;
+      const intensity = Math.max(0, dot) * 0.4;
       specular.style.background = 'linear-gradient(135deg, rgba(255,255,255,' + intensity.toFixed(3) + ') 0%, transparent 60%)';
     }
 
