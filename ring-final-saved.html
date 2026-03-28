@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+* { margin: 0; padding: 0; }
+body { background: linear-gradient(180deg, #f8f8fa 0%, #e8e6e2 100%); min-height: 100vh; font-family: -apple-system, sans-serif; overflow: hidden; }
+.info { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); color: rgba(0,0,0,0.25); font-size: 13px; z-index: 10; text-align: center; letter-spacing: 1px; }
+.ring-wire { position: absolute; border: 1px solid rgba(0,0,0,0.07); border-radius: 50%; pointer-events: none; }
+.center-mark { position: absolute; width: 6px; height: 6px; border-radius: 50%; background: rgba(0,0,0,0.08); pointer-events: none; }
+.card { position: absolute; background: #1c1c1e; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.25); font-family: 'Courier New', monospace; font-size: 9px; color: #aaa; overflow: hidden; }
+.card.inner { box-shadow: 0 14px 40px rgba(0,0,0,0.35); }
+.card .chrome { display: flex; align-items: center; gap: 3px; padding: 4px 6px; background: #2a2a2c; }
+.card .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+.card .r { background: #ff5f57; } .card .y { background: #febc2e; } .card .g { background: #28c840; }
+.card .nm { color: #666; font-size: 7px; margin-left: 3px; }
+.card .body { padding: 4px 6px; line-height: 1.4; }
+.card .pr { color: #0f0; }
+.controls { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; z-index: 10; background: rgba(0,0,0,0.5); backdrop-filter: blur(10px); padding: 6px 14px; border-radius: 16px; }
+.controls button { padding: 5px 12px; border: none; border-radius: 6px; background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.6); font-size: 11px; cursor: pointer; font-family: -apple-system, sans-serif; transition: all 0.2s; }
+.controls button:hover { background: rgba(255,255,255,0.2); color: #fff; }
+.controls button.active { background: #5c5cff; color: #fff; }
+</style>
+</head>
+<body>
+
+<div class="info" id="info">A: ALWAYS UPRIGHT</div>
+
+<div class="controls">
+  <button class="active" onclick="setMode(0)">Upright</button>
+  <button onclick="setMode(1)">Locked</button>
+  <button onclick="setMode(2)">Gravity</button>
+  <button onclick="setMode(3)">Tilt</button>
+  <button onclick="setMode(4)">Free Spin</button>
+  <button onclick="toggleAuto()" id="autoBtn" style="border-left:1px solid rgba(255,255,255,0.15);margin-left:4px;padding-left:12px;">Auto ▶</button>
+</div>
+
+<script>
+var MODES = ['A: ALWAYS UPRIGHT', 'B: LOCKED TO RING', 'C: GRAVITY PULL', 'D: TILTING PLANE', 'E: FREE SPIN'];
+var OUTER_R = 220, INNER_R = 110;
+var OUTER_N = 5, INNER_N = 2;
+var OUTER_W = 130, OUTER_H = 90;
+var INNER_W = 160, INNER_H = 110;
+var OUTER_SPEED = 0.008; // rad/frame, ~13s/rev at 60fps
+var INNER_SPEED = -0.012; // counter direction, ~8.7s/rev
+
+var cx, cy;
+var outerAngle = 0, innerAngle = 0;
+var currentMode = 0;
+var autoMode = false;
+var autoTimer = null;
+var planeTime = 0;
+
+var outerCards = [];
+var innerCards = [];
+
+// Create elements
+function setup() {
+  cx = window.innerWidth / 2;
+  cy = window.innerHeight / 2;
+
+  // Wireframe rings
+  var r1 = document.createElement('div');
+  r1.className = 'ring-wire';
+  r1.id = 'outerWire';
+  document.body.appendChild(r1);
+  var r2 = document.createElement('div');
+  r2.className = 'ring-wire';
+  r2.id = 'innerWire';
+  document.body.appendChild(r2);
+
+  // Center mark
+  var cm = document.createElement('div');
+  cm.className = 'center-mark';
+  cm.id = 'centerMark';
+  document.body.appendChild(cm);
+
+  // Outer cards
+  var outerNames = ['worker-01', 'worker-02', 'worker-03', 'worker-04', 'worker-05'];
+  var outerText = ['❯ npm build\ncompiling', 'testing\n14/22 pass', 'deploying\n████░░', 'watching\nidle 3m', '❯ logs'];
+  for (var i = 0; i < OUTER_N; i++) {
+    var el = makeCard(outerNames[i], outerText[i], false);
+    document.body.appendChild(el);
+    outerCards.push(el);
+  }
+
+  // Inner cards
+  var innerNames = ['primary', 'manager'];
+  var innerText = ['❯ claude code\nthinking...\n⠸ working', 'dispatching\n3 active nodes'];
+  for (var i = 0; i < INNER_N; i++) {
+    var el = makeCard(innerNames[i], innerText[i], true);
+    document.body.appendChild(el);
+    innerCards.push(el);
+  }
+
+  layoutWires();
+  window.addEventListener('resize', function() {
+    cx = window.innerWidth / 2;
+    cy = window.innerHeight / 2;
+    layoutWires();
+  });
+}
+
+function makeCard(name, text, isInner) {
+  var el = document.createElement('div');
+  el.className = 'card' + (isInner ? ' inner' : '');
+  el.style.width = (isInner ? INNER_W : OUTER_W) + 'px';
+  el.style.height = (isInner ? INNER_H : OUTER_H) + 'px';
+  el.innerHTML =
+    '<div class="chrome">' +
+    '<span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>' +
+    '<span class="nm">' + name + '</span></div>' +
+    '<div class="body">' + text.replace(/\n/g,'<br>').replace(/❯/g,'<span class="pr">❯</span>') + '</div>';
+  return el;
+}
+
+function layoutWires() {
+  var ow = document.getElementById('outerWire');
+  ow.style.width = ow.style.height = (OUTER_R * 2) + 'px';
+  ow.style.left = (cx - OUTER_R) + 'px';
+  ow.style.top = (cy - OUTER_R) + 'px';
+  var iw = document.getElementById('innerWire');
+  iw.style.width = iw.style.height = (INNER_R * 2) + 'px';
+  iw.style.left = (cx - INNER_R) + 'px';
+  iw.style.top = (cy - INNER_R) + 'px';
+  var cm = document.getElementById('centerMark');
+  cm.style.left = (cx - 3) + 'px';
+  cm.style.top = (cy - 3) + 'px';
+}
+
+// Core positioning — same math as confirmed multi-card test
+function positionCard(el, theta, ringAngle, radius, w, h, mode) {
+  // Final position on the ring
+  var spunTheta = theta + ringAngle;
+  var px = cx + Math.cos(spunTheta) * radius;
+  var py = cy + Math.sin(spunTheta) * radius;
+
+  // Float (gentle bobbing, disabled for locked)
+  var fx = 0, fy = 0;
+  if (mode !== 1) {
+    fx = Math.sin(planeTime * 0.4 + theta * 3) * 3;
+    fy = Math.cos(planeTime * 0.35 + theta * 2) * 4;
+  }
+
+  // Rotation depends on mode
+  var rotDeg = 0;
+  switch (mode) {
+    case 0: // Upright — no rotation
+      rotDeg = 0;
+      break;
+    case 1: // Locked to ring — tops toward center, upright at bottom
+      var localRot = theta - Math.PI / 2;
+      rotDeg = (localRot + ringAngle) * 180 / Math.PI;
+      break;
+    case 2: // Gravity — 30% of locked
+      var localRot2 = theta - Math.PI / 2;
+      rotDeg = (localRot2 + ringAngle) * 0.3 * 180 / Math.PI;
+      break;
+    case 3: // Tilt plane — upright (scene tilts separately)
+      rotDeg = 0;
+      break;
+    case 4: // Free spin — rotate by ring angle only
+      rotDeg = ringAngle * 180 / Math.PI;
+      break;
+  }
+
+  el.style.left = (px - w / 2 + fx) + 'px';
+  el.style.top = (py - h / 2 + fy) + 'px';
+  el.style.transformOrigin = '50% 50%';
+  el.style.transform = 'rotate(' + rotDeg + 'deg)';
+}
+
+// Scene tilt for mode D
+function updateSceneTilt() {
+  if (currentMode === 3) {
+    var rx = Math.sin(planeTime * 0.4) * 18;
+    var ry = Math.cos(planeTime * 0.3) * 10;
+    document.body.style.perspective = '800px';
+    document.body.style.transform = 'rotateX(' + rx + 'deg) rotateY(' + ry + 'deg)';
+    document.body.style.transformStyle = 'preserve-3d';
+  } else {
+    document.body.style.transform = 'none';
+    document.body.style.perspective = 'none';
+  }
+}
+
+// Animation
+function animate() {
+  requestAnimationFrame(animate);
+  outerAngle += OUTER_SPEED;
+  innerAngle += INNER_SPEED;
+  planeTime += 0.016;
+
+  updateSceneTilt();
+
+  for (var i = 0; i < OUTER_N; i++) {
+    var theta = -Math.PI / 2 + (2 * Math.PI * i) / OUTER_N;
+    positionCard(outerCards[i], theta, outerAngle, OUTER_R, OUTER_W, OUTER_H, currentMode);
+  }
+  for (var i = 0; i < INNER_N; i++) {
+    var theta = -Math.PI / 2 + (2 * Math.PI * i) / INNER_N;
+    positionCard(innerCards[i], theta, innerAngle, INNER_R, INNER_W, INNER_H, currentMode);
+  }
+}
+
+// Mode switching
+function setMode(m) {
+  currentMode = m;
+  document.getElementById('info').textContent = MODES[m];
+  document.querySelectorAll('.controls button').forEach(function(b, i) {
+    if (i < 5) b.classList.toggle('active', i === m);
+  });
+  // Stop auto
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; autoMode = false; document.getElementById('autoBtn').textContent = 'Auto ▶'; }
+}
+
+function toggleAuto() {
+  autoMode = !autoMode;
+  document.getElementById('autoBtn').textContent = autoMode ? 'Auto ⏸' : 'Auto ▶';
+  document.getElementById('autoBtn').classList.toggle('active', autoMode);
+  if (autoMode) {
+    autoTimer = setInterval(function() {
+      currentMode = (currentMode + 1) % 5;
+      document.getElementById('info').textContent = MODES[currentMode];
+      document.querySelectorAll('.controls button').forEach(function(b, i) {
+        if (i < 5) b.classList.toggle('active', i === currentMode);
+      });
+    }, 15000);
+  } else {
+    clearInterval(autoTimer);
+    autoTimer = null;
+  }
+}
+
+setup();
+animate();
+</script>
+</body>
+</html>

@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: linear-gradient(180deg, #f8f8fa 0%, #e8e6e2 100%); min-height: 100vh; font-family: -apple-system, sans-serif; overflow: hidden; }
+
+.ring-wire { position: absolute; border: 1px solid rgba(0,0,0,0.07); border-radius: 50%; pointer-events: none; }
+.center-mark { position: absolute; width: 6px; height: 6px; border-radius: 50%; background: rgba(0,0,0,0.08); pointer-events: none; }
+
+.card { position: absolute; background: #1c1c1e; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.25); font-family: 'Courier New', monospace; font-size: 9px; color: #aaa; overflow: hidden; transition: opacity 0.5s; }
+.card.inner { box-shadow: 0 14px 40px rgba(0,0,0,0.35); }
+.card .chrome { display: flex; align-items: center; gap: 3px; padding: 4px 6px; background: #2a2a2c; }
+.card .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+.card .r { background: #ff5f57; } .card .y { background: #febc2e; } .card .g { background: #28c840; }
+.card .nm { color: #666; font-size: 7px; margin-left: 3px; }
+.card .body { padding: 4px 6px; line-height: 1.4; }
+.card .pr { color: #0f0; }
+
+/* Control panel */
+.panel { position: fixed; right: 12px; top: 12px; background: rgba(0,0,0,0.7); backdrop-filter: blur(12px); border-radius: 12px; padding: 14px; z-index: 100; color: #ccc; font-size: 11px; width: 240px; }
+.panel h3 { color: #fff; font-size: 12px; font-weight: 600; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 6px; }
+.panel .section { margin-bottom: 14px; }
+.panel .section:last-child { margin-bottom: 0; }
+.panel label { display: block; margin-bottom: 4px; color: #999; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+.panel .row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.panel input[type=range] { flex: 1; height: 4px; -webkit-appearance: none; background: rgba(255,255,255,0.15); border-radius: 2px; outline: none; }
+.panel input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #5c5cff; cursor: pointer; }
+.panel .val { width: 30px; text-align: right; color: #aaa; font-family: monospace; font-size: 11px; }
+.panel select { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.15); color: #ddd; padding: 3px 6px; border-radius: 4px; font-size: 11px; width: 100%; }
+.panel .spin-btns { display: flex; gap: 4px; }
+.panel .spin-btns button { flex: 1; padding: 4px; border: none; border-radius: 4px; background: rgba(255,255,255,0.1); color: #aaa; font-size: 11px; cursor: pointer; }
+.panel .spin-btns button:hover { background: rgba(255,255,255,0.2); }
+.panel .spin-btns button.active { background: #5c5cff; color: #fff; }
+.panel .auto-btn { width: 100%; padding: 6px; border: none; border-radius: 6px; background: rgba(92,92,255,0.2); color: #8888ff; font-size: 11px; cursor: pointer; margin-top: 10px; }
+.panel .auto-btn:hover { background: rgba(92,92,255,0.3); }
+.panel .auto-btn.active { background: #5c5cff; color: #fff; }
+</style>
+</head>
+<body>
+
+<!-- Control Panel -->
+<div class="panel">
+  <div class="section">
+    <h3>Outer Ring</h3>
+    <label>Cards</label>
+    <div class="row">
+      <input type="range" min="1" max="12" value="5" id="outerCount" oninput="rebuildOuter()">
+      <span class="val" id="outerCountVal">5</span>
+    </div>
+    <label>Mode</label>
+    <select id="outerMode" onchange="updateMode()">
+      <option value="0">Upright</option>
+      <option value="1">Locked to Ring</option>
+      <option value="2">Gravity Pull</option>
+      <option value="4">Free Spin</option>
+    </select>
+    <label style="margin-top:6px;">Card Tilt</label>
+    <div class="row">
+      <input type="range" min="-180" max="180" value="0" id="outerCardTilt" oninput="updateTiltVal()">
+      <span class="val" id="outerCardTiltVal">0°</span>
+    </div>
+    <label>Ring Tilt</label>
+    <div class="row">
+      <input type="range" min="-180" max="180" value="0" id="outerRingTilt" oninput="updateTiltVal()">
+      <span class="val" id="outerRingTiltVal">0°</span>
+    </div>
+    <label>Spin</label>
+    <div class="spin-btns">
+      <button onclick="setOuterSpin(-1)" id="outerSpinN">← Rev</button>
+      <button onclick="setOuterSpin(0)" id="outerSpin0">Stop</button>
+      <button onclick="setOuterSpin(1)" id="outerSpinP" class="active">Fwd →</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3>Inner Ring</h3>
+    <label>Cards</label>
+    <div class="row">
+      <input type="range" min="1" max="8" value="2" id="innerCount" oninput="rebuildInner()">
+      <span class="val" id="innerCountVal">2</span>
+    </div>
+    <label>Mode</label>
+    <select id="innerMode" onchange="updateMode()">
+      <option value="0">Upright</option>
+      <option value="1">Locked to Ring</option>
+      <option value="2">Gravity Pull</option>
+      <option value="4">Free Spin</option>
+    </select>
+    <label style="margin-top:6px;">Card Tilt</label>
+    <div class="row">
+      <input type="range" min="-180" max="180" value="0" id="innerCardTilt" oninput="updateTiltVal()">
+      <span class="val" id="innerCardTiltVal">0°</span>
+    </div>
+    <label>Ring Tilt</label>
+    <div class="row">
+      <input type="range" min="-180" max="180" value="0" id="innerRingTilt" oninput="updateTiltVal()">
+      <span class="val" id="innerRingTiltVal">0°</span>
+    </div>
+    <label>Spin</label>
+    <div class="spin-btns">
+      <button onclick="setInnerSpin(-1)" id="innerSpinN" class="active">← Rev</button>
+      <button onclick="setInnerSpin(0)" id="innerSpin0">Stop</button>
+      <button onclick="setInnerSpin(1)" id="innerSpinP">Fwd →</button>
+    </div>
+  </div>
+
+  <button class="auto-btn" id="autoBtn" onclick="toggleAuto()">Auto Cycle Modes (15s)</button>
+</div>
+
+<script>
+// === State ===
+var OUTER_R = 220, INNER_R = 110;
+var OUTER_W = 130, OUTER_H = 90;
+var INNER_W = 160, INNER_H = 110;
+
+var cx, cy;
+var outerAngle = 0, innerAngle = 0;
+var outerSpin = 1, innerSpin = -1; // -1, 0, +1
+var outerSpeed = 0.008, innerSpeed = 0.012;
+var planeTime = 0;
+var autoTimer = null;
+
+var outerCards = [];
+var innerCards = [];
+
+var outerNames = ['w-01','w-02','w-03','w-04','w-05','w-06','w-07','w-08','w-09','w-10','w-11','w-12'];
+var innerNames = ['primary','manager','ctrl-01','ctrl-02','ctrl-03','ctrl-04','ctrl-05','ctrl-06'];
+var outerTexts = ['❯ build\ncompile','testing\n14/22','deploy\n████░░','watching\nidle','❯ logs','lint\npass','format\ndone','bench\n2.3ms','scan\nclean','pack\n98KB','serve\n:3200','audit\nok'];
+var innerTexts = ['❯ claude\nthinking\n⠸ work','dispatch\n3 active','monitor\nall ok','backup\nrunning','sync\npending','cache\nwarm','queue\nempty','health\n✓ ok'];
+
+function makeCard(name, text, isInner) {
+  var el = document.createElement('div');
+  el.className = 'card' + (isInner ? ' inner' : '');
+  el.style.width = (isInner ? INNER_W : OUTER_W) + 'px';
+  el.style.height = (isInner ? INNER_H : OUTER_H) + 'px';
+  el.innerHTML =
+    '<div class="chrome"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>' +
+    '<span class="nm">' + name + '</span></div>' +
+    '<div class="body">' + text.replace(/\n/g,'<br>').replace(/❯/g,'<span class="pr">❯</span>') + '</div>';
+  return el;
+}
+
+function rebuildOuter() {
+  var n = parseInt(document.getElementById('outerCount').value);
+  document.getElementById('outerCountVal').textContent = n;
+  outerCards.forEach(function(el) { el.remove(); });
+  outerCards = [];
+  for (var i = 0; i < n; i++) {
+    var el = makeCard(outerNames[i], outerTexts[i], false);
+    document.body.appendChild(el);
+    outerCards.push(el);
+  }
+}
+
+function rebuildInner() {
+  var n = parseInt(document.getElementById('innerCount').value);
+  document.getElementById('innerCountVal').textContent = n;
+  innerCards.forEach(function(el) { el.remove(); });
+  innerCards = [];
+  for (var i = 0; i < n; i++) {
+    var el = makeCard(innerNames[i], innerTexts[i], true);
+    document.body.appendChild(el);
+    innerCards.push(el);
+  }
+}
+
+function updateTiltVal() {
+  document.getElementById('outerCardTiltVal').textContent = document.getElementById('outerCardTilt').value + '°';
+  document.getElementById('outerRingTiltVal').textContent = document.getElementById('outerRingTilt').value + '°';
+  document.getElementById('innerCardTiltVal').textContent = document.getElementById('innerCardTilt').value + '°';
+  document.getElementById('innerRingTiltVal').textContent = document.getElementById('innerRingTilt').value + '°';
+}
+
+function updateMode() {}
+
+function setOuterSpin(v) {
+  outerSpin = v;
+  document.getElementById('outerSpinN').classList.toggle('active', v === -1);
+  document.getElementById('outerSpin0').classList.toggle('active', v === 0);
+  document.getElementById('outerSpinP').classList.toggle('active', v === 1);
+}
+
+function setInnerSpin(v) {
+  innerSpin = v;
+  document.getElementById('innerSpinN').classList.toggle('active', v === -1);
+  document.getElementById('innerSpin0').classList.toggle('active', v === 0);
+  document.getElementById('innerSpinP').classList.toggle('active', v === 1);
+}
+
+// === Core positioning (confirmed working) ===
+function positionCard(el, theta, ringAngle, radius, w, h, mode, cardTiltDeg) {
+  var spunTheta = theta + ringAngle;
+  var px = cx + Math.cos(spunTheta) * radius;
+  var py = cy + Math.sin(spunTheta) * radius;
+
+  var fx = 0, fy = 0;
+  if (mode !== 1) {
+    fx = Math.sin(planeTime * 0.4 + theta * 3) * 3;
+    fy = Math.cos(planeTime * 0.35 + theta * 2) * 4;
+  }
+
+  var rotDeg = 0;
+  switch (mode) {
+    case 0: rotDeg = 0; break;
+    case 1:
+      var localRot = theta - Math.PI / 2;
+      rotDeg = (localRot + ringAngle) * 180 / Math.PI;
+      break;
+    case 2:
+      var localRot2 = theta - Math.PI / 2;
+      rotDeg = (localRot2 + ringAngle) * 0.3 * 180 / Math.PI;
+      break;
+    case 4:
+      rotDeg = ringAngle * 180 / Math.PI;
+      break;
+  }
+
+  // Card tilt: 3D perspective tilt on individual card
+  // Positive = cards tilt based on ring position (top cards lean back, bottom lean forward)
+  // Negative = opposite direction
+  var cardTiltTransform = '';
+  if (cardTiltDeg !== 0) {
+    var tiltAngle = Math.sin(spunTheta) * cardTiltDeg;
+    cardTiltTransform = ' perspective(400px) rotateX(' + tiltAngle + 'deg)';
+  }
+
+  el.style.left = (px - w / 2 + fx) + 'px';
+  el.style.top = (py - h / 2 + fy) + 'px';
+  el.style.transformOrigin = '50% 50%';
+  el.style.transform = 'rotate(' + rotDeg + 'deg)' + cardTiltTransform;
+}
+
+// === Layout ===
+function layoutWires() {
+  cx = window.innerWidth / 2 - 120; // offset for control panel
+  cy = window.innerHeight / 2;
+  var ow = document.getElementById('outerWire');
+  ow.style.width = ow.style.height = (OUTER_R * 2) + 'px';
+  ow.style.left = (cx - OUTER_R) + 'px';
+  ow.style.top = (cy - OUTER_R) + 'px';
+  var iw = document.getElementById('innerWire');
+  iw.style.width = iw.style.height = (INNER_R * 2) + 'px';
+  iw.style.left = (cx - INNER_R) + 'px';
+  iw.style.top = (cy - INNER_R) + 'px';
+  var cm = document.getElementById('centerMark');
+  cm.style.left = (cx - 3) + 'px';
+  cm.style.top = (cy - 3) + 'px';
+}
+
+// === Animation ===
+function animate() {
+  requestAnimationFrame(animate);
+
+  outerAngle += outerSpeed * outerSpin;
+  innerAngle += innerSpeed * innerSpin;
+  planeTime += 0.016;
+
+  var outerMode = parseInt(document.getElementById('outerMode').value);
+  var innerMode = parseInt(document.getElementById('innerMode').value);
+  var outerCardTilt = parseInt(document.getElementById('outerCardTilt').value);
+  var innerCardTilt = parseInt(document.getElementById('innerCardTilt').value);
+  var outerRingTilt = parseInt(document.getElementById('outerRingTilt').value);
+  var innerRingTilt = parseInt(document.getElementById('innerRingTilt').value);
+
+  // Apply ring tilt to wireframe rings (3D perspective on the ring plane itself)
+  var outerWire = document.getElementById('outerWire');
+  if (outerRingTilt !== 0) {
+    outerWire.style.transform = 'perspective(600px) rotateX(' + outerRingTilt + 'deg)';
+  } else {
+    outerWire.style.transform = 'none';
+  }
+  var innerWire = document.getElementById('innerWire');
+  if (innerRingTilt !== 0) {
+    innerWire.style.transform = 'perspective(600px) rotateX(' + innerRingTilt + 'deg)';
+  } else {
+    innerWire.style.transform = 'none';
+  }
+
+  // Position cards — ring tilt affects Y position (perspective foreshortening)
+  for (var i = 0; i < outerCards.length; i++) {
+    var theta = -Math.PI / 2 + (2 * Math.PI * i) / outerCards.length;
+    var spunTheta = theta + outerAngle;
+    // Ring tilt: cards at the top of the ring move further away (smaller/higher)
+    // cards at bottom move closer (larger/lower)
+    var ringTiltOffset = 0;
+    var ringTiltScale = 1;
+    if (outerRingTilt !== 0) {
+      var tiltRad = outerRingTilt * Math.PI / 180;
+      // Y offset based on position on ring and tilt angle
+      ringTiltOffset = Math.cos(spunTheta) * Math.sin(tiltRad) * OUTER_R * 0.3;
+      // Scale: cards further away are smaller
+      ringTiltScale = 1 - Math.cos(spunTheta) * Math.sin(tiltRad) * 0.15;
+    }
+    positionCard(outerCards[i], theta, outerAngle, OUTER_R, OUTER_W, OUTER_H, outerMode, outerCardTilt);
+    // Apply ring tilt offset and scale on top
+    if (outerRingTilt !== 0) {
+      var curTop = parseFloat(outerCards[i].style.top);
+      outerCards[i].style.top = (curTop + ringTiltOffset) + 'px';
+      outerCards[i].style.transform += ' scale(' + ringTiltScale.toFixed(3) + ')';
+      // Adjust z-index so closer cards render on top
+      outerCards[i].style.zIndex = Math.round(ringTiltScale * 100);
+    } else {
+      outerCards[i].style.zIndex = '';
+    }
+  }
+
+  for (var i = 0; i < innerCards.length; i++) {
+    var theta = -Math.PI / 2 + (2 * Math.PI * i) / innerCards.length;
+    var spunTheta = theta + innerAngle;
+    var ringTiltOffset = 0;
+    var ringTiltScale = 1;
+    if (innerRingTilt !== 0) {
+      var tiltRad = innerRingTilt * Math.PI / 180;
+      ringTiltOffset = Math.cos(spunTheta) * Math.sin(tiltRad) * INNER_R * 0.3;
+      ringTiltScale = 1 - Math.cos(spunTheta) * Math.sin(tiltRad) * 0.15;
+    }
+    positionCard(innerCards[i], theta, innerAngle, INNER_R, INNER_W, INNER_H, innerMode, innerCardTilt);
+    if (innerRingTilt !== 0) {
+      var curTop = parseFloat(innerCards[i].style.top);
+      innerCards[i].style.top = (curTop + ringTiltOffset) + 'px';
+      innerCards[i].style.transform += ' scale(' + ringTiltScale.toFixed(3) + ')';
+      innerCards[i].style.zIndex = Math.round(ringTiltScale * 100);
+    } else {
+      innerCards[i].style.zIndex = '';
+    }
+  }
+}
+
+// === Auto cycle ===
+function toggleAuto() {
+  if (autoTimer) {
+    clearInterval(autoTimer);
+    autoTimer = null;
+    document.getElementById('autoBtn').classList.remove('active');
+    document.getElementById('autoBtn').textContent = 'Auto Cycle Modes (15s)';
+  } else {
+    var modes = [0, 1, 2, 4];
+    var idx = 0;
+    autoTimer = setInterval(function() {
+      idx = (idx + 1) % modes.length;
+      document.getElementById('outerMode').value = modes[idx];
+      document.getElementById('innerMode').value = modes[idx];
+    }, 15000);
+    document.getElementById('autoBtn').classList.add('active');
+    document.getElementById('autoBtn').textContent = 'Auto Cycling ⏸';
+  }
+}
+
+// === Init ===
+// Create wireframe elements
+var owEl = document.createElement('div'); owEl.className = 'ring-wire'; owEl.id = 'outerWire'; document.body.appendChild(owEl);
+var iwEl = document.createElement('div'); iwEl.className = 'ring-wire'; iwEl.id = 'innerWire'; document.body.appendChild(iwEl);
+var cmEl = document.createElement('div'); cmEl.className = 'center-mark'; cmEl.id = 'centerMark'; document.body.appendChild(cmEl);
+
+rebuildOuter();
+rebuildInner();
+layoutWires();
+window.addEventListener('resize', layoutWires);
+animate();
+</script>
+</body>
+</html>

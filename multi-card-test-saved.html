@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+* { margin: 0; padding: 0; }
+body { background: linear-gradient(180deg, #f8f8fa, #e8e6e2); min-height: 100vh; font-family: -apple-system, sans-serif; }
+.info { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); color: #666; font-size: 13px; z-index: 10; text-align: center; }
+.info b { color: #333; }
+.ring { position: absolute; border: 1px solid rgba(0,0,0,0.1); border-radius: 50%; }
+.center-mark { position: absolute; width: 10px; height: 10px; border-radius: 50%; background: rgba(255,0,0,0.3); }
+.card { position: absolute; width: 120px; height: 84px; background: #1c1c1e; border-radius: 8px; box-shadow: 0 8px 25px rgba(0,0,0,0.25); font-family: monospace; font-size: 9px; color: #aaa; overflow: hidden; }
+.card .chrome { display: flex; align-items: center; gap: 3px; padding: 4px 6px; background: #2a2a2c; }
+.card .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+.card .r { background: #ff5f57; } .card .y { background: #febc2e; } .card .g { background: #28c840; }
+.card .body { padding: 4px 6px; }
+.controls { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; z-index: 10; }
+.controls button { padding: 8px 16px; border: none; border-radius: 8px; background: #333; color: #fff; font-size: 13px; cursor: pointer; font-family: monospace; }
+.controls button:hover { background: #5c5cff; }
+.controls button.active { background: #5c5cff; }
+</style>
+</head>
+<body>
+
+<div class="info" id="info"><b>5 cards locked to ring</b><br>Each placed upright at 6 o'clock, disc rotated between placements</div>
+
+<div class="controls">
+  <button onclick="setAngle(0)">0°</button>
+  <button onclick="setAngle(45)">45°</button>
+  <button onclick="setAngle(90)">90°</button>
+  <button onclick="setAngle(180)">180°</button>
+  <button onclick="setAngle(270)">270°</button>
+  <button onclick="toggleSpin()" id="spinBtn">Spin</button>
+</div>
+
+<script>
+var cx = window.innerWidth / 2;
+var cy = window.innerHeight / 2;
+var RADIUS = 200;
+var CARD_W = 120;
+var CARD_H = 84;
+var COUNT = 5;
+var ringDeg = 0;
+var spinning = false;
+
+// Draw ring
+var ring = document.createElement('div');
+ring.className = 'ring';
+ring.style.width = ring.style.height = (RADIUS * 2) + 'px';
+ring.style.left = (cx - RADIUS) + 'px';
+ring.style.top = (cy - RADIUS) + 'px';
+document.body.appendChild(ring);
+
+var cm = document.createElement('div');
+cm.className = 'center-mark';
+cm.style.left = (cx - 5) + 'px';
+cm.style.top = (cy - 5) + 'px';
+document.body.appendChild(cm);
+
+// Create 5 cards
+// Each card is placed upright at 6 o'clock (PI/2), then the disc is rotated
+// by (i * 360/COUNT) degrees to make room for the next one.
+// So card i has been on the disc while it rotated by i * 72 degrees.
+// Its fixed position on the disc is at angle (PI/2 + i * 2PI/COUNT) from center.
+var cards = [];
+for (var i = 0; i < COUNT; i++) {
+  var card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML =
+    '<div class="chrome">' +
+    '<span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>' +
+    '<span style="color:#666;font-size:8px;margin-left:3px;">card-' + i + '</span>' +
+    '</div>' +
+    '<div class="body">TOP ▲ chrome<br>card ' + i + '<br>BOTTOM ▼</div>';
+  document.body.appendChild(card);
+  cards.push(card);
+}
+
+function render() {
+  var ringRad = ringDeg * Math.PI / 180;
+
+  var ringRad = ringDeg * Math.PI / 180;
+
+  for (var i = 0; i < COUNT; i++) {
+    // θ_i = -π/2 + 2πi/N  (card 0 at 6 o'clock)
+    var theta = -Math.PI / 2 + (2 * Math.PI * i) / COUNT;
+
+    // Card's local rotation (top toward center, upright at bottom/6 o'clock)
+    // At theta=PI/2 (bottom): localRot = 0 (upright) ✓
+    // At theta=-PI/2 (top): localRot = -PI (upside down) ✓
+    var localRot = theta - Math.PI / 2;
+
+    // Now apply the disc spin: rotate θ_i by ringRad around center
+    var spunTheta = theta + ringRad;
+
+    // Final position on the spun disc
+    var px = cx + Math.cos(spunTheta) * RADIUS;
+    var py = cy + Math.sin(spunTheta) * RADIUS;
+
+    // Final visual rotation = local tilt + disc spin
+    var finalRot = localRot + ringRad;
+    var finalRotDeg = finalRot * 180 / Math.PI;
+
+    // Position card centered on (px, py), rotate around card's own center
+    cards[i].style.left = (px - CARD_W / 2) + 'px';
+    cards[i].style.top = (py - CARD_H / 2) + 'px';
+    cards[i].style.transformOrigin = '50% 50%';
+    cards[i].style.transform = 'rotate(' + finalRotDeg + 'deg)';
+  }
+
+  document.getElementById('info').innerHTML =
+    '<b>Ring rotation: ' + Math.round(ringDeg) + '°</b> — 5 cards, all placed upright at 6 o\'clock';
+}
+
+function setAngle(deg) {
+  spinning = false;
+  document.getElementById('spinBtn').classList.remove('active');
+  ringDeg = deg;
+  render();
+}
+
+function toggleSpin() {
+  spinning = !spinning;
+  document.getElementById('spinBtn').classList.toggle('active', spinning);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  if (spinning) {
+    ringDeg = (ringDeg + 0.3) % 360;
+    render();
+  }
+}
+
+render();
+animate();
+</script>
+</body>
+</html>

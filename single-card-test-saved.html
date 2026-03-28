@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+* { margin: 0; padding: 0; }
+body { background: linear-gradient(180deg, #f8f8fa, #e8e6e2); min-height: 100vh; font-family: -apple-system, sans-serif; }
+
+.info { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); color: #666; font-size: 13px; z-index: 10; text-align: center; }
+.info b { color: #333; }
+
+.ring { position: absolute; border: 1px solid rgba(0,0,0,0.1); border-radius: 50%; width: 400px; height: 400px; }
+
+/* Crosshair at ring center */
+.center-mark { position: absolute; width: 10px; height: 10px; border-radius: 50%; background: rgba(255,0,0,0.3); }
+
+/* Tick marks at 0, 90, 180, 270 */
+.tick { position: absolute; width: 20px; height: 2px; background: rgba(0,0,0,0.15); }
+.tick-label { position: absolute; color: #999; font-size: 11px; }
+
+.card { position: absolute; width: 150px; height: 105px; background: #1c1c1e; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.25); font-family: monospace; font-size: 11px; color: #aaa; overflow: hidden; }
+.card .chrome { display: flex; align-items: center; gap: 4px; padding: 5px 8px; background: #2a2a2c; }
+.card .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.card .r { background: #ff5f57; } .card .y { background: #febc2e; } .card .g { background: #28c840; }
+.card .body { padding: 6px 8px; }
+
+.controls { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; z-index: 10; }
+.controls button { padding: 8px 20px; border: none; border-radius: 8px; background: #333; color: #fff; font-size: 14px; cursor: pointer; font-family: monospace; }
+.controls button:hover { background: #5c5cff; }
+.controls button.active { background: #5c5cff; }
+</style>
+</head>
+<body>
+
+<div class="info" id="info">
+  <b>Single card locked to ring test</b><br>
+  Card starts at 180° (bottom), upright. Click buttons to rotate ring.
+</div>
+
+<div class="controls">
+  <button onclick="setAngle(0)" id="b0">0° (start)</button>
+  <button onclick="setAngle(90)">90°</button>
+  <button onclick="setAngle(180)">180°</button>
+  <button onclick="setAngle(270)">270°</button>
+  <button onclick="toggleSpin()" id="spinBtn">Spin</button>
+</div>
+
+<script>
+const cx = window.innerWidth / 2;
+const cy = window.innerHeight / 2;
+const RADIUS = 200;
+const CARD_W = 150;
+const CARD_H = 105;
+
+// Draw ring
+const ring = document.createElement('div');
+ring.className = 'ring';
+ring.style.left = (cx - 200) + 'px';
+ring.style.top = (cy - 200) + 'px';
+document.body.appendChild(ring);
+
+// Center mark
+const cm = document.createElement('div');
+cm.className = 'center-mark';
+cm.style.left = (cx - 5) + 'px';
+cm.style.top = (cy - 5) + 'px';
+document.body.appendChild(cm);
+
+// Tick marks and labels at 0°, 90°, 180°, 270°
+const tickAngles = [
+  { deg: 0, label: '0° (right)', lx: 15, ly: -8 },
+  { deg: 90, label: '90° (bottom)', lx: -30, ly: 10 },
+  { deg: 180, label: '180° (left)', lx: -80, ly: -8 },
+  { deg: 270, label: '270° (top)', lx: -25, ly: -20 }
+];
+tickAngles.forEach(t => {
+  const rad = t.deg * Math.PI / 180;
+  const tx = cx + Math.cos(rad) * RADIUS;
+  const ty = cy + Math.sin(rad) * RADIUS;
+  const tick = document.createElement('div');
+  tick.className = 'tick';
+  tick.style.left = (tx - 10) + 'px';
+  tick.style.top = (ty - 1) + 'px';
+  tick.style.transform = 'rotate(' + t.deg + 'deg)';
+  document.body.appendChild(tick);
+
+  const label = document.createElement('div');
+  label.className = 'tick-label';
+  label.textContent = t.label;
+  label.style.left = (tx + t.lx) + 'px';
+  label.style.top = (ty + t.ly) + 'px';
+  document.body.appendChild(label);
+});
+
+// Create card
+const card = document.createElement('div');
+card.className = 'card';
+card.innerHTML = `
+  <div class="chrome">
+    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+    <span style="color:#666;font-size:9px;margin-left:4px;">terminal-01</span>
+  </div>
+  <div class="body">TOP is chrome bar<br>with traffic lights<br><br>BOTTOM is here</div>
+`;
+document.body.appendChild(card);
+
+// Card starts at 180° on the circle (bottom in standard math = left on screen)
+// Wait — 180° in standard math coords (cos,sin) is the LEFT side.
+// "Bottom" in screen coords is 90° in math coords (sin=1).
+// Let's use screen convention: 0°=right, 90°=down(bottom), 180°=left, 270°=up(top)
+// So card starts at 90° screen (bottom), which is PI/2 radians
+
+const CARD_START_ANGLE = Math.PI / 2; // bottom of circle (6 o'clock)
+
+// Place card at its starting position (no ring rotation yet)
+let ringRotationDeg = 0;
+let spinning = false;
+let spinAngle = 0;
+
+function render() {
+  const ringRad = ringRotationDeg * Math.PI / 180;
+
+  // Card's fixed position on the ring (before ring rotates)
+  const fixedX = cx + Math.cos(CARD_START_ANGLE) * RADIUS;
+  const fixedY = cy + Math.sin(CARD_START_ANGLE) * RADIUS;
+
+  // Place card at its fixed position, centered
+  const cardLeft = fixedX - CARD_W / 2;
+  const cardTop = fixedY - CARD_H / 2;
+
+  // Transform origin = vector from card's top-left to ring center
+  const originX = cx - cardLeft;
+  const originY = cy - cardTop;
+
+  card.style.left = cardLeft + 'px';
+  card.style.top = cardTop + 'px';
+  card.style.transformOrigin = originX + 'px ' + originY + 'px';
+  card.style.transform = 'rotate(' + ringRotationDeg + 'deg)';
+
+  document.getElementById('info').innerHTML =
+    '<b>Ring rotation: ' + ringRotationDeg + '°</b><br>' +
+    'Card placed at 6 o\'clock (bottom), upright. Ring rotates, card rotates with it.';
+}
+
+function setAngle(deg) {
+  spinning = false;
+  document.getElementById('spinBtn').classList.remove('active');
+  ringRotationDeg = deg;
+  render();
+}
+
+function toggleSpin() {
+  spinning = !spinning;
+  document.getElementById('spinBtn').classList.toggle('active', spinning);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  if (spinning) {
+    ringRotationDeg = (ringRotationDeg + 0.5) % 360;
+    render();
+  }
+}
+
+render();
+animate();
+</script>
+</body>
+</html>
