@@ -137,6 +137,7 @@ let dragMode = null; // 'orbit' | 'dollyXY' | 'rotateOrigin' | 'ctrlPending'
 let dragStart = { x: 0, y: 0 };
 let dragDistance = 0;        // total px moved during drag — used to distinguish click vs drag
 let ctrlHeld = false;        // tracked via keydown/keyup because e.ctrlKey is unreliable in click events on Windows
+let altHeld = false;         // tracked for text selection — prevents unfocus on Alt+click release
 let suppressNextClick = false; // set in onMouseUp to prevent onSceneClick from double-handling
 let lastAddToFocusTime = 0;   // timestamp — blocks focusTerminal() for 200ms after addToFocus() to prevent replacement
 let mouseDownOnSidebar = false; // prevents handleCtrlClick from firing when clicking sidebar thumbnails
@@ -378,7 +379,10 @@ function onMouseDown(e) {
   const sidebar = document.getElementById('sidebar');
   mouseDownOnSidebar = sidebar && sidebar.contains(e.target);
   if (e.button === 0) {
-    if (e.ctrlKey) {
+    if (e.altKey) {
+      // Alt+click: text selection — handled by selection system below. Don't start drag.
+      return;
+    } else if (e.ctrlKey) {
       // Don't commit to rotateOrigin yet — could be ctrl+click for multi-focus.
       // If dragDistance stays < 5px, onMouseUp treats it as ctrl+click.
       // If dragDistance exceeds 5px, onMouseMove promotes to 'rotateOrigin'.
@@ -423,7 +427,28 @@ function onMouseDown(e) {
   }
 }
 
-document.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+// Hidden contenteditable for right-click paste support.
+// Browsers only show Cut/Copy/Paste in context menu on editable elements.
+// When a terminal is focused, we position this invisible div under the cursor
+// so the browser's native paste option works.
+const _pasteTarget = document.createElement('div');
+_pasteTarget.contentEditable = 'true';
+_pasteTarget.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0.01;z-index:200;pointer-events:none;';
+document.body.appendChild(_pasteTarget);
+
+document.addEventListener('contextmenu', function(e) {
+  if (focusedSessions.size > 0) {
+    // Position the invisible contenteditable under the cursor for paste menu
+    _pasteTarget.style.left = e.clientX + 'px';
+    _pasteTarget.style.top = e.clientY + 'px';
+    _pasteTarget.style.pointerEvents = 'auto';
+    _pasteTarget.focus();
+    // Re-hide after menu closes
+    setTimeout(function() { _pasteTarget.style.pointerEvents = 'none'; }, 100);
+    return; // let context menu show
+  }
+  e.preventDefault();
+});
 
 function onMouseUp(e) {
   if (e.button === 0 && dragDistance <= 5) {
@@ -484,9 +509,15 @@ function toggleHelp() {
   panel.classList.toggle('visible');
 }
 
-document.addEventListener('keydown', function(e) { if (e.key === 'Control') ctrlHeld = true; });
-document.addEventListener('keyup', function(e) { if (e.key === 'Control') ctrlHeld = false; });
-window.addEventListener('blur', function() { ctrlHeld = false; });
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Control') ctrlHeld = true;
+  if (e.key === 'Alt') altHeld = true;
+});
+document.addEventListener('keyup', function(e) {
+  if (e.key === 'Control') ctrlHeld = false;
+  if (e.key === 'Alt') altHeld = false;
+});
+window.addEventListener('blur', function() { ctrlHeld = false; altHeld = false; });
 
 function onKeyDown(e) {
   if (e.key === 'Escape') {
@@ -508,7 +539,7 @@ function onSceneClick(e) {
   // onMouseUp and onSceneClick find different terminals via overlapping bounding
   // rects in the 3D scene. This was the root cause of the "ctrl+click adds 2
   // terminals" bug. See note 3 in header.
-  if (suppressNextClick || ctrlHeld || e.ctrlKey) {
+  if (suppressNextClick || ctrlHeld || e.ctrlKey || e.altKey || altHeld) {
     suppressNextClick = false;
     return;
   }
@@ -518,7 +549,14 @@ function onSceneClick(e) {
 
   let clicked = null;
   let closestZ = -Infinity;
+
+  // When terminals are focused, only check focused terminals for click (setActiveInput).
+  // Don't check unfocused terminals behind them — their overlapping bounding rects
+  // cause the focused terminal to be replaced by a background one.
+  const checkSet = focusedSessions.size > 0 ? focusedSessions : null;
+
   for (const [name, t] of terminals) {
+    if (checkSet && !checkSet.has(name)) continue; // skip unfocused when in focus mode
     const rect = t.dom.getBoundingClientRect();
     if (rect.width < 10) continue;
     if (e.clientX >= rect.left && e.clientX <= rect.right &&
@@ -541,9 +579,12 @@ function onSceneClick(e) {
       // Regular click: focus single terminal (replaces all)
       focusTerminal(clicked);
     }
-  } else if (focusedSessions.size > 0) {
-    unfocusTerminal();
   }
+  // NOTE: Clicking empty space does NOT unfocus. Use Esc to unfocus.
+  // Previously this called unfocusTerminal() on empty-space clicks, which caused
+  // accidental unfocus when clicking near a focused terminal, after Alt+drag
+  // selection, or when trying to click into a terminal for keyboard focus.
+  // Esc is the explicit, intentional unfocus action.
 }
 
 function onWheel(e) {
@@ -775,6 +816,9 @@ function addTerminal(sessionName) {
     billboardArrival: null,  // set when terminal first reaches its ring position
     inputWs: null,
     scrollOffset: 0,
+    screenLines: [],  // text content from server for copy/paste
+    screenCols: 80,
+    screenRows: 24,
     sendInput: function(msg) {
       if (this.inputWs && this.inputWs.readyState === WebSocket.OPEN) {
         this.inputWs.send(JSON.stringify(msg));
@@ -839,6 +883,23 @@ function focusTerminal(sessionName) {
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   t.inputWs = new WebSocket(proto + '//' + location.host + '/ws/terminal?session=' + encodeURIComponent(sessionName) + '&pane=0');
+  // Capture screen text from the WebSocket for copy/paste support
+  t.inputWs.onmessage = function(e) {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'screen' && msg.lines) {
+        t.screenLines = msg.lines.map(function(l) {
+          return l.spans.map(function(s) { return s.text; }).join('');
+        });
+        t.screenCols = msg.width || 80;
+        t.screenRows = msg.height || 24;
+      } else if (msg.type === 'delta' && msg.changed) {
+        for (const [idx, spans] of Object.entries(msg.changed)) {
+          t.screenLines[parseInt(idx)] = spans.map(function(s) { return s.text; }).join('');
+        }
+      }
+    } catch (err) {}
+  };
 
   updateFocusStyles();
 
@@ -910,6 +971,22 @@ function addToFocus(sessionName) {
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   t.inputWs = new WebSocket(proto + '//' + location.host + '/ws/terminal?session=' + encodeURIComponent(sessionName) + '&pane=0');
+  t.inputWs.onmessage = function(e) {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'screen' && msg.lines) {
+        t.screenLines = msg.lines.map(function(l) {
+          return l.spans.map(function(s) { return s.text; }).join('');
+        });
+        t.screenCols = msg.width || 80;
+        t.screenRows = msg.height || 24;
+      } else if (msg.type === 'delta' && msg.changed) {
+        for (const [idx, spans] of Object.entries(msg.changed)) {
+          t.screenLines[parseInt(idx)] = spans.map(function(s) { return s.text; }).join('');
+        }
+      }
+    } catch (err) {}
+  };
 
   updateFocusStyles();
   calculateFocusedLayout();
@@ -1177,7 +1254,7 @@ document.addEventListener('keydown', function(e) {
   if (document.getElementById('help-panel').classList.contains('visible')) return;
 
   // Let browser shortcuts through
-  if ((e.ctrlKey || e.metaKey) && ['t', 'w', 'n', 'r'].includes(e.key.toLowerCase())) return;
+  if ((e.ctrlKey || e.metaKey) && ['t', 'w', 'n', 'r', 'v'].includes(e.key.toLowerCase())) return;
   if (e.altKey && e.key === 'F4') return;
   if (e.key === 'F12') return;
 
@@ -1204,6 +1281,10 @@ document.addEventListener('keydown', function(e) {
 
   // Any keystroke resets scroll to live view
   t.scrollReset();
+
+  // Ctrl+C with active text selection is handled by the selection system
+  // (see Text Selection + Copy section below). If no selection, falls through
+  // to send C-c to the terminal.
 
   // Ctrl combos
   if (e.ctrlKey && e.key.length === 1) {
@@ -1232,6 +1313,269 @@ document.addEventListener('paste', function(e) {
   if (text) {
     const t = terminals.get(activeInputSession);
     if (t) t.sendInput({ type: 'input', keys: text });
+  }
+});
+
+// === Text Selection + Copy ===
+// When a focused terminal is Alt+clicked/dragged, select text and copy to clipboard.
+// Alt+click enters selection mode so it doesn't conflict with orbit drag.
+// Selection happens in the dashboard layer (not inside the SVG <object>)
+// because <object> pointer-events must stay 'none' for the dashboard to work.
+let selTerminal = null;
+let selStart = null;  // { row, col }
+let selEnd = null;
+let selOverlay = null; // DOM element for selection highlight
+
+function getSelOverlay() {
+  if (!selOverlay) {
+    selOverlay = document.createElement('div');
+    selOverlay.id = 'sel-overlay';
+    selOverlay.style.cssText = 'position:fixed;top:0;left:0;z-index:50;pointer-events:none;';
+    document.body.appendChild(selOverlay);
+  }
+  return selOverlay;
+}
+
+function screenToCell(e, t) {
+  // Map screen pixel coordinates to terminal character row/col.
+  // Gets actual cols/rows from the SVG's viewBox and measured cell dimensions,
+  // not from dashboard state (which may be stale or default).
+  const obj = t.dom.querySelector('object');
+  if (!obj) return null;
+  const rect = obj.getBoundingClientRect();
+  if (rect.width < 10 || rect.height < 10) return null;
+
+  // Try to read actual dimensions from the SVG document
+  let cols = t.screenCols;
+  let rows = t.screenRows;
+  let svgW = rect.width;
+  let svgH = rect.height;
+
+  try {
+    const svgDoc = obj.contentDocument;
+    if (svgDoc) {
+      const svgRoot = svgDoc.getElementById('root');
+      if (svgRoot) {
+        const vb = svgRoot.getAttribute('viewBox');
+        if (vb) {
+          const parts = vb.split(/\s+/);
+          svgW = parseFloat(parts[2]);
+          svgH = parseFloat(parts[3]);
+        }
+        // Get measured cell dimensions from the SVG's own measurement
+        const measure = svgDoc.getElementById('measure');
+        if (measure) {
+          const bbox = measure.getBBox();
+          if (bbox.width > 0) {
+            const cellW = bbox.width / 10;
+            const cellH = bbox.height;
+            cols = Math.round(svgW / cellW);
+            rows = Math.round(svgH / cellH);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    // Cross-origin or security error — fall back to stored values
+  }
+
+  // The SVG preserves aspect ratio inside the <object>, so it may not fill
+  // the entire rect. Calculate the actual rendered SVG area.
+  const svgAspect = svgW / svgH;
+  const objAspect = rect.width / rect.height;
+  let renderW, renderH, offsetX, offsetY;
+  if (objAspect > svgAspect) {
+    // Object is wider than SVG — SVG is height-constrained, centered horizontally
+    renderH = rect.height;
+    renderW = rect.height * svgAspect;
+    offsetX = (rect.width - renderW) / 2;
+    offsetY = 0;
+  } else {
+    // Object is taller than SVG — SVG is width-constrained, centered vertically
+    renderW = rect.width;
+    renderH = rect.width / svgAspect;
+    offsetX = 0;
+    offsetY = (rect.height - renderH) / 2;
+  }
+
+  const cellW = renderW / cols;
+  const cellH = renderH / rows;
+  const col = Math.floor((e.clientX - rect.left - offsetX) / cellW);
+  const row = Math.floor((e.clientY - rect.top - offsetY) / cellH);
+  return {
+    row: Math.max(0, Math.min(row, rows - 1)),
+    col: Math.max(0, Math.min(col, cols - 1)),
+    // Pass render info for drawSelHighlight
+    _render: { left: rect.left + offsetX, top: rect.top + offsetY, cellW, cellH, cols, rows }
+  };
+}
+
+function drawSelHighlight(t) {
+  const overlay = getSelOverlay();
+  overlay.innerHTML = '';
+  if (!selStart || !selEnd || !t) return;
+
+  // Use render info from the most recent screenToCell call
+  const r = selEnd._render || selStart._render;
+  if (!r) return;
+
+  // Normalize direction
+  let s = selStart, en = selEnd;
+  if (s.row > en.row || (s.row === en.row && s.col > en.col)) {
+    s = selEnd; en = selStart;
+  }
+
+  for (let row = s.row; row <= en.row; row++) {
+    const c1 = (row === s.row) ? s.col : 0;
+    const c2 = (row === en.row) ? en.col : r.cols - 1;
+    const div = document.createElement('div');
+    div.style.cssText = 'position:fixed;background:rgba(92,92,255,0.3);pointer-events:none;';
+    div.style.left = (r.left + c1 * r.cellW) + 'px';
+    div.style.top = (r.top + row * r.cellH) + 'px';
+    div.style.width = ((c2 - c1 + 1) * r.cellW) + 'px';
+    div.style.height = r.cellH + 'px';
+    overlay.appendChild(div);
+  }
+}
+
+function getSelectedText(t) {
+  if (!selStart || !selEnd || !t || !t.screenLines.length) return '';
+  let s = selStart, en = selEnd;
+  if (s.row > en.row || (s.row === en.row && s.col > en.col)) {
+    s = selEnd; en = selStart;
+  }
+  const lines = [];
+  for (let row = s.row; row <= en.row; row++) {
+    const line = t.screenLines[row] || '';
+    const c1 = (row === s.row) ? s.col : 0;
+    const c2 = (row === en.row) ? en.col + 1 : line.length;
+    lines.push(line.substring(c1, c2).replace(/\s+$/, ''));
+  }
+  return lines.join('\n');
+}
+
+// Get text directly from the SVG document if dashboard screenLines aren't populated
+function getSelectedTextFromSvg(t) {
+  if (!selStart || !selEnd) return getSelectedText(t);
+  try {
+    const obj = t.dom.querySelector('object');
+    if (!obj || !obj.contentDocument) return getSelectedText(t);
+    const allLines = [];
+    let row = 0;
+    while (true) {
+      const textEl = obj.contentDocument.getElementById('r' + row);
+      if (!textEl) break;
+      allLines.push(textEl.textContent || '');
+      row++;
+    }
+    if (allLines.length === 0) return getSelectedText(t);
+
+    let s = selStart, en = selEnd;
+    if (s.row > en.row || (s.row === en.row && s.col > en.col)) {
+      s = selEnd; en = selStart;
+    }
+    const result = [];
+    for (let r = s.row; r <= en.row; r++) {
+      const line = allLines[r] || '';
+      const c1 = (r === s.row) ? s.col : 0;
+      const c2 = (r === en.row) ? en.col + 1 : line.length;
+      result.push(line.substring(c1, c2).replace(/\s+$/, ''));
+    }
+    return result.join('\n');
+  } catch (err) {
+    return getSelectedText(t);
+  }
+}
+
+function clearSel() {
+  selTerminal = null;
+  selStart = null;
+  selEnd = null;
+  if (selOverlay) selOverlay.innerHTML = '';
+}
+
+// Clipboard write with fallback for non-HTTPS contexts
+function copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext) {
+    navigator.clipboard.writeText(text).catch(function() {
+      fallbackCopy(text);
+    });
+  } else {
+    fallbackCopy(text);
+  }
+}
+
+function fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+  } catch (e) {}
+  document.body.removeChild(ta);
+}
+
+// Alt+mousedown on a focused terminal starts text selection
+document.addEventListener('mousedown', function(e) {
+  if (!e.altKey || e.button !== 0) return;
+  if (!activeInputSession) return;
+  const t = terminals.get(activeInputSession);
+  if (!t) return;
+
+  const cell = screenToCell(e, t);
+  if (!cell) return;
+
+  e.preventDefault();
+  e.stopPropagation();
+  selTerminal = t;
+  selStart = cell;
+  selEnd = cell;
+  drawSelHighlight(t);
+}, true); // capture phase to intercept before orbit drag
+
+document.addEventListener('mousemove', function(e) {
+  if (!selTerminal || !selStart) return;
+  selEnd = screenToCell(e, selTerminal);
+  if (selEnd) drawSelHighlight(selTerminal);
+});
+
+document.addEventListener('mouseup', function(e) {
+  if (!selTerminal || !selStart) return;
+  selEnd = screenToCell(e, selTerminal);
+  if (selEnd) drawSelHighlight(selTerminal);
+
+  // Copy if real selection (not just a click)
+  if (selStart && selEnd && (selStart.row !== selEnd.row || selStart.col !== selEnd.col)) {
+    const text = getSelectedTextFromSvg(selTerminal);
+    if (text) {
+      copyToClipboard(text);
+    }
+  }
+
+  // Stop the selection drag — critical. Without this, mousemove keeps updating selEnd
+  // after mouseup, causing the "keeps dragging after release" bug.
+  selTerminal = null;
+  // Keep selStart/selEnd/highlight visible for Ctrl+C. clearSel() on next keystroke.
+  suppressNextClick = true;
+});
+
+// Clear selection on any keystroke (user is typing, not selecting)
+document.addEventListener('keydown', function(e) {
+  if (selStart && !e.altKey) {
+    // Ctrl+C with active selection: copy and clear
+    if (e.ctrlKey && e.key.toLowerCase() === 'c') {
+      // selTerminal is null after mouseup but selStart/selEnd still have the selection
+      const text = getSelectedTextFromSvg(terminals.get(activeInputSession));
+      if (text) {
+        copyToClipboard(text);
+      }
+      clearSel();
+      e.preventDefault();
+      return;
+    }
+    clearSel();
   }
 });
 

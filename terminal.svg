@@ -36,12 +36,14 @@
       .italic { font-style: italic; }
       .dim { opacity: 0.5; }
       text { dominant-baseline: text-before-edge; white-space: pre; }
+      .sel-highlight { fill: rgba(92, 92, 255, 0.3); }
     </style>
   </defs>
 
   <rect id="bg" class="bg" width="100%" height="100%" />
   <g id="bg-layer"></g>
   <g id="text-layer" class="fg"></g>
+  <g id="sel-layer"></g>
   <rect id="cursor" width="8" height="17" fill="#c5c5c5" opacity="0.7">
     <animate attributeName="opacity" values="0.7;0;0.7" dur="1s" repeatCount="indefinite" />
   </rect>
@@ -427,6 +429,130 @@
           }
         }, 200);
       });
+
+      // -----------------------------------------------------------------------
+      // Text Selection — mouse drag selects terminal text, copies to clipboard
+      // -----------------------------------------------------------------------
+      var selLayer = document.getElementById('sel-layer');
+      var selStart = null;   // { row, col }
+      var selEnd = null;     // { row, col }
+      var isSelecting = false;
+
+      function pixelToCell(e) {
+        // Convert mouse event coordinates to terminal row/col
+        var pt = root.createSVGPoint();
+        pt.x = e.clientX;
+        pt.y = e.clientY;
+        var svgPt = pt.matrixTransform(root.getScreenCTM().inverse());
+        var col = Math.floor(svgPt.x / CELL_W);
+        var row = Math.floor(svgPt.y / CELL_H);
+        col = Math.max(0, Math.min(col, columns - 1));
+        row = Math.max(0, Math.min(row, rows - 1));
+        return { row: row, col: col };
+      }
+
+      function drawSelection() {
+        // Clear previous selection highlights
+        while (selLayer.firstChild) {
+          selLayer.removeChild(selLayer.firstChild);
+        }
+        if (!selStart || !selEnd) return;
+
+        // Normalize: startPos is earlier, endPos is later
+        var startPos, endPos;
+        if (selStart.row < selEnd.row || (selStart.row === selEnd.row && selStart.col <= selEnd.col)) {
+          startPos = selStart;
+          endPos = selEnd;
+        } else {
+          startPos = selEnd;
+          endPos = selStart;
+        }
+
+        for (var row = startPos.row; row <= endPos.row; row++) {
+          var c1 = (row === startPos.row) ? startPos.col : 0;
+          var c2 = (row === endPos.row) ? endPos.col : columns - 1;
+          var rect = document.createElementNS(SVG_NS, 'rect');
+          rect.setAttribute('x', (c1 * CELL_W).toFixed(2));
+          rect.setAttribute('y', (row * CELL_H).toFixed(2));
+          rect.setAttribute('width', ((c2 - c1 + 1) * CELL_W).toFixed(2));
+          rect.setAttribute('height', CELL_H.toFixed(2));
+          rect.setAttribute('class', 'sel-highlight');
+          selLayer.appendChild(rect);
+        }
+      }
+
+      function getSelectedText() {
+        if (!selStart || !selEnd || !allLines.length) return '';
+
+        var startPos, endPos;
+        if (selStart.row < selEnd.row || (selStart.row === selEnd.row && selStart.col <= selEnd.col)) {
+          startPos = selStart;
+          endPos = selEnd;
+        } else {
+          startPos = selEnd;
+          endPos = selStart;
+        }
+
+        var lines = [];
+        for (var row = startPos.row; row <= endPos.row; row++) {
+          if (!allLines[row]) continue;
+          // Build the full text for this row from spans
+          var fullLine = '';
+          var spans = allLines[row].spans;
+          for (var s = 0; s < spans.length; s++) {
+            fullLine += spans[s].text;
+          }
+          var c1 = (row === startPos.row) ? startPos.col : 0;
+          var c2 = (row === endPos.row) ? endPos.col + 1 : fullLine.length;
+          lines.push(fullLine.substring(c1, c2));
+        }
+        // Trim trailing whitespace from each line, then join
+        return lines.map(function(l) { return l.replace(/\s+$/, ''); }).join('\n');
+      }
+
+      function clearSelection() {
+        selStart = null;
+        selEnd = null;
+        isSelecting = false;
+        while (selLayer.firstChild) {
+          selLayer.removeChild(selLayer.firstChild);
+        }
+      }
+
+      root.addEventListener('mousedown', function(e) {
+        if (e.button !== 0) return;
+        // Don't start selection if ctrl is held (ctrl+click is for multi-focus in dashboard)
+        if (e.ctrlKey) return;
+        selStart = pixelToCell(e);
+        selEnd = selStart;
+        isSelecting = true;
+        drawSelection();
+      });
+
+      root.addEventListener('mousemove', function(e) {
+        if (!isSelecting) return;
+        selEnd = pixelToCell(e);
+        drawSelection();
+      });
+
+      root.addEventListener('mouseup', function(e) {
+        if (!isSelecting) return;
+        isSelecting = false;
+        selEnd = pixelToCell(e);
+        drawSelection();
+
+        // Copy to clipboard if there's a real selection (not just a click)
+        if (selStart && selEnd && (selStart.row !== selEnd.row || selStart.col !== selEnd.col)) {
+          var text = getSelectedText();
+          if (text && navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).catch(function() {});
+          }
+        }
+      });
+
+      // Clear selection when new content arrives (screen is changing)
+      // This prevents stale highlights from lingering
+      var selClearOnUpdate = false;
 
       // -----------------------------------------------------------------------
       // Start
