@@ -3,6 +3,51 @@ import * as THREE from 'three';
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
 import { easeInOutCubic, lerpPos } from './polyhedra.mjs';
 
+// Oscillate between from and to using sine wave. Speed 0 = static at from.
+// Exact function from ring-mega-saved.html design studio.
+function osc(from, to, speed, time) {
+  if (speed === 0) return from;
+  var t = (Math.sin(time * speed * 0.05) + 1) / 2;
+  return from + (to - from) * t;
+}
+
+const RING = {
+  outer: {
+    radius: 345,
+    mode: 0,           // 0=Upright
+    faceCamera: true,
+    spinSpeed: 0.008,
+    spinDir: 1,         // Forward
+    ringTilt: {
+      x: { from: 73, to: 73, speed: 0 },
+      y: { from: -5, to: -5, speed: 0 },
+      z: { from: 0, to: 0, speed: 0 },
+    },
+    cardTilt: {
+      x: { from: -5, to: -5, speed: 0 },
+      y: { from: -5, to: -5, speed: 24 },
+      z: { from: -5, to: -5, speed: 44 },
+    },
+  },
+  inner: {
+    radius: 219,
+    mode: 0,           // 0=Upright
+    faceCamera: false,
+    spinSpeed: 0.012,
+    spinDir: -1,        // Reverse
+    ringTilt: {
+      x: { from: 21, to: 21, speed: 0 },
+      y: { from: 0, to: 0, speed: 0 },
+      z: { from: 19, to: 19, speed: 26 },
+    },
+    cardTilt: {
+      x: { from: 0, to: 0, speed: 33 },
+      y: { from: 0, to: 0, speed: 39 },
+      z: { from: 0, to: 0, speed: 29 },
+    },
+  },
+};
+
 // === Constants ===
 const LIGHT_DIR = new THREE.Vector3(-0.7, 0.7, -0.3).normalize();
 const FLOOR_Y = -200;
