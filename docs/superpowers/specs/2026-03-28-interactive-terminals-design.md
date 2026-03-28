@@ -6,31 +6,32 @@ Replace the polling-based read-only terminal viewer with a real-time interactive
 
 ## Architecture
 
-**SSE (Server-Sent Events) + POST** instead of WebSocket.
+**WebSocket** using the `ws` package (already installed as a transitive dependency of puppeteer — no new dependency added).
 
-Why not WebSocket:
-- Node.js 22 has no built-in WebSocket server
-- The `ws` package works but adds a dependency (project policy: zero server deps)
-- Implementing RFC 6455 framing from scratch is 300-500 lines of careful code
-- WebSocket is bidirectional, but we don't need bidirectional — output is high-volume server→client, input is low-volume client→server
-
-Why SSE + POST:
-- SSE is trivial to implement (30 lines on server, built-in `EventSource` in browser)
-- POST for keystrokes works with existing `/api/input` — just need to make it async
-- Built-in browser reconnection (EventSource auto-reconnects on disconnect)
-- Works through HTTP proxies without special configuration
-- Zero new dependencies
-
-The two channels:
+Single bidirectional WebSocket connection per terminal:
 ```
-Server → Client:  SSE stream (/api/stream?session=X&pane=Y)
-                  Pushes screen state as JSON events whenever output changes.
-                  Replaces 150ms polling entirely.
+Client ←→ Server:  ws://host:3200/ws/terminal?session=X&pane=Y
 
-Client → Server:  POST /api/input (existing endpoint, made async)
-                  Each keystroke sent immediately.
-                  After processing input, server pushes updated screen via SSE.
+                   Client sends:  { type: "input", keys: "ls" }
+                                  { type: "input", specialKey: "Enter" }
+                                  { type: "resize", cols: 80, rows: 24 }
+
+                   Server sends:  { type: "screen", width, height, cursor, title, lines }
+                                  { type: "delta", cursor, title, changed: { "3": spans, "12": spans } }
+                                  { type: "error", message: "Session ended" }
 ```
+
+Why WebSocket over SSE + POST:
+- Single connection instead of two channels — simpler client code
+- `ws` package is already on disk (puppeteer dependency, zero deps itself)
+- Bidirectional — ready for future features (resize, mouse events) without adding more endpoints
+- Lower per-message overhead than HTTP POST for keystrokes
+- Cleaner error handling — connection state is explicit
+
+Why `ws` package over bare RFC 6455:
+- Full spec compliance (handshake, framing, masking, fragmentation, ping/pong)
+- Battle-tested, zero dependencies of its own
+- Already in node_modules — not adding anything to the dependency tree
 
 ## Server Changes (server.mjs)
 
@@ -41,7 +42,7 @@ Client → Server:  POST /api/input (existing endpoint, made async)
 **Change:** Switch to `execFile` (async, callback-based) wrapped in a Promise helper:
 
 ```js
-const { execFile } = require('child_process');
+import { execFile } from 'child_process';
 
 function tmux(...args) {
   return new Promise((resolve, reject) => {
@@ -53,96 +54,101 @@ function tmux(...args) {
 }
 ```
 
-All routes become async. `/api/pane` still works (backward compat) but uses `await tmux(...)` instead of `execFileSync`.
+All routes become async. `/api/pane` still works (backward compat) but uses `await tmux(...)`.
 
-### 2. SSE stream endpoint
+### 2. WebSocket server setup
 
-**New route:** `GET /api/stream?session=X&pane=Y`
-
-Server-side behavior:
-1. Respond with `Content-Type: text/event-stream`
-2. Immediately capture pane and send full screen state as first event
-3. Start a server-side poll loop at **30ms** (not client-visible, just for change detection)
-4. On each tick, capture pane, compare with previous state
-5. If changed, send delta event (changed line indices + new spans)
-6. Track connected clients — stop polling when no clients are connected to a pane
-
-Event format:
-```
-event: screen
-data: {"width":80,"height":24,"cursor":{"x":5,"y":12},"title":"...","lines":[...]}
-
-event: delta
-data: {"cursor":{"x":6,"y":12},"changed":{"3":[spans...],"12":[spans...]}}
-```
-
-First event is always `screen` (full state). Subsequent events are `delta` (only changed lines + cursor). If the terminal dimensions change, send a new `screen` event.
-
-### 3. Input-triggered capture
-
-When `/api/input` receives a keystroke:
-1. Send keys to tmux (async)
-2. Wait 5-10ms for tmux to process
-3. Immediately capture pane
-4. Push the result to all SSE clients connected to that session/pane
-
-This gives near-instant feedback: keystroke → tmux processes → screen update pushed. The user sees the result within ~15-20ms instead of waiting up to 150ms for the next poll.
-
-### 4. Client tracking
-
-The server needs to track which SSE clients are connected to which session/pane:
+Attach `ws` WebSocket server to the existing HTTP server using the `upgrade` event:
 
 ```js
-// Map<string, Set<Response>>  key = "session:pane"
-const sseClients = new Map();
-```
+import { WebSocketServer } from 'ws';
 
-When a client connects to `/api/stream`, add their response to the set. When they disconnect (response `close` event), remove them. When pushing updates, iterate the set for that session/pane.
+const wss = new WebSocketServer({ noServer: true });
 
-When no clients are connected to a pane, stop the server-side poll loop for that pane. Resume when a new client connects.
-
-### 5. Server-side poll manager
-
-A per-pane poll loop that runs at 30ms when clients are connected:
-
-```js
-const panePollers = new Map(); // key = "session:pane", value = { interval, lastState }
-
-function startPoller(session, pane) {
-  const key = session + ':' + pane;
-  if (panePollers.has(key)) return;
-
-  const poller = { lastState: null, timer: null };
-  poller.timer = setInterval(async () => {
-    const state = await capturePane(session, pane);
-    const delta = diffState(poller.lastState, state);
-    if (delta) {
-      pushToClients(key, delta);
-      poller.lastState = state;
-    }
-  }, 30);
-  panePollers.set(key, poller);
-}
-
-function stopPoller(session, pane) {
-  const key = session + ':' + pane;
-  const poller = panePollers.get(key);
-  if (poller) {
-    clearInterval(poller.timer);
-    panePollers.delete(key);
+server.on('upgrade', (req, socket, head) => {
+  const url = new URL(req.url, 'http://localhost');
+  if (url.pathname === '/ws/terminal') {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      const session = url.searchParams.get('session');
+      const pane = url.searchParams.get('pane') || '0';
+      handleTerminalConnection(ws, session, pane);
+    });
+  } else {
+    socket.destroy();
   }
+});
+```
+
+No new port, no new server — shares the existing port 3200.
+
+### 3. Per-connection terminal handler
+
+Each WebSocket connection manages one terminal session/pane:
+
+```js
+async function handleTerminalConnection(ws, session, pane) {
+  let lastState = null;
+  let pollTimer = null;
+
+  // Send full screen state immediately
+  async function captureAndSend() {
+    try {
+      const state = await capturePane(session, pane);
+      const diff = diffState(lastState, state);
+      if (diff) {
+        ws.send(JSON.stringify(diff));
+        lastState = state;
+      }
+    } catch (err) {
+      ws.send(JSON.stringify({ type: 'error', message: err.message }));
+    }
+  }
+
+  // Initial full capture
+  await captureAndSend();
+
+  // Server-side poll for background output changes
+  pollTimer = setInterval(captureAndSend, 30);
+
+  // Handle client messages (keystrokes)
+  ws.on('message', async (data) => {
+    try {
+      const msg = JSON.parse(data);
+      if (msg.type === 'input') {
+        if (msg.specialKey) {
+          await tmux('send-keys', '-t', session + ':' + pane, msg.specialKey);
+        } else if (msg.keys) {
+          await tmux('send-keys', '-t', session + ':' + pane, '-l', msg.keys);
+        }
+        // Immediate capture after input for fast feedback
+        setTimeout(captureAndSend, 5);
+      }
+    } catch (err) {
+      // Best effort — don't crash on bad input
+    }
+  });
+
+  ws.on('close', () => {
+    clearInterval(pollTimer);
+  });
 }
 ```
 
-### 6. Diff function
+Key design choices:
+- **30ms server-side poll** catches background output (other processes, long-running commands)
+- **Immediate capture after input** (5ms delay for tmux to process) gives near-instant keystroke feedback
+- **Per-connection state** — each WebSocket tracks its own `lastState` for diffing
+- **Cleanup on close** — poll timer cleared when client disconnects
 
-Same line-level JSON.stringify comparison the client currently uses, but on the server:
+### 4. Diff function
+
+Same line-level JSON.stringify comparison, moved to server:
 
 ```js
 function diffState(prev, curr) {
-  if (!prev) return { type: 'screen', ...curr }; // full state
+  if (!prev) return { type: 'screen', ...curr };
   if (prev.width !== curr.width || prev.height !== curr.height) {
-    return { type: 'screen', ...curr }; // dimension change = full state
+    return { type: 'screen', ...curr };
   }
   const changed = {};
   let anyChanged = false;
@@ -154,237 +160,315 @@ function diffState(prev, curr) {
       anyChanged = true;
     }
   }
-  if (!anyChanged && prev.cursor.x === curr.cursor.x && prev.cursor.y === curr.cursor.y) {
-    return null; // no change
+  if (!anyChanged && prev.cursor.x === curr.cursor.x && prev.cursor.y === curr.cursor.y
+      && prev.title === curr.title) {
+    return null;
   }
   return { type: 'delta', cursor: curr.cursor, title: curr.title, changed };
 }
 ```
 
+### 5. Shared pane poller (optimization)
+
+When multiple WebSocket clients view the same session/pane (e.g., the dashboard `<object>` tag AND a focused view), they should share one capture loop instead of each polling independently:
+
+```js
+// Map<string, { lastState, clients: Set<ws>, timer }>
+const paneStreams = new Map();
+```
+
+When a client connects, join the stream for that pane. When the last client disconnects, stop the poll. Each client still tracks its own `lastSentState` so it only receives diffs relative to what IT last saw (handles the case where a client reconnects mid-stream).
+
+### 6. Keep existing HTTP API
+
+`/api/pane`, `/api/input`, `/api/sessions` all remain for backward compatibility. The SVG viewer loaded via `<object>` in the dashboard overview still uses these (or can be upgraded to WebSocket independently). The WebSocket endpoint is an addition, not a replacement.
+
 ## SVG Client Changes (terminal.svg / terminal.html)
 
-### 1. SSE connection mode
+### 1. WebSocket connection mode
 
-On load, the SVG client attempts to open an SSE connection:
-
-```js
-const source = new EventSource('/api/stream?session=' + session + '&pane=' + pane);
-
-source.addEventListener('screen', function(e) {
-  const data = JSON.parse(e.data);
-  initLayout(data.width, data.height);
-  for (let i = 0; i < data.lines.length; i++) {
-    updateLine(i, data.lines[i].spans);
-  }
-  rebuildBgLayer(data.lines);
-  updateCursor(data.cursor);
-});
-
-source.addEventListener('delta', function(e) {
-  const data = JSON.parse(e.data);
-  for (const [idx, spans] of Object.entries(data.changed)) {
-    updateLine(parseInt(idx), spans);
-  }
-  if (Object.keys(data.changed).length > 0) rebuildBgLayer(/* current lines */);
-  updateCursor(data.cursor);
-});
-
-source.onerror = function() {
-  // EventSource auto-reconnects. Optionally show error overlay.
-};
-```
-
-### 2. Fallback to polling
-
-If SSE connection fails (e.g., behind a proxy that strips it), fall back to current polling behavior. The poll code stays in the file, just gated:
+On load, the SVG client attempts a WebSocket connection. If it succeeds, polling is disabled:
 
 ```js
-let useSSE = true;
-source.onerror = function() {
-  if (source.readyState === EventSource.CLOSED) {
-    useSSE = false;
-    schedulePoll(pollInterval); // fall back to polling
-  }
-};
+let ws = null;
+let useWebSocket = false;
+
+function connectWebSocket() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/ws/terminal?session=' + session + '&pane=' + pane);
+
+  ws.onopen = function() {
+    useWebSocket = true;
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+  };
+
+  ws.onmessage = function(e) {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'screen') {
+      initLayout(msg.width, msg.height);
+      for (let i = 0; i < msg.lines.length; i++) {
+        updateLine(i, msg.lines[i].spans);
+      }
+      allLines = msg.lines;
+      rebuildBgLayer(msg.lines);
+      updateCursor(msg.cursor);
+    } else if (msg.type === 'delta') {
+      for (const [idx, spans] of Object.entries(msg.changed)) {
+        const i = parseInt(idx);
+        updateLine(i, spans);
+        allLines[i] = { spans };
+      }
+      if (Object.keys(msg.changed).length > 0) rebuildBgLayer(allLines);
+      updateCursor(msg.cursor);
+    } else if (msg.type === 'error') {
+      showError(msg.message);
+    }
+  };
+
+  ws.onclose = function() {
+    useWebSocket = false;
+    // Reconnect after delay, fall back to polling in the meantime
+    schedulePoll(pollInterval);
+    setTimeout(connectWebSocket, 2000);
+  };
+}
 ```
 
-### 3. Remove poll loop when SSE is active
+### 2. Send input via WebSocket
 
-When SSE is connected, `pollTimer` is cleared. No concurrent polling.
+When the SVG client has a WebSocket connection, keystrokes go through it instead of POST:
 
-### 4. Track full line state for background rebuild
+```js
+function sendInput(msg) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(msg));
+  } else {
+    // Fallback to POST
+    fetch('/api/input', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session, pane, ...msg })
+    });
+  }
+}
+```
 
-Currently the poll response includes all lines. With delta events, we only get changed lines. The client needs to maintain a full `lines` array and update it incrementally so `rebuildBgLayer` can access all lines.
+### 3. Fallback to polling
+
+If WebSocket connection fails (proxy, firewall, etc.), the existing poll loop resumes. The client works in degraded mode — same as current behavior. No functionality lost, just higher latency.
+
+### 4. Track full line state
+
+Maintain `allLines` array that's updated incrementally from delta messages. Needed for `rebuildBgLayer` which requires all lines.
 
 ## Dashboard Changes (dashboard.mjs)
 
 ### 1. Direct keystroke capture
 
-When a terminal is focused (single or multi-focus), capture ALL keyboard events and forward them to the active input session.
-
-Replace the input bar's `keydown` handler with a document-level handler:
+When a terminal is focused, capture ALL keyboard events and forward them to the active input session via the terminal's WebSocket connection (or POST fallback).
 
 ```js
 document.addEventListener('keydown', function(e) {
   if (!activeInputSession) return;
 
   // Don't capture browser shortcuts
-  if (e.ctrlKey && ['t', 'w', 'n', 'Tab'].includes(e.key)) return;
+  if (e.ctrlKey && ['t', 'w', 'n'].includes(e.key)) return;
   if (e.altKey && e.key === 'F4') return;
-  if (e.key === 'F5' || e.key === 'F11' || e.key === 'F12') return;
+  if (e.key === 'F5' || e.key === 'F12') return;
 
   // Don't capture when help panel is open
   if (document.getElementById('help-panel').classList.contains('visible')) return;
 
+  // Don't capture when no terminal is focused
+  if (focusedSessions.size === 0) return;
+
   e.preventDefault();
 
-  const tmuxKey = translateKey(e);
-  if (tmuxKey) {
-    sendSpecialKey(activeInputSession, tmuxKey);
+  const t = terminals.get(activeInputSession);
+  if (!t) return;
+
+  // Translate and send
+  if (e.ctrlKey && e.key.length === 1) {
+    t.sendInput({ type: 'input', specialKey: 'C-' + e.key.toLowerCase() });
+  } else if (SPECIAL_KEY_MAP[e.key]) {
+    t.sendInput({ type: 'input', specialKey: SPECIAL_KEY_MAP[e.key] });
+  } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    t.sendInput({ type: 'input', keys: e.key });
   }
 });
 ```
 
-### 2. Key translation
-
-Map browser `KeyboardEvent` to tmux `send-keys` arguments:
+### 2. Key translation map
 
 ```js
-function translateKey(e) {
-  // Ctrl combos
-  if (e.ctrlKey && e.key.length === 1) {
-    return 'C-' + e.key.toLowerCase();
-  }
-
-  // Special keys
-  const MAP = {
-    'Enter': 'Enter',
-    'Tab': 'Tab',
-    'Escape': 'Escape',
-    'Backspace': 'BSpace',
-    'Delete': 'DC',
-    'ArrowUp': 'Up',
-    'ArrowDown': 'Down',
-    'ArrowLeft': 'Left',
-    'ArrowRight': 'Right',
-    'Home': 'Home',
-    'End': 'End',
-    'PageUp': 'PgUp',
-    'PageDown': 'PgDn',
-    'Insert': 'IC',
-    'F1': 'F1', 'F2': 'F2', 'F3': 'F3', 'F4': 'F4',
-    'F5': 'F5', 'F6': 'F6', 'F7': 'F7', 'F8': 'F8',
-    'F9': 'F9', 'F10': 'F10', 'F11': 'F11', 'F12': 'F12',
-  };
-
-  if (MAP[e.key]) return MAP[e.key];
-
-  // Regular characters — send as literal text
-  if (e.key.length === 1 && !e.ctrlKey && !e.altKey) {
-    return null; // handled separately as literal text
-  }
-
-  return null;
-}
+const SPECIAL_KEY_MAP = {
+  'Enter': 'Enter',
+  'Tab': 'Tab',
+  'Escape': 'Escape',
+  'Backspace': 'BSpace',
+  'Delete': 'DC',
+  'ArrowUp': 'Up',
+  'ArrowDown': 'Down',
+  'ArrowLeft': 'Left',
+  'ArrowRight': 'Right',
+  'Home': 'Home',
+  'End': 'End',
+  'PageUp': 'PgUp',
+  'PageDown': 'PgDn',
+  'Insert': 'IC',
+  'F1': 'F1', 'F2': 'F2', 'F3': 'F3', 'F4': 'F4',
+  'F5': 'F5', 'F6': 'F6', 'F7': 'F7', 'F8': 'F8',
+  'F9': 'F9', 'F10': 'F10', 'F11': 'F11', 'F12': 'F12',
+  ' ': 'Space',
+};
 ```
 
-For regular character keys, send via `sendKeys(session, key)` (literal text, not special key).
+### 3. Per-terminal WebSocket
 
-### 3. Paste support
+Each terminal in the dashboard can optionally have its own WebSocket for sending input. The `<object>` tag's SVG has its own WebSocket for receiving output. Input from the dashboard goes through a separate lightweight connection (or through the SVG's connection via `postMessage`).
 
-Handle Ctrl+V paste:
+Simpler approach: the dashboard opens its own WebSocket for the `activeInputSession` and sends keystrokes through it. It doesn't need to receive output — the SVG `<object>` already handles rendering.
+
+```js
+// In addTerminal():
+terminals.set(sessionName, {
+  // ... existing fields ...
+  inputWs: null,  // WebSocket for sending input (opened on focus)
+  sendInput: function(msg) {
+    if (this.inputWs && this.inputWs.readyState === WebSocket.OPEN) {
+      this.inputWs.send(JSON.stringify(msg));
+    } else {
+      // POST fallback
+      fetch('/api/input', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: sessionName, pane: '0', ...msg })
+      });
+    }
+  }
+});
+```
+
+Open the input WebSocket when terminal is focused, close when unfocused:
+
+```js
+// In focusTerminal() / addToFocus():
+const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+t.inputWs = new WebSocket(proto + '//' + location.host + '/ws/terminal?session=' + sessionName + '&pane=0');
+
+// In unfocusTerminal() / restoreFocusedTerminal():
+if (t.inputWs) { t.inputWs.close(); t.inputWs = null; }
+```
+
+The server treats this connection like any other — it'll send screen updates too, but the dashboard ignores them (the SVG `<object>` handles rendering).
+
+### 4. Paste support
 
 ```js
 document.addEventListener('paste', function(e) {
   if (!activeInputSession) return;
+  e.preventDefault();
   const text = e.clipboardData.getData('text');
   if (text) {
-    sendKeys(activeInputSession, text);
+    const t = terminals.get(activeInputSession);
+    if (t) t.sendInput({ type: 'input', keys: text });
   }
 });
 ```
 
-### 4. Input bar becomes optional
+### 5. Input bar changes
 
-Keep the input bar as a visible indicator of which session is active (shows the session name). But keystrokes no longer go through the input text field — they're captured at the document level.
+Keep the input bar as a status indicator showing which session is active. Remove the `<input>` text field — keystrokes are captured at the document level.
 
-The input `<input>` element can be removed or hidden. The session name indicator stays.
+```html
+<div class="input-bar" id="input-bar">
+  <span class="status-dot"></span>
+  <span class="target" id="input-target"></span>
+  <span class="input-hint">Type directly — keys go to terminal</span>
+</div>
+```
 
-### 5. Update allowed special keys on server
+### 6. Expand server special key whitelist
 
-The current server whitelist for special keys is limited. Expand it:
+Update server.mjs `ALLOWED_SPECIAL` to accept all Ctrl combos and function keys:
 
 ```js
 const ALLOWED_SPECIAL = new Set([
-  'Enter', 'Tab', 'Escape', 'BSpace', 'DC', 'IC',
+  'Enter', 'Tab', 'Escape', 'BSpace', 'DC', 'IC', 'Space',
   'Up', 'Down', 'Left', 'Right',
   'Home', 'End', 'PgUp', 'PgDn',
   'F1', 'F2', 'F3', 'F4', 'F5', 'F6',
   'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
-  'C-a', 'C-b', 'C-c', 'C-d', 'C-e', 'C-f',
-  'C-g', 'C-h', 'C-i', 'C-j', 'C-k', 'C-l',
-  'C-m', 'C-n', 'C-o', 'C-p', 'C-q', 'C-r',
-  'C-s', 'C-t', 'C-u', 'C-v', 'C-w', 'C-x',
-  'C-y', 'C-z',
-  'Space',
 ]);
+// Also accept any 'C-X' pattern:
+function isAllowedKey(key) {
+  return ALLOWED_SPECIAL.has(key) || /^C-[a-z]$/.test(key);
+}
 ```
 
 ## Error Handling
 
-### SSE disconnection
-- `EventSource` auto-reconnects with exponential backoff (browser built-in)
-- On reconnect, server sends full `screen` event (not delta) as first message
-- Client shows subtle "reconnecting..." indicator during disconnect
+### WebSocket disconnection
+- Client reconnects after 2s delay
+- Falls back to HTTP polling during reconnection
+- Server cleans up poll timer on connection close
 
 ### tmux session disappears
-- Server's poll loop catches the error, sends an `error` event via SSE
+- Server's capture catches the error, sends `{ type: 'error', message: '...' }`
 - Client shows "Session ended" overlay
-- Dashboard removes the terminal from the 3D scene
+- Dashboard removes the terminal from the 3D scene on next refresh cycle
 
 ### Input errors
-- POST `/api/input` returns error → client ignores (best effort for keystrokes)
-- No retry on input errors — the next keystroke will work or not
+- Best effort — keystroke send failures are silently ignored
+- The next keystroke either works or the WebSocket reconnects
+
+### Shared poller edge cases
+- If all clients for a pane disconnect simultaneously, poller stops
+- If a new client connects before poller cleanup, it reuses the existing state
+- Server-side `lastState` is per-stream, not per-client
 
 ## Performance
 
 ### Server-side polling at 30ms
-- `tmux capture-pane` takes ~1-3ms per call (it's a local IPC to the tmux server)
+- `tmux capture-pane` takes ~1-3ms per call (local IPC to tmux server)
 - At 30ms with 7 terminals, that's ~230 captures/second — negligible CPU
-- The diff comparison (JSON.stringify per line) is cheap for 24-line terminals
-- Only changed lines are serialized and sent over SSE
+- Diff comparison (JSON.stringify per line) is cheap for 24-line terminals
+- Only changed lines sent over WebSocket
 
 ### Bandwidth
-- Full screen event: ~5-10KB (80x24 terminal with colors)
-- Delta event: ~100-500 bytes (typically 1-3 changed lines)
-- At active typing speed (~10 chars/sec), that's ~5KB/sec — negligible
+- Full screen message: ~5-10KB (80x24 terminal with colors)
+- Delta message: ~100-500 bytes (typically 1-3 changed lines)
+- WebSocket framing overhead: 2-6 bytes per message
+- At active typing speed (~10 chars/sec), ~5KB/sec — negligible
 
 ### Latency budget
 ```
-Keystroke → POST to server:      ~1ms (localhost)
-Server → tmux send-keys:         ~1ms
+Keystroke → WebSocket send:       ~0.5ms (already connected)
+Server receives + tmux send-keys: ~1-2ms
 tmux processes input:             ~1-5ms
-Wait for tmux:                    ~5-10ms (built-in delay)
+Wait for tmux:                    ~5ms (setTimeout)
 Server captures pane:             ~1-3ms
-Diff + SSE push:                  ~1ms
+Diff + WebSocket push:            ~0.5ms
 Browser receives + renders:       ~1-5ms
                                   --------
-Total:                            ~10-25ms
+Total:                            ~10-22ms
 ```
 
-Compare to current: up to **150ms** (poll interval).
+Compare to current: up to **150ms** (poll interval) + HTTP POST overhead.
 
 ## Scope Boundaries
 
 ### In scope
-- SSE streaming endpoint
+- WebSocket server endpoint (`/ws/terminal`)
 - Async tmux execution
 - Server-side diff + push
+- Shared pane poller
 - Direct keystroke capture in dashboard
 - Key translation (browser → tmux)
 - Paste support
 - Expanded special key whitelist
-- Fallback to polling if SSE fails
+- Fallback to HTTP polling if WebSocket fails
+- Keep existing HTTP API for backward compat
 
 ### Out of scope (future work)
 - Mouse events in terminal (scrollback, text selection)
