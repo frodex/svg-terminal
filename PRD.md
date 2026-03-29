@@ -263,18 +263,21 @@ Card background is `#2e2e32` (lightened from `#1c1c1e`) to see card vs terminal 
 
 ## 9. Anti-Patterns (Tried and Abandoned)
 
-| Approach | Problem | Replacement |
-|----------|---------|-------------|
-| CSS `transform: scale()` for font zoom | Width/height adjustment counteracted scale | Change tmux cols/rows directly |
-| DOM resize on focus (1:1 pixel mapping) | Two-state architecture, every feature breaks | Camera-only focus |
-| Camera offset for sidebar | Every sign combination wrong | No offset, sidebar is overlay |
-| `e.target.closest` in CSS3D | 2D hit testing picks wrong card | Coordinate-based rect checking |
-| Border/box-shadow active indicator | Chrome re-rasterizes card | Header background only |
-| `_layoutZ` for Z-slide restore | Stale after user moves card | `_savedZ` captures current Z |
-| `focusedSessions.clear()` on deselect | Cards fly to ring | Keep focusedSessions intact |
-| Floating overlay controls bar | Positioning unreliable, intercepts header clicks | Controls inline in card header |
-| Hardcoded 1280×992 for all cards | Letterboxing, aspect mismatch | `calcCardSize` from tmux cols/rows |
-| Smooth scroll with CSS translateY | Transform and content update overlap, bounce | No animation, 30ms server response is fast enough |
+Each entry notes whether the change was due to **misunderstood intent** (agents assumed wrong mechanism for the right goal) or **changed intent** (user's goal itself evolved).
+
+| Approach | Problem | Replacement | Intent |
+|----------|---------|-------------|--------|
+| CSS `transform: scale()` for font zoom | Width/height adjustment counteracted scale | Change tmux cols/rows directly | **Misunderstood intent.** User always wanted font size change. Agents assumed CSS transform; user corrected: "ALL visual size changes come from tmux cols/rows." |
+| DOM resize on focus (1:1 pixel mapping) | Two-state architecture, every feature breaks | Camera-only focus | **Misunderstood intent.** Goal was crisp text. Agents assumed bigger DOM = crisper. True, but the two-state complexity was worse than the marginal crispness gain. Understanding of the tradeoff changed. |
+| Camera offset for sidebar | Every sign combination wrong | No offset, sidebar is overlay | **Misunderstood intent.** User said "everything is a card in one frustum." Agents were treating the sidebar as a subtracted region. User's spatial model was simpler. |
+| Card reshaping on +/- | Card morphs shape on every +/- press | Card stays, font changes inside | **Changed intent.** Originally +/- was "resize terminal" (card follows). User clarified: "the card is my window, +/- is font size inside it." The distinction between window and content crystallized during testing. |
+| `focusedSessions.clear()` on deselect | Cards fly to ring | Keep focusedSessions intact | **Changed intent.** Originally deselect meant "return to overview." User clarified: "I want to stay where I am, just release input." Deselect vs unfocus became two separate actions. |
+| `e.target.closest` in CSS3D | 2D hit testing picks wrong card | Coordinate-based rect checking | **Misunderstood constraint.** Agents assumed DOM event targeting worked in CSS3D. It doesn't — browser uses 2D bounding rects, ignores Z depth. |
+| Border/box-shadow active indicator | Chrome re-rasterizes card | Header background only | **Misunderstood constraint.** CSS changes on a matrix3d-transformed element trigger full re-rasterization. Only discovered by user observing sharpness mutation on focus switch. |
+| `_layoutZ` for Z-slide restore | Stale after user moves card | `_savedZ` captures current Z | **Misunderstood intent.** Agents assumed cards return to layout position. User expected cards to stay where they were put. |
+| Floating overlay controls bar | Positioning unreliable, intercepts header clicks | Controls inline in card header | **Misunderstood constraint.** Originally thought CSS3D DOM couldn't receive button clicks (getBoundingClientRect returns NaN). Testing proved buttons inside headers work fine. |
+| Hardcoded 1280×992 for all cards | Letterboxing, aspect mismatch | `calcCardSize` from tmux cols/rows | **Misunderstood intent.** User expected cards shaped by their terminal content. "You're killing that when you start by forcing all terminals into a forced aspect." |
+| Smooth scroll with CSS translateY | Transform and content update overlap, bounce | No animation, 30ms server response sufficient | **Misunderstood constraint.** 8+ iterations tried. The 30ms server response makes animation unnecessary. |
 
 ---
 

@@ -52,6 +52,22 @@
 //    After arrival, normal billboard behavior takes over. This separation prevents
 //    cards from snapping face-on before they've finished moving.
 //
+// 9. CAMERA-ONLY FOCUS: Cards are ALWAYS at their base DOM size. "Focus" means
+//    the camera moves close enough to fill the viewport. No DOM changes on focus.
+//    The abandoned DOM-resize approach (resize card DOM to 1:1 pixels, set inner
+//    scale transform, recalculate CSS3DObject scale) created a two-state system
+//    where alt+drag, +/-, optimize, and unfocus all fought each other. See PRD §2.2.
+//
+// 10. CSS3D HIT TESTING IS PURELY 2D: e.target.closest() and getBoundingClientRect()
+//     have no concept of Z depth in a CSS3DRenderer scene. A large card at Z=-50
+//     can intercept clicks meant for a small card at Z=+50. All header hit testing
+//     uses explicit coordinate checking against getBoundingClientRect rects. See PRD §6.3.
+//
+// 11. ACTIVE INDICATOR — HEADER BACKGROUND NOT BORDER: The gold active-card indicator
+//     is applied to the header element's background, NOT as a border or box-shadow on
+//     .terminal-3d. Borders/shadows on the root element under matrix3d cause Chrome to
+//     re-rasterize the entire card, producing visible text sharpness mutation. See PRD §7.3.
+//
 // ============================================================================
 
 import * as THREE from 'three';
@@ -575,8 +591,11 @@ function onMouseMove(e) {
     }
 
     if (dragMode === 'moveCard') {
-      // Drag card by title bar — move along camera's right/up vectors
-      // so dragging "right" on screen always moves the card right from the user's perspective.
+      // CAMERA-RELATIVE DRAG: move along camera's right/up vectors, not world X/Y.
+      // If we moved along world X/Y, dragging "right" while looking diagonally would
+      // slide the card sideways in world space — it would appear to drift off-screen.
+      // Camera right (matrixWorld column 0) and up (column 1) always match screen axes
+      // regardless of camera rotation, so the card follows the mouse naturally.
       const t = _moveCardSession && terminals.get(_moveCardSession);
       if (t) {
         const worldPos = new THREE.Vector3();
@@ -697,7 +716,9 @@ function onMouseDown(e) {
 
   if (e.button === 0) {
     // Check if mousedown is on any focused card's header (title bar drag).
-    // Can't rely on e.target.closest — CSS3D hit testing is 2D, ignores Z depth.
+    // CANNOT use e.target.closest('.terminal-3d header') — CSS3D hit testing is purely
+    // 2D. A card behind another in Z depth can intercept the event. Instead we check
+    // click coordinates against each focused header's getBoundingClientRect. See PRD §6.3.
     // Check click coordinates against all focused card headers.
     let headerHitSession = null;
     let isButton = e.target.closest && e.target.closest('button');
@@ -881,6 +902,10 @@ function handleCtrlClick(e) {
   }
 }
 
+// _lastDragWasReal replaces raw dragDistance for wasDrag(). The old approach checked
+// dragDistance > 5 directly in onSceneClick, but dragDistance is reset on mousedown —
+// so by the time onSceneClick fires, a stale reset could make a real drag look like a
+// click. Setting this flag in onMouseUp captures the drag state before any reset. See PRD §6.2.
 let _lastDragWasReal = false; // set in onMouseUp, cleared in onSceneClick
 
 function wasDrag() {
@@ -1022,6 +1047,10 @@ function onSceneClick(e) {
 
 // Dolly camera toward the point under the mouse cursor.
 // Converts mouse screen position to a world-space ray and moves camera along it.
+// NDC→RAY CONVERSION: Screen pixel (clientX, clientY) → NDC (-1..1, -1..1) → world point
+// via Vector3.unproject(camera). Subtracting camera.position gives the ray direction.
+// Moving the camera along this ray zooms toward/away from whatever is under the cursor,
+// rather than zooming toward the scene origin (which would feel wrong off-center).
 function dollyTowardCursor(e, speed) {
   // Normalized device coordinates (-1 to 1)
   const ndcX = (e.clientX / window.innerWidth) * 2 - 1;
@@ -1095,7 +1124,10 @@ function updateCameraOrbit() {
 }
 
 // === Terminal DOM ===
-// Generic card DOM factory — same structure for any content type.
+// CARD FACTORY PATTERN (See PRD §2.4): createCardDOM is a generic factory for any card
+// type. Header, dots, controls, and drag behavior are inherited by all card types.
+// createTerminalDOM() and createBrowserDOM() both call createCardDOM() with their own
+// contentEl — this makes the pattern recursive and reusable without duplicating structure.
 // config: { id, title, type: 'terminal'|'browser', controls: [...], contentEl }
 function createCardDOM(config) {
   const el = document.createElement('div');
@@ -1401,7 +1433,10 @@ const MIN_CARD_W = 640;
 const MAX_CARD_W = 3200;
 const MIN_CARD_H = 496;
 const MAX_CARD_H = 2400;
-// Target world-space area — same visual weight as original 320×248 card
+// Target world-space area — same visual weight as original 320×248 card.
+// Cards are sized from tmux cols/rows (via SVG_CELL_W/H), NOT hardcoded to 1280×992.
+// Hardcoding caused letterboxing and aspect mismatch when terminals had non-standard
+// dimensions. See PRD §5.1 and §9 (anti-pattern: "Hardcoded 1280×992 for all cards").
 const TARGET_WORLD_AREA = 320 * 248; // ~79,360 sq world units
 
 // Calculate card DOM dimensions from terminal cols×rows.
@@ -1617,8 +1652,10 @@ function focusTerminal(sessionName) {
   orbitAngle = 0;
   orbitPitch = 0;
 
-  // CAMERA-ONLY FOCUS: card stays at base size, camera moves close enough
-  // to fill the viewport. No DOM changes. No inner scale transform.
+  // CAMERA-ONLY FOCUS (See PRD §2.2): card stays at base size, camera moves close
+  // enough to fill the viewport. No DOM resize, no inner scale transform, no state
+  // to restore. The abandoned DOM-resize approach required every feature (alt+drag,
+  // +/-, optimize, unfocus) to branch on focus state — they all fought each other.
   const worldW = (t.baseCardW || 1280) * 0.25;
   const worldH = (t.baseCardH || 992) * 0.25;
 
@@ -1693,6 +1730,9 @@ function addToFocus(sessionName) {
 // Set which focused terminal receives input
 // Standard "reading distance" Z — active card slides forward to this depth
 // relative to camera, so text is always the same readable size.
+// Z-CREEP BUG: Without deleting _savedZ on deselect, each select/deselect cycle adds
+// READING_Z_OFFSET to the card's Z. _savedZ must capture the pre-slide Z and be
+// deleted on deselect so the next select starts from the restored position. See PRD §7.4.
 const READING_Z_OFFSET = 25; // subtle forward slide — just enough to layer in front
 
 function setActiveInput(sessionName) {
@@ -1730,7 +1770,10 @@ function setActiveInput(sessionName) {
   }
 }
 
-// Update CSS classes for all terminals based on focus state
+// Update CSS classes for all terminals based on focus state.
+// ACTIVE INDICATOR uses header background (#4a4020), NOT a border on .terminal-3d.
+// A CSS border or box-shadow on the root element under matrix3d triggers Chrome to
+// re-rasterize the card, causing visible text sharpness mutation on focus switch. See PRD §7.3.
 function updateFocusStyles() {
   for (const [name, term] of terminals) {
     term.dom.classList.remove('faded', 'focused', 'input-active');
@@ -1810,8 +1853,13 @@ function restoreAllFocused() {
   focusedSessions.clear();
 }
 
-// Deselect: remove input focus but keep camera and cards in place.
-// Cards stay where they are, just lose the focus highlight and keyboard input.
+// DESELECT vs UNFOCUS — two distinct operations (See PRD §4.1):
+// deselectTerminals(): removes keyboard input and active highlight, but cards stay
+//   at their current positions and focusedSessions stays intact. Camera does not move.
+//   Triggered by clicking empty space. Escape from deselected state calls unfocusTerminal.
+// unfocusTerminal(): returns all cards to the ring, clears focusedSessions, flies
+//   camera back to HOME_POS. The old bug was calling focusedSessions.clear() inside
+//   deselectTerminals — cards immediately flew to the ring on every empty-space click.
 function deselectTerminals() {
   // Slide active card back to its pre-slide Z, then clear saved state
   if (activeInputSession) {
@@ -2400,7 +2448,9 @@ document.addEventListener('mousedown', function(e) {
   if (!matchBinding(KEYBINDINGS.selectText, e, focusedSessions.size > 0)) return;
   if (!activeInputSession) return;
   // Don't start text selection on any focused card's header — that's for title bar drag.
-  // Can't use e.target.closest because CSS3D hit testing is 2D (ignores Z depth).
+  // Same CSS3D constraint as onMouseDown: e.target.closest is 2D and ignores Z depth.
+  // A header on a background card can match even if it's visually behind another card.
+  // Coordinate check against getBoundingClientRect is the correct approach. See PRD §6.3.
   // Instead check if click coordinates are within any focused card's header rect.
   for (const fname of focusedSessions) {
     const ft = terminals.get(fname);
