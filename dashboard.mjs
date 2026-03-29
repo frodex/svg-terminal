@@ -796,6 +796,7 @@ function onMouseUp(e) {
       t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
     }
   }
+  _lastDragWasReal = isDragging && dragDistance > 5;
   isDragging = false;
   dragMode = null;
 }
@@ -828,8 +829,10 @@ function handleCtrlClick(e) {
   }
 }
 
+let _lastDragWasReal = false; // set in onMouseUp, cleared in onSceneClick
+
 function wasDrag() {
-  return dragDistance > 5 && dragMode !== 'ctrlPending';
+  return _lastDragWasReal;
 }
 
 function onMouseLeave() {
@@ -917,9 +920,11 @@ function onSceneClick(e) {
   // terminals" bug. See note 3 in header.
   if (suppressNextClick || ctrlHeld || e.ctrlKey || altHeld || e.altKey) {
     suppressNextClick = false;
+    _lastDragWasReal = false;
     return;
   }
-  if (wasDrag()) return;
+  if (wasDrag()) { _lastDragWasReal = false; return; }
+  _lastDragWasReal = false;
   if (e.button !== 0) return;
   if (e.shiftKey) return; // shift+click reserved for drag
 
@@ -2226,6 +2231,8 @@ document.addEventListener('mousedown', function(e) {
   if (e.button !== 0) return;
   if (!matchBinding(KEYBINDINGS.selectText, e, focusedSessions.size > 0)) return;
   if (!activeInputSession) return;
+  // Don't start text selection on the header — that's for title bar drag
+  if (e.target.closest && e.target.closest('.terminal-3d header')) return;
   const t = terminals.get(activeInputSession);
   if (!t) return;
 
