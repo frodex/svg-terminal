@@ -1075,10 +1075,46 @@ function createTerminalDOM(sessionName) {
   name.textContent = sessionName;
   header.appendChild(name);
 
-  // Controls are NOT inside the CSS3DObject DOM — getBoundingClientRect() returns
-  // NaN for elements inside CSS3DRenderer's matrix3d transforms, making buttons
-  // unclickable. Instead, controls are created as a fixed HTML overlay positioned
-  // over the focused terminal. See showTermControls/hideTermControls.
+  // Controls inside the header — shown when focused
+  const controls = document.createElement('span');
+  controls.className = 'header-controls';
+  controls.style.display = 'none';
+  const mkHdrBtn = function(label, title, fn) {
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    btn.title = title;
+    btn.addEventListener('click', function(ev) { ev.stopPropagation(); ev.preventDefault(); fn(); });
+    return btn;
+  };
+  controls.appendChild(mkHdrBtn('−', 'Smaller text (more cols)', function() {
+    const t = terminals.get(sessionName);
+    if (t) {
+      const newCols = Math.min(300, (t.screenCols || 80) + 4);
+      const newRows = Math.min(100, (t.screenRows || 24) + 2);
+      t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
+    }
+  }));
+  controls.appendChild(mkHdrBtn('+', 'Bigger text (fewer cols)', function() {
+    const t = terminals.get(sessionName);
+    if (t) {
+      const newCols = Math.max(20, (t.screenCols || 80) - 4);
+      const newRows = Math.max(5, (t.screenRows || 24) - 2);
+      t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
+    }
+  }));
+  controls.appendChild(mkHdrBtn('⊡', 'Fit terminal to card', function() {
+    const t = terminals.get(sessionName);
+    if (t) optimizeTermToCard(t);
+  }));
+  controls.appendChild(mkHdrBtn('⊞', 'Fit card to terminal', function() {
+    const t = terminals.get(sessionName);
+    if (t) optimizeCardToTerm(t);
+  }));
+  controls.appendChild(mkHdrBtn('⌊', 'Minimize', function() {
+    removeFromFocus(sessionName);
+  }));
+  header.appendChild(controls);
+
   inner.appendChild(header);
 
   const obj = document.createElement('object');
@@ -1435,9 +1471,12 @@ function updateControlsPosition() {
   if (!t) return;
   const rect = t.dom.getBoundingClientRect();
   if (rect.width < 10) return;
-  // Position at top-right of the terminal card
-  _controlsBar.style.left = (rect.right - 110) + 'px';
-  _controlsBar.style.top = (rect.top + 4) + 'px';
+  const header = t.dom.querySelector('header');
+  const headerRect = header ? header.getBoundingClientRect() : rect;
+  const barW = _controlsBar.offsetWidth || 170;
+  // Center horizontally on the card, vertically on the title bar
+  _controlsBar.style.left = (rect.left + (rect.width - barW) / 2) + 'px';
+  _controlsBar.style.top = (headerRect.top + (headerRect.height - 28) / 2) + 'px';
 }
 
 // The lastAddToFocusTime guard prevents this from firing immediately after addToFocus().
@@ -1629,6 +1668,10 @@ function updateFocusStyles() {
     // Show/hide minimize button on thumbnail
     const minBtn = term.thumbnail.querySelector('.thumb-minimize');
     if (minBtn) minBtn.style.display = (focusedSessions.has(name) && focusedSessions.size > 1) ? 'block' : 'none';
+
+    // Show/hide header controls
+    const hdrControls = term.dom.querySelector('.header-controls');
+    if (hdrControls) hdrControls.style.display = focusedSessions.has(name) ? 'inline-flex' : 'none';
 
     if (focusedSessions.size > 0) {
       if (focusedSessions.has(name)) {

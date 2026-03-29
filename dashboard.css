@@ -84,6 +84,30 @@ html, body {
 .terminal-3d header:active {
   cursor: grabbing;
 }
+.header-controls {
+  display: none;
+  margin-left: auto;
+  gap: 8px;
+  align-items: center;
+}
+.header-controls button {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.12);
+  color: #ccc;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.header-controls button:hover {
+  background: rgba(255,255,255,0.25);
+  color: #fff;
+}
 
 .terminal-3d .dots {
   display: flex;
