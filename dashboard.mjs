@@ -1232,15 +1232,15 @@ function updateCardForNewSize(t, newCols, newRows) {
   const { cardW, cardH } = calcCardSize(newCols, newRows);
   t.baseCardW = cardW;
   t.baseCardH = cardH;
-  // Don't resize card DOM while focused — focus has its own layout.
-  // baseCardW/baseCardH are updated above so unfocus restores correctly.
-  if (t.dom.classList.contains('focused')) return;
+  // Always update DOM — card must reshape to match new terminal aspect.
+  // During focus, clear the inner scale transform so content fills directly.
   t.dom.style.width = cardW + 'px';
   t.dom.style.height = cardH + 'px';
   const inner = t.dom.querySelector('.terminal-inner');
   if (inner) {
     inner.style.width = cardW + 'px';
     inner.style.height = cardH + 'px';
+    inner.style.transform = '';
   }
 }
 
