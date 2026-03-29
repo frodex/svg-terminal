@@ -71,8 +71,8 @@ html, body {
   background: #2a2a2c;
   display: flex;
   align-items: center;
-  padding: 0 20px;
-  gap: 16px;
+  padding: 8px 24px;
+  gap: 12px;
   user-select: none;
 }
 
@@ -418,5 +418,35 @@ html, body {
   color: rgba(255, 255, 255, 0.5);
   text-align: right;
   flex: 1;
+}
+
+/* Terminal title bar controls */
+.term-controls {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.term-ctrl-btn {
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #999;
+  font-size: 24px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+  transition: background 0.15s, color 0.15s;
+}
+
+.term-ctrl-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
 }
 

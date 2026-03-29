@@ -821,6 +821,49 @@ function createTerminalDOM(sessionName) {
   name.className = 'session-name';
   name.textContent = sessionName;
   header.appendChild(name);
+
+  const controls = document.createElement('span');
+  controls.className = 'term-controls';
+
+  const btnMinus = document.createElement('button');
+  btnMinus.className = 'term-ctrl-btn';
+  btnMinus.textContent = '−';
+  btnMinus.title = 'Decrease font';
+  btnMinus.addEventListener('click', function(ev) {
+    ev.stopPropagation();
+    const t = terminals.get(sessionName);
+    if (!t) return;
+    t.fontScale = Math.max(0.3, (t.fontScale || 1.0) / 1.1);
+    applyFontScale(t);
+  });
+
+  const btnPlus = document.createElement('button');
+  btnPlus.className = 'term-ctrl-btn';
+  btnPlus.textContent = '+';
+  btnPlus.title = 'Increase font';
+  btnPlus.addEventListener('click', function(ev) {
+    ev.stopPropagation();
+    const t = terminals.get(sessionName);
+    if (!t) return;
+    t.fontScale = Math.min(3.0, (t.fontScale || 1.0) * 1.1);
+    applyFontScale(t);
+  });
+
+  const btnOptimize = document.createElement('button');
+  btnOptimize.className = 'term-ctrl-btn';
+  btnOptimize.textContent = '⊡';
+  btnOptimize.title = 'Optimize — resize terminal to fill card';
+  btnOptimize.addEventListener('click', function(ev) {
+    ev.stopPropagation();
+    const t = terminals.get(sessionName);
+    if (!t) return;
+    optimizeTerminalFit(t, sessionName);
+  });
+
+  controls.appendChild(btnMinus);
+  controls.appendChild(btnPlus);
+  controls.appendChild(btnOptimize);
+  header.appendChild(controls);
   inner.appendChild(header);
 
   const obj = document.createElement('object');
