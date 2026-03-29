@@ -179,28 +179,20 @@ function applyFontScale(t) {
 
 // Calculate cols/rows to fill the current card at the current font scale,
 // then resize the PTY via tmux.
+// Calculate optimal cols/rows to fill the terminal's card at the current font scale.
+// Uses the <object>'s rendered bounding rect and SVG cell dimensions.
+// The card is 4x-scaled DOM but the <object> renders the SVG scaled to fit.
+// We need: rendered pixel area / rendered cell pixel size = cols/rows.
 function optimizeTerminalFit(t, sessionName) {
-  const obj = t.dom.querySelector('object');
-  if (!obj) return;
+  const renderInfo = getTermRenderInfo(t);
+  if (!renderInfo) return;
 
-  let cellW = 8.4, cellH = 17;
-  try {
-    const svgDoc = obj.contentDocument;
-    if (svgDoc) {
-      const measure = svgDoc.getElementById('measure');
-      if (measure) {
-        const bbox = measure.getBBox();
-        if (bbox.width > 0) { cellW = bbox.width / 10; cellH = bbox.height; }
-      }
-    }
-  } catch (err) {}
-
-  const cardW = parseInt(t.dom.style.width) || 1280;
-  const cardH = (parseInt(t.dom.style.height) || 992) - 56;
   const scale = t.fontScale || 1.0;
-
-  const cols = Math.max(20, Math.round(cardW / (cellW * scale)));
-  const rows = Math.max(5, Math.round(cardH / (cellH * scale)));
+  // renderInfo.cellW/cellH are in rendered pixels (already account for SVG scaling)
+  // At fontScale=1, these are the normal cell sizes. At fontScale!=1, we want
+  // more/fewer cells to fill the same space.
+  const cols = Math.max(20, Math.round(renderInfo.cols / scale));
+  const rows = Math.max(5, Math.round(renderInfo.rows / scale));
 
   t.sendInput({ type: 'resize', cols: cols, rows: rows });
 }
