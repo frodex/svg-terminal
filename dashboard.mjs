@@ -1703,22 +1703,22 @@ function setActiveInput(sessionName) {
   document.getElementById('input-target').textContent = sessionName;
   showTermControls(sessionName);
 
-  // Slide previous active card back to its layout Z
+  // Slide previous active card back to where it was before the Z slide
   if (prevActive && prevActive !== sessionName) {
     const prevT = terminals.get(prevActive);
-    if (prevT && prevT._layoutZ !== undefined) {
-      prevT.targetPos.z = prevT._layoutZ;
+    if (prevT && prevT._savedZ !== undefined) {
+      prevT.targetPos.z = prevT._savedZ;
       prevT.morphFrom = { ...prevT.currentPos };
       prevT.morphStart = clock.getElapsedTime();
+      delete prevT._savedZ;
     }
   }
 
-  // Slide new active card forward to reading distance
+  // Slide new active card forward — save its current Z first
   const t = terminals.get(sessionName);
   if (t) {
-    // Save the layout Z if we haven't already
-    if (t._layoutZ === undefined) t._layoutZ = t.targetPos.z || 0;
-    t.targetPos.z = t._layoutZ + READING_Z_OFFSET;
+    t._savedZ = t.targetPos.z;
+    t.targetPos.z += READING_Z_OFFSET;
     t.morphFrom = { ...t.currentPos };
     t.morphStart = clock.getElapsedTime();
   }
@@ -1807,15 +1807,8 @@ function restoreAllFocused() {
 // Deselect: remove input focus but keep camera and cards in place.
 // Cards stay where they are, just lose the focus highlight and keyboard input.
 function deselectTerminals() {
-  // Slide active card back to layout Z
-  if (activeInputSession) {
-    const prevT = terminals.get(activeInputSession);
-    if (prevT && prevT._layoutZ !== undefined) {
-      prevT.targetPos.z = prevT._layoutZ;
-      prevT.morphFrom = { ...prevT.currentPos };
-      prevT.morphStart = clock.getElapsedTime();
-    }
-  }
+  // Don't move any cards. Leave everything exactly where it is.
+  // Just remove input focus and visual indicators.
   activeInputSession = null;
   _zoomedSession = null;
   // Remove input/highlight indicators but keep focusedSessions intact.
