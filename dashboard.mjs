@@ -600,6 +600,22 @@ function onMouseMove(e) {
       return;
     }
 
+    if (dragMode === 'dollyCard') {
+      // Ctrl+drag header: dolly camera toward/away from the card.
+      // Drag up = zoom in (camera closer), drag down = zoom out.
+      // Card stays put, camera moves along the vector from camera to card.
+      const t = _moveCardSession && terminals.get(_moveCardSession);
+      if (t) {
+        const cardWorldPos = new THREE.Vector3(t.targetPos.x, t.targetPos.y, t.targetPos.z || 0);
+        const dir = cardWorldPos.clone().sub(camera.position).normalize();
+        const speed = dy * 0.5; // drag down = positive dy = zoom out (move camera back)
+        camera.position.addScaledVector(dir, speed);
+        currentLookTarget.copy(cardWorldPos);
+        camera.lookAt(currentLookTarget);
+      }
+      return;
+    }
+
     if (dragMode === 'orbit') {
       // Orbit camera around its look target at current distance
       orbitAngle -= dx * 0.005;
@@ -701,7 +717,7 @@ function onMouseDown(e) {
       const sessionName = headerHitSession;
       if (sessionName && focusedSessions.has(sessionName)) {
         isDragging = true;
-        dragMode = 'moveCard';
+        dragMode = (e.ctrlKey || ctrlHeld) ? 'dollyCard' : 'moveCard';
         dragDistance = 0;
         dragStart.x = e.clientX;
         dragStart.y = e.clientY;
@@ -800,7 +816,7 @@ document.addEventListener('contextmenu', function(e) {
 
 function onMouseUp(e) {
   if (e.button === 0 && dragDistance <= 5) {
-    if (dragMode === 'ctrlPending' || ctrlHeld) {
+    if ((dragMode === 'ctrlPending' || ctrlHeld) && dragMode !== 'dollyCard') {
       // Ctrl+click on 3D scene — skip if click was on sidebar (thumbnail handles it)
       if (!mouseDownOnSidebar) {
         handleCtrlClick(e);
@@ -812,7 +828,7 @@ function onMouseUp(e) {
     }
   }
   // Title bar click (not drag) — switch input to that terminal
-  if (dragMode === 'moveCard' && dragDistance <= 5 && _moveCardSession) {
+  if ((dragMode === 'moveCard' || dragMode === 'dollyCard') && dragDistance <= 5 && _moveCardSession) {
     setActiveInput(_moveCardSession);
   }
   // After resize drag, calculate cols/rows proportionally.
@@ -996,11 +1012,26 @@ function onSceneClick(e) {
       focusTerminal(clicked);
     }
   }
-  // NOTE: Clicking empty space does NOT unfocus. Use Esc to unfocus.
-  // Previously this called unfocusTerminal() on empty-space clicks, which caused
-  // accidental unfocus when clicking near a focused terminal, after Alt+drag
-  // selection, or when trying to click into a terminal for keyboard focus.
+  // Click on empty space (no terminal hit) unfocuses all terminals.
+  if (!clicked && focusedSessions.size > 0) {
+    unfocusTerminal();
+  }
   // Esc is the explicit, intentional unfocus action.
+}
+
+// Dolly camera toward the point under the mouse cursor.
+// Converts mouse screen position to a world-space ray and moves camera along it.
+function dollyTowardCursor(e, speed) {
+  // Normalized device coordinates (-1 to 1)
+  const ndcX = (e.clientX / window.innerWidth) * 2 - 1;
+  const ndcY = -(e.clientY / window.innerHeight) * 2 + 1;
+  // Ray from camera through mouse position
+  const ray = new THREE.Vector3(ndcX, ndcY, 0.5).unproject(camera).sub(camera.position).normalize();
+  camera.position.addScaledVector(ray, -speed);
+  // Update look target to follow the dolly
+  currentLookTarget.addScaledVector(ray, -speed);
+  camera.lookAt(currentLookTarget);
+  orbitDist = camera.position.distanceTo(currentLookTarget);
 }
 
 function onWheel(e) {
@@ -1035,17 +1066,13 @@ function onWheel(e) {
   }
 
   if (action === 'dollyZ') {
-    const dir = new THREE.Vector3();
-    camera.getWorldDirection(dir);
-    camera.position.addScaledVector(dir, -delta * 0.5);
-    orbitDist = camera.position.distanceTo(currentLookTarget);
-    camera.lookAt(currentLookTarget);
+    // Shift+scroll: focus-zoom toward mouse cursor
+    dollyTowardCursor(e, delta * 0.8);
     return;
   }
 
-  // Default: zoom FOV
-  camera.fov = Math.max(10, Math.min(120, camera.fov + delta * 0.05));
-  camera.updateProjectionMatrix();
+  // Default (unfocused scroll): dolly toward mouse cursor
+  dollyTowardCursor(e, delta * 0.5);
 }
 
 // Derive orbitAngle/orbitPitch/orbitDist from camera's actual position relative to look target.
