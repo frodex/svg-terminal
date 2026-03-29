@@ -210,3 +210,45 @@ test('WebSocket input sends keys and receives update', async () => {
   assert.ok(response.type === 'screen' || response.type === 'delta');
   ws.close();
 });
+
+test('WebSocket resize message is processed by server', async () => {
+  // This test verifies the server processes resize messages without error.
+  // Note: tmux may not actually change dimensions if the pane is attached to a
+  // larger terminal — tmux clamps pane size to the smallest attached client.
+  // We verify the server responds with a screen (not an error) after resize.
+  const sessRes = await get('/api/sessions');
+  const sessions = await sessRes.json();
+  if (sessions.length === 0) return;
+  const session = sessions[0].name;
+
+  const ws = new WebSocket('ws://127.0.0.1:' + TEST_PORT + '/ws/terminal?session=' + session + '&pane=0');
+
+  // Wait for initial screen
+  const first = await new Promise((resolve, reject) => {
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString());
+      if (msg.type === 'screen') resolve(msg);
+    };
+    setTimeout(() => reject(new Error('Timeout')), 5000);
+  });
+
+  assert.ok(typeof first.width === 'number');
+  assert.ok(typeof first.height === 'number');
+
+  // Send resize — server should not crash and should send a screen response
+  ws.send(JSON.stringify({ type: 'resize', cols: 120, rows: 35 }));
+
+  const response = await new Promise((resolve, reject) => {
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString());
+      if (msg.type === 'screen' || msg.type === 'delta') resolve(msg);
+    };
+    setTimeout(() => reject(new Error('No response after resize')), 3000);
+  });
+
+  // Server sent a screen or delta — no error, resize was handled
+  assert.ok(response.type === 'screen' || response.type === 'delta',
+    'Expected screen or delta response after resize');
+
+  ws.close();
+});

@@ -331,6 +331,20 @@ async function handleTerminalWs(ws, session, pane) {
   ws.on('message', async (data) => {
     try {
       const msg = JSON.parse(data);
+      if (msg.type === 'resize') {
+        const target = session + ':' + pane;
+        const cols = Math.max(20, Math.min(500, parseInt(msg.cols) || 80));
+        const rows = Math.max(5, Math.min(200, parseInt(msg.rows) || 24));
+        try {
+          await tmuxAsync('resize-pane', '-t', target, '-x', String(cols), '-y', String(rows));
+        } catch (err) {
+          // resize may fail if pane doesn't exist — ignore
+        }
+        // Force re-capture to get new dimensions
+        lastState = null;
+        setTimeout(captureAndPush, 10);
+        return;
+      }
       if (msg.type === 'input') {
         const target = session + ':' + pane;
         if (msg.scrollTo != null) {
