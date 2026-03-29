@@ -165,45 +165,53 @@ function getScrollAction(e, isFocused) {
 
 // Calculate optimal cols/rows to fill the terminal's card at the current text size.
 // Uses cell dimensions from the SVG to determine how many cols/rows fit the card.
-function optimizeTerminalFit(t, sessionName) {
+// Optimize terminal → card: resize tmux to fill the current card.
+// Card stays, terminal adjusts. Use after alt+drag to fill a custom card size.
+function optimizeTermToCard(t) {
   const obj = t.dom.querySelector('object');
   if (!obj) return;
-  const currentCols = t.screenCols || 80;
-  const currentRows = t.screenRows || 24;
-  // Card DOM is 4x. Object area = card minus header (56px).
   const cardW = parseInt(t.dom.style.width) || 1280;
-  const cardH = (parseInt(t.dom.style.height) || 992) - 56;
-
-  // Cell pixel size: the SVG is aspect-fit into the card.
-  // Current content fills some portion of the card. Cell pixel size depends on which
-  // axis constrains the fit.
+  const cardH = (parseInt(t.dom.style.height) || 992) - HEADER_H;
+  const cols = t.screenCols || 80;
+  const rows = t.screenRows || 24;
   try {
     const svgDoc = obj.contentDocument;
     const measure = svgDoc && svgDoc.getElementById('measure');
     if (measure) {
       const bbox = measure.getBBox();
       if (bbox.width > 0) {
-        const cellW = bbox.width / 10; // SVG units per cell
+        const cellW = bbox.width / 10;
         const cellH = bbox.height;
-        const contentW = currentCols * cellW; // total SVG width in SVG units
-        const contentH = currentRows * cellH; // total SVG height in SVG units
-        // SVG aspect-fits: find the scale factor from SVG units to card DOM pixels
-        const scaleW = cardW / contentW;
-        const scaleH = cardH / contentH;
-        const fitScale = Math.min(scaleW, scaleH); // aspect-fit uses the smaller scale
-        // Cell size in card DOM pixels at this fit
-        const cellPxW = cellW * fitScale;
-        const cellPxH = cellH * fitScale;
-        // How many cells fill the card?
-        const cols = Math.max(20, Math.round(cardW / cellPxW));
-        const rows = Math.max(5, Math.round(cardH / cellPxH));
-        t.sendInput({ type: 'resize', cols: cols, rows: rows });
+        const scaleW = cardW / (cols * cellW);
+        const scaleH = cardH / (rows * cellH);
+        const fitScale = Math.min(scaleW, scaleH);
+        const newCols = Math.max(20, Math.round(cardW / (cellW * fitScale)));
+        const newRows = Math.max(5, Math.round(cardH / (cellH * fitScale)));
+        t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
         return;
       }
     }
   } catch (e) {}
-  // Fallback if SVG not accessible: assume current layout fills the card
-  t.sendInput({ type: 'resize', cols: currentCols, rows: currentRows });
+  t.sendInput({ type: 'resize', cols: cols, rows: rows });
+}
+
+// Optimize card → terminal: resize the card to fit the current terminal.
+// Terminal stays, card adjusts. Use after +/- to wrap the card snugly.
+// Same logic as addTerminal init — unified path.
+function optimizeCardToTerm(t) {
+  const cols = t.screenCols || 80;
+  const rows = t.screenRows || 24;
+  const { cardW, cardH } = calcCardSize(cols, rows);
+  t.baseCardW = cardW;
+  t.baseCardH = cardH;
+  t.dom.style.width = cardW + 'px';
+  t.dom.style.height = cardH + 'px';
+  const inner = t.dom.querySelector('.terminal-inner');
+  if (inner) {
+    inner.style.width = cardW + 'px';
+    inner.style.height = cardH + 'px';
+    inner.style.transform = '';
+  }
 }
 
 // === Constants ===
@@ -1393,9 +1401,13 @@ function createControlsBar() {
       t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
     }
   }));
-  bar.appendChild(mkBtn('⊡', 'Optimize fit', () => {
+  bar.appendChild(mkBtn('⊡', 'Fit terminal to card', () => {
     const t = terminals.get(_controlsSession);
-    if (t) optimizeTerminalFit(t, _controlsSession);
+    if (t) optimizeTermToCard(t);
+  }));
+  bar.appendChild(mkBtn('⊞', 'Fit card to terminal', () => {
+    const t = terminals.get(_controlsSession);
+    if (t) optimizeCardToTerm(t);
   }));
   bar.appendChild(mkBtn('⌊', 'Minimize (return to ring)', () => {
     if (_controlsSession) removeFromFocus(_controlsSession);
