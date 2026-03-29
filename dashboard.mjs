@@ -1012,11 +1012,11 @@ function onSceneClick(e) {
       focusTerminal(clicked);
     }
   }
-  // Click on empty space (no terminal hit) unfocuses all terminals.
+  // Click on empty space: deselect (remove input focus) but keep camera and cards in place.
+  // Escape returns to attract mode (ring animation).
   if (!clicked && focusedSessions.size > 0) {
-    unfocusTerminal();
+    deselectTerminals();
   }
-  // Esc is the explicit, intentional unfocus action.
 }
 
 // Dolly camera toward the point under the mouse cursor.
@@ -1778,6 +1778,36 @@ function restoreAllFocused() {
   focusedSessions.clear();
 }
 
+// Deselect: remove input focus but keep camera and cards in place.
+// Cards stay where they are, just lose the focus highlight and keyboard input.
+function deselectTerminals() {
+  activeInputSession = null;
+  for (const [name, term] of terminals) {
+    term.dom.classList.remove('input-active');
+    const hdrCtrl = term.dom.querySelector('.header-controls');
+    if (hdrCtrl) hdrCtrl.style.display = 'none';
+  }
+  // Close WebSocket connections (no longer receiving input)
+  for (const fname of focusedSessions) {
+    const ft = terminals.get(fname);
+    if (ft && ft.inputWs) {
+      ft.inputWs.close();
+      ft.inputWs = null;
+    }
+  }
+  focusedSessions.clear();
+  // Remove faded class from ring terminals so they show normally
+  for (const [name, term] of terminals) {
+    term.dom.classList.remove('faded', 'focused');
+    term.thumbnail.classList.remove('active');
+    const minBtn = term.thumbnail.querySelector('.thumb-minimize');
+    if (minBtn) minBtn.style.display = 'none';
+  }
+  hideTermControls();
+  document.getElementById('input-bar').classList.remove('visible');
+}
+
+// Full unfocus: return cards to ring, camera to home position.
 function unfocusTerminal() {
   restoreAllFocused();
   activeInputSession = null;
