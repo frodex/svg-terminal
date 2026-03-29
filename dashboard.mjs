@@ -353,8 +353,8 @@ function calculateFocusedLayout() {
 
   // Camera distance: pull back enough to see the whole grid
   const vFov = camera.fov * DEG2RAD;
-  const distForH = (totalH / 2) / Math.tan(vFov / 2) * 1.15;
-  const distForW = (totalW / 2) / (Math.tan(vFov / 2) * camera.aspect) * 1.15;
+  const distForH = (totalH / 2) / Math.tan(vFov / 2) * 1.05;
+  const distForW = (totalW / 2) / (Math.tan(vFov / 2) * camera.aspect) * 1.05;
   const dist = Math.max(FOCUS_DIST, Math.max(distForH, distForW));
 
   const vFovH = 2 * dist * Math.tan(vFov / 2);
