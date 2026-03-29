@@ -4,33 +4,33 @@
 **JSONL Path:** `/root/.claude/projects/-root/e3af93f5-13f3-470c-a5ba-94823a102b75.jsonl`
 **Resume command:** `claude --resume e3af93f5-13f3-470c-a5ba-94823a102b75`
 **Working directory:** `/root` (project at `/srv/svg-terminal`)
-**Branch:** `dev`
+**Branch:** `camera-only-test` (ahead of `dev`, needs merge after validation)
 **Date range:** 2026-03-28 → 2026-03-29
-**Status:** Active — frustum layout working, persistence and scene system designed not yet implemented
+**Status:** Retired — camera-only architecture working, selection overlay fix needed
 
 ---
 
 ## What I Know That Isn't Written Down
 
-1. The `pkill -f "node.*server.mjs"` followed by `node server.mjs &` consistently fails because the bash tool resets working directory to `/root`. You must run `node server.mjs &` as a separate command — it picks up the cwd from the shell snapshot which is `/srv/svg-terminal`. Exit code 144 from pkill is expected (SIGTERM caught).
+1. `pkill -f "node.*server.mjs"` exits 144 (expected). Use `bash /srv/svg-terminal/restart-server.sh` for clean kill+restart in one approved command.
 
-2. The user accesses the dashboard via `http://droidware.ai:3200/` from Windows 11. This is HTTP not HTTPS, which means `navigator.clipboard.writeText()` fails silently. The `fallbackCopy()` using `document.execCommand('copy')` with a hidden textarea is the working clipboard path.
+2. User accesses via `http://droidware.ai:3200/` from Windows 11, Chrome, 100% scaling. HTTP not HTTPS — clipboard uses `execCommand('copy')` fallback.
 
-3. The user tests in both Chrome and Edge. They render differently. Any CSS that looks right in puppeteer (headless Chrome) might look wrong in Edge.
+3. `cp-*` tmux sessions won't accept `tmux resize-window` — managed by claude-proxy with attached SSH clients.
 
-4. The `cp-*` tmux sessions are managed by claude-proxy and will NOT accept `tmux resize-window` because they have attached SSH clients constraining the size. Only standalone tmux sessions like `resize-test`, `resize-test2`, and `font-test` can be resized. CRITICAL for testing resize features.
+4. Never kill tmux sessions without asking. Only restart the Node.js server.
 
-5. The user's PuTTY sessions set the terminal size. When the browser resizes a terminal, the PuTTY user sees it too. This is intentional but surprising.
+5. "Font size" = how many cols/rows fit the card. ALL visual size changes are tmux resize. No CSS transforms.
 
-6. Never kill or create tmux sessions without asking. The user has active work running. Only the svg-terminal server process can be restarted.
+6. `SVG_CELL_W = 8.65`, `SVG_CELL_H = 17` — measured from SVG `measure` element. If font changes, these break.
 
-7. The user's mental model of "font size" is "how many cols/rows fit the card" — not pixels or CSS transforms. ALL visual size changes are tmux resize. Font size is a derived concept: `fontSize = cardWidth / cols`.
+7. CSS3D hit testing is 2D — `e.target.closest` and `getBoundingClientRect()` are unreliable for overlapping cards at different Z depths. Use coordinate-based checking against card/header rects instead.
 
-8. The `measure` element in terminal.svg reports `bbox.width / 10 ≈ 8.65` for cell width and `bbox.height ≈ 17` for cell height. These are actual SVG font dimensions. If the font changes, `SVG_CELL_W` and `SVG_CELL_H` constants in dashboard.mjs break.
+8. CSS class changes (border, box-shadow) on `.terminal-3d` trigger Chrome to re-rasterize the entire card under `matrix3d` transforms, causing visible text sharpness mutation. Use header-only styling for active indicators.
 
-9. The brainstorm visual companion server times out after 30 minutes. Restart with `bash /root/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.6/skills/brainstorming/scripts/start-server.sh --project-dir /srv/svg-terminal --host 0.0.0.0 --url-host 192.168.22.56`. Session data persists in `.superpowers/brainstorm/`.
+9. `window._saveLayout()` in browser console saves layout to server. `window._getShareUrl()` gives a URL to share layouts. Profiles stored at `/srv/svg-terminal/profiles/<uid>.json`.
 
-10. The CSS3DRenderer places real DOM elements in 3D space. Clicks hit the DOM element directly, not the renderer canvas. `onSceneClick` receives bubbled events. `pointer-events: none` on `<object>` elements is load-bearing — without it the SVG captures clicks.
+10. The brainstorm visual companion server times out after 30 minutes. Restart with `bash /root/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.6/skills/brainstorming/scripts/start-server.sh --project-dir /srv/svg-terminal --host 0.0.0.0 --url-host 192.168.22.56`.
 
 ---
 
@@ -40,33 +40,27 @@
 
 | What | Why | Consequence if violated |
 |------|-----|----------------------|
-| 4x scale trick (variable DOM size, CSS3DObject scale 0.25) | Chrome rasterizes DOM before 3D transform. 4x forces high-res raster. | Text blurs in 3D dashboard. |
-| SVG is the rendering target | User rejected HTML overlay/crossfade approaches. SVG chosen for cross-browser universality. | Edge/Chrome render HTML overlays differently. |
-| No per-terminal DOM click handlers | Causes double-fire with ctrl+click multi-focus. | Multi-focus breaks. |
-| Event routing flags must not be simplified | `mouseDownOnSidebar`, `suppressNextClick`, `lastAddToFocusTime`, `ctrlHeld`, `altHeld` — each prevents a tested bug. | Various click/focus bugs return. |
-| `syncOrbitFromCamera()` on orbit start | Without it, orbit params contain stale values. | Camera snaps violently. |
-| `focusQuatFrom` captured on focus | Without it, card snaps flat instead of slerping. | Z-rotation snap. |
-| Atomic tmux capture (`;` separator) | Separate calls create race — cursor doesn't match content. | Cursor offset from input. |
-| `tmux resize-window` not `resize-pane` | `resize-pane` only works within window constraints. | Resize silently fails. |
-| No CSS font scaling for resize | User explicitly corrected: ALL size changes come from tmux cols/rows. | Coordinate confusion, death spiral. |
-| `baseCardW/baseCardH` must always be current | These are restore anchors for focus/unfocus. | Cards mutate on every focus cycle. |
-| No CSS default width/height on `.terminal-3d` | Variable card sizes conflict with CSS defaults. | Cards snap to wrong size. |
-| Frustum layout: no camera offset | Camera at origin. Cards in screen pixels projected to world. Sidebar is overlay. | Every offset combination was wrong. |
-| `suppressNextClick` only on scene ctrl+click | Sidebar ctrl+click was setting it, eating next click. | First click after multi-select fails. |
-| `dragDistance` reset on every mousedown | Previous drag's distance persists otherwise. | Can't click after any drag. |
-| Ring Z offset must ease, not snap | Instant ring position change causes pop. | Jarring animation. |
+| 4x scale trick (variable DOM, CSS3DObject scale 0.25) | Chrome rasterizes DOM before 3D transform | Text blurs |
+| SVG is the rendering target | Cross-browser universality | Edge/Chrome render HTML overlays differently |
+| No per-terminal DOM click handlers | Double-fire with ctrl+click | Multi-focus breaks |
+| Event routing flags (mouseDownOnSidebar, suppressNextClick, lastAddToFocusTime, ctrlHeld, altHeld) | Each prevents a tested bug | Various click/focus bugs |
+| Camera-only focus: no DOM resize on focus | Eliminates entire category of sizing bugs | Two-state architecture returns |
+| No CSS border/box-shadow on .terminal-3d for indicators | Triggers Chrome re-rasterization under matrix3d | Text sharpness mutation on focus switch |
+| Coordinate-based header hit testing | CSS3D 2D hit testing ignores Z depth | Wrong card intercepts clicks |
+| `_savedZ` must be cleared on deselect | Accumulates READING_Z_OFFSET per cycle | Card creeps toward camera |
+| Frustum layout: no camera offset | Camera at origin, sidebar is overlay | Every offset combination was wrong |
+| `dragDistance` reset on every mousedown | Previous drag distance persists | Can't click after any drag |
 
 ### Performance Contracts
 
 | What | Value | Why |
 |------|-------|-----|
-| Server poll interval | 30ms | Fast enough for interactive use. |
-| Post-keystroke re-capture delay | 5ms | tmux needs time to process. |
-| Scroll step acceleration | 1/3/6/12 lines based on deltaY | Feels responsive. |
-| MORPH_DURATION | 1.5s | Fly-in animation length. |
-| BILLBOARD_SLERP | 0.08 | Lazy face-camera drift. |
-| Ring Z ease rate | 0.05 per frame | Smooth ring push/pull on focus/unfocus. |
-| refreshSessions poll | 5000ms | Reactive card sizing for unfocused terminals. |
+| Server poll interval | 30ms | Interactive use |
+| MORPH_DURATION | 1.5s | Fly-in animation |
+| BILLBOARD_SLERP | 0.08 | Face-camera drift |
+| Ring Z ease rate | 0.05/frame | Smooth ring push/pull |
+| refreshSessions poll | 5000ms | Reactive card sizing |
+| READING_Z_OFFSET | 25 | Subtle active card forward slide |
 
 ---
 
@@ -74,16 +68,14 @@
 
 | What was tried | What happened | What to do instead |
 |---------------|--------------|-------------------|
-| CSS `transform: scale()` on `<object>` for font zoom | Width/height adjustment counteracted scale. Multiple iterations all failed. | Change tmux cols/rows. No CSS transforms. |
-| Camera offset to account for sidebar | Every sign combination wrong. Feedback loop with card positioning. | No offset. Camera at origin. Sidebar is overlay. Everything in one frustum. |
-| Cards at fixed Z depth with camera pullback | Ring passes through focused cards. Camera pullback makes cards too small. | Frustum projection: each card at own Z. Ring pushed behind via `ringZOffset`. |
-| Hardcoded 1280×992 for all terminals | Letterboxing. Focus/unfocus mutates size. Aspect mismatch. | `calcCardSize(cols, rows)` from tmux. `TARGET_WORLD_AREA` for uniform visual weight. |
-| `HEADER_H = 56` | Actual header 72px (56 content + 16 padding, content-box). Aspect mismatch. | `HEADER_H = 72`. |
-| `SVG_CELL_W = 8.4` | Actual is 8.65. Card/SVG aspect mismatch. | Measured value 8.65 or read from SVG. |
-| Smooth scroll with CSS `translateY` animation | Transform and content update overlap in timing, causes bounce. | Don't animate. 30ms server response is fast enough. |
-| `tmux copy-mode` for scrollback | Entering copy-mode scrolls PuTTY but `capture-pane` still returns base buffer. | Use `capture-pane -S/-E` directly. Server-side offset. |
-| HTML overlay crossfade for crispness | Different rendering Chrome vs Edge. Fragile browser-specific behavior. | SVG is the target. Nx scaling. |
-| Buttons inside CSS3DObject DOM | `getBoundingClientRect()` returns NaN under `matrix3d`. Can't click. | Fixed HTML overlay, position in animate loop. |
+| CSS `transform: scale()` for font zoom | Counteracted by width/height adjustment | Change tmux cols/rows |
+| Camera offset for sidebar | Every sign combination wrong | No offset, sidebar is overlay |
+| DOM resize on focus (1:1 pixel mapping) | Two-state architecture, every feature breaks something | Camera-only focus |
+| `e.target.closest` in CSS3D | 2D hit testing picks wrong card at different Z depths | Coordinate-based rect checking |
+| Border/box-shadow for active indicator | Chrome re-rasterizes entire card under matrix3d | Header background change only |
+| `_layoutZ` for Z slide restore | Stale after user moves card | `_savedZ` captures current Z |
+| `focusedSessions.clear()` on deselect | Cards fly back to ring | Keep focusedSessions, just remove input |
+| Floating overlay controls bar | Positioning unreliable in CSS3D, intercepts header clicks | Controls inline in card header |
 
 ---
 
@@ -91,135 +83,113 @@
 
 | Mutation | What breaks | How to detect |
 |----------|------------|--------------|
-| Remove `syncOrbitFromCamera()` in orbit mousedown | Camera snaps to stale position | Visual: click terminal then right-drag — camera jumps |
-| Remove `focusQuatFrom = quaternion.clone()` | Card snaps flat before fly-in | Visual: card rotates to 0° then flies in |
-| Change `css3dObj.scale.setScalar(0.25)` to `1.0` | Text blurs in 3D | Visual: fuzzy text |
-| Add `el.addEventListener('click', ...)` to terminal DOM | Ctrl+click adds 2 terminals | Click count: should add exactly 1 |
-| Remove `mouseDownOnSidebar` flag | Ctrl+click thumbnail also fires handleCtrlClick | Terminal count: adds 2 instead of 1 |
-| Remove `suppressNextClick` flag | `onSceneClick` fires after `onMouseUp` ctrl+click | Focus count drops to 1 |
-| Remove `lastAddToFocusTime` guard | `focusTerminal()` fires after `addToFocus()` | Focus count drops to 1 |
-| Remove `dragDistance = 0` from `onMouseDown` | Clicks after drags are ignored | Can't click on anything after dragging |
-| Clear `dom.style.width/height` to empty string | Card disappears (no CSS fallback) | Visual: card gone |
-| Use `tmux resize-pane` instead of `resize-window` | Resize silently fails | Terminal dimensions unchanged |
-| Remove ring Z offset easing | Ring pops on focus/unfocus | Visual: jarring snap |
-| Remove `baseCardW/baseCardH` update in `updateCardForNewSize` | Unfocus restores to pre-resize size | Card shrinks after alt+scroll resize |
+| Remove `syncOrbitFromCamera()` in orbit mousedown | Camera snaps | Visual: camera jumps on orbit start |
+| Remove `focusQuatFrom` on focus | Card snaps flat | Visual: rotation snap |
+| Change css3dObj scale from 0.25 | Text blurs | Visual: fuzzy text |
+| Add per-terminal click handlers | Ctrl+click adds 2 | Click count wrong |
+| Clear `focusedSessions` on deselect | Cards fly to ring | Visual: cards scatter |
+| Don't delete `_savedZ` on deselect | Z creeps per cycle | Card grows each select |
+| Use `e.target.closest` for header | Wrong card intercepts | Drag fails on small cards |
+| Add border to `.terminal-3d.input-active` | Re-rasterization | Text sharpness mutation |
 
 ---
 
 ## Interfaces
 
-### WebSocket Protocol: `/ws/terminal?session=X&pane=Y`
-
-**Type:** Bidirectional WebSocket
-**Server → Client:**
-```json
-{ "type": "screen", "width": 120, "height": 40, "cursor": {"x": 5, "y": 12}, "title": "...", "lines": [...], "scrollOffset": 0 }
-{ "type": "delta", "cursor": {...}, "title": "...", "changed": {"3": [...spans], "12": [...spans]}, "scrollOffset": 0 }
-{ "type": "error", "message": "..." }
-```
-
-**Client → Server:**
-```json
-{ "type": "input", "keys": "hello" }
-{ "type": "input", "specialKey": "Enter" }
-{ "type": "input", "scrollTo": 42 }
-{ "type": "resize", "cols": 100, "rows": 30 }
-```
+### WebSocket: `/ws/terminal?session=X&pane=Y`
+Server→Client: `screen`, `delta`, `error`
+Client→Server: `input`, `resize`
 
 ### HTTP API
-
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/sessions` | List tmux sessions with cols/rows |
+| GET | `/api/sessions` | List sessions with cols/rows |
 | GET | `/api/pane?session=X&pane=Y` | Capture pane |
 | POST | `/api/input` | Send keystrokes |
-
-### `/api/sessions` Response Format
-```json
-[
-  { "name": "resize-test", "windows": 1, "cols": 80, "rows": 24 },
-  { "name": "cp-greg_session_001", "windows": 1, "cols": 120, "rows": 40 }
-]
-```
+| GET/POST | `/api/layout?uid=X` | Load/save browser layout profile |
 
 ---
 
 ## Test Invariants
 
-**Test runner:** `node --test` (Node.js built-in)
-**Test count:** 17
-**Run:** `cd /srv/svg-terminal && node --test test-server.mjs`
-
-**What's covered:**
-- HTTP API routes (sessions, pane capture, input)
-- CORS headers
-- Parameter validation
-- WebSocket connect + receive screen
-- WebSocket input → receive delta
-- WebSocket resize message processed
-
-**What's NOT covered:**
-- Client-side dashboard behavior (no DOM tests)
-- Text selection / copy-paste
-- 3D scene rendering
-- Multi-focus / event routing
-- Frustum layout
-- These are tested via puppeteer scripts (`test-*.mjs`)
+- `node --test test-server.mjs` — 17 server tests
+- `node test-dashboard-e2e.mjs` — 20 E2E puppeteer tests
+- Run E2E with haiku subagent before asking user to test
 
 ---
 
-## What I Was About To Do Next (and Why)
+## Architecture: Camera-Only Focus
 
-### Immediate: Title bar drag refinement
-The drag detection works but may not feel natural. User reported needing ctrl which shouldn't be required. The header click zone is thin — may need a larger hit area.
+Cards are ALWAYS at `baseCardW × baseCardH`, scale ALWAYS 0.25. Focus = camera moves closer. No DOM changes on focus/unfocus. No inner scale transform. No restore needed.
 
-### Next: The dots (red/yellow/green)
-Currently decorative. User wants them functional or removed. Candidates: red=remove from focus, yellow=minimize to ring, green=optimize fit.
+### Card creation: `createCardDOM(config)`
+Generic factory — same structure for terminal and browser cards. Config: `{ id, title, type, controls[], contentEl }`.
 
-### Then: localStorage persistence (Phase 2 of design spec)
-Save per-terminal fontSize, cardW, cardH, mutated flag. Restore on reload. Global default fontSize. This is the foundation for pinning, groups, and scenes.
+### Multi-focus: frustum projection
+Layout in screen pixels, project to 3D. Each card at own Z depth. Cell-count proportional sizing. Camera pulls back to see all cards.
 
-### Then: Size morphing on startup (big bang)
-Cards start at origin, small. Fly out and grow to saved sizes. Position AND size interpolate over MORPH_DURATION.
+### Active card Z-slide
+Active card gets `READING_Z_OFFSET` (25 units) forward. `_savedZ` tracks pre-slide Z. Cleared on deselect.
 
-### Pending tasks (by priority):
-1. Title bar drag refinement
-2. Functional dots
-3. localStorage persistence
-4. Size morphing (big bang startup)
-5. Layout mode switching (masonry/treemap/grid)
-6. Pinning (world position persistence)
-7. Groups (rigid body collections)
-8. Named scenes (camera snapshots)
-9. Camera-locked terminals (HUD)
-10. claude-proxy v2 integration Phase B+C
+### Deselect vs Unfocus
+- Click empty space = deselect (cards stay, input removed)
+- Escape = full unfocus (cards return to ring)
 
 ---
 
-## What Surprised Me About Current State
+## What Was About To Be Done Next
 
-1. **Frustum projection solved multiple problems at once** — crispness, layout, and Z-ordering all improved from one architectural change. Each card at its own optimal depth gets the best Chrome rasterization.
+### 1. Selection overlay fix (TOP PRIORITY)
+Selection highlight is misaligned under CSS3D transforms. Need `screenToCardCoords()` that inverts the matrix3d to properly map screen pixels to card-local coordinates. Same fix will improve header hit testing.
 
-2. **"Everything is a card in one frustum" was the user's insight that unblocked the layout.** I spent multiple iterations fighting camera offset math. Dropping it and treating the sidebar as an overlay (not a subtracted region) made the code simpler AND correct.
+### 2. URL detection + browser cards
+Implemented but untested by user. terminal.svg detects URLs, alt+click creates iframe card via `createBrowserDOM()`.
 
-3. **Cell-count proportional sizing is the right metric for multi-focus.** Not card area, not terminal aspect, not height. The terminal with the most content (smallest text relative to area) should get the most screen space.
+### 3. Merge camera-only-test → dev
+Branch is ahead of dev with all the new architecture. Merge after selection fix.
 
-4. **The ring's Z range is huge** (~-500 to +500 due to 73° tilt). Any focused card at Z≈0 gets ring cards passing through it. The ease-behind solution (push ring Z back 800 units during focus) works but kills the ambient 3D effect. Future: modify ring path to arc behind focused cards instead of straight push.
+### 4. Cursor offset
+Cursor leads text too far right after resize. Likely stale `CELL_W` measurement.
 
-5. **Event routing remains the hardest part.** Every mouse feature I added broke something in the click/drag/ctrl+click system. The `dragDistance` reset on mousedown was the subtlest bug — stale distance from a previous drag making `wasDrag()` lie.
+### 5. localStorage persistence
+Phase 2 of design spec. Save/restore per-terminal preferences.
+
+### 6. ThinkOrSwim workspace system
+Named workspaces, color tag bindings, quick-switch toolbar.
+
+### 7. Mobile support
+Touch controls, virtual keys, full-screen terminal on phone.
+
+---
+
+## What Surprised Me
+
+1. **CSS3D hit testing is 2D.** This was the root cause of multiple bugs — header drag not working on small cards, text selection starting on wrong cards. The browser ignores Z depth for event targeting.
+
+2. **CSS class changes trigger re-rasterization.** Adding a border to the active card caused visible text sharpness mutation. The fix was using only header background changes.
+
+3. **Camera-only eliminates an entire category of bugs.** Every sizing bug traced to focus changing the DOM. Removing that one decision simplified hundreds of lines.
+
+4. **The user thinks in terms of windows, not coordinates.** +/- is font size, not card resize. Drag is reposition, not resize. Deselect keeps the layout. These are desktop metaphors applied to 3D.
+
+---
+
+## Files Changed This Session
+
+| File | Summary |
+|------|---------|
+| `dashboard.mjs` | Camera-only focus, frustum layout, masonry, card factory, browser cards, profiles, controls, Z-slide |
+| `dashboard.css` | Flexbox object fill, header controls, gold header indicator, debug background |
+| `server.mjs` | /api/sessions cols/rows, /api/layout profiles endpoint |
+| `terminal.svg` | URL detection, link layer, alt+click browser card |
+| `test-dashboard-e2e.mjs` | 20 E2E tests |
+| `restart-server.sh` | Kill+restart in one command |
+| `resume-agent-v3.md` | This file |
+| `docs/superpowers/specs/` | Design spec for persistence + scenes |
+| `council/` | Architecture docs, next features |
 
 ---
 
 ## Council Protocol
 
-Active council at `council/issue_01/`. Communication via markdown files:
-- `request_01.md` through `request_04.md` — from advisor agent (session 0317c840, retired)
-- `request_NN-RESPONSE-NN.md` — my responses
-- `card-sizing-design.md` — first-principles card sizing design
-- Advisor session is retired but the trail is complete and instructive
-
-The PHAT TOAD steward protocol was read and internalized from `/srv/PHAT-TOAD-with-Trails/steward/`. Key behaviors:
-- "No concerns" is a red flag — walk through fragile component survival
-- Constraints before architecture
-- After 2 failed fixes for same issue, stop and question the architecture
-- Use subagents (haiku) for non-reasoning tasks
+Council at `council/issue_01/`. The advisor agent (session 0317c840) is retired. PHAT TOAD steward protocol from `/srv/PHAT-TOAD-with-Trails/steward/` was read and applied.
