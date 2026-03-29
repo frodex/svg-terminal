@@ -632,11 +632,14 @@ function onMouseMove(e) {
       const newH = Math.max(496, currentH + dy * scaleF);
       t.dom.style.width = newW + 'px';
       t.dom.style.height = newH + 'px';
-      // Update .terminal-inner to match card dimensions
+      // Inner must match card size and have no scale transform.
+      // Focus sets inner to baseW with a scale() to fit the viewport,
+      // but during resize we want the content to fill the new card directly.
       const inner = t.dom.querySelector('.terminal-inner');
       if (inner) {
         inner.style.width = newW + 'px';
         inner.style.height = newH + 'px';
+        inner.style.transform = '';
       }
       // Save as user's preferred size — survives focus/unfocus
       t.baseCardW = newW;
