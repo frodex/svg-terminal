@@ -23,9 +23,8 @@ html, body {
 /* === Terminal Panel === */
 /* Render at 4x size, CSS3DObject scales to 0.25. setSharpness() changes both in sync. */
 .terminal-3d {
-  width: 1280px;
-  height: 992px;
-  background: #1c1c1e;
+  /* width/height set inline by addTerminal from tmux cols×rows — no CSS default */
+  background: #2e2e32; /* DEBUG: lightened from #1c1c1e to see card vs terminal edges. Revert for production. */
   border-radius: 48px;
   overflow: hidden;
   position: relative;
@@ -36,12 +35,14 @@ html, body {
 }
 
 .terminal-inner {
-  width: 1280px;
-  height: 992px;
+  width: 100%;
+  height: 100%;
   transform-origin: 0 0;
   position: absolute;
   top: 0;
   left: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .terminal-3d:hover {
@@ -54,10 +55,11 @@ html, body {
 }
 
 
-/* Yellow neon only shows when multiple terminals are focused — indicates which gets input */
+/* Active input indicator — gold neon only on the terminal receiving keystrokes.
+   No outline when focused but not active input. Disappears on unfocus. */
 .terminal-3d.input-active {
-  box-shadow: 0 0 25px rgba(255, 230, 0, 0.5), 0 0 60px rgba(255, 230, 0, 0.2), inset 0 0 1px rgba(255, 230, 0, 0.3);
-  border: 2px solid rgba(255, 230, 0, 0.6);
+  border: 3px solid rgba(254, 188, 46, 0.9);
+  box-shadow: 0 0 15px rgba(254, 188, 46, 0.5), 0 0 40px rgba(254, 188, 46, 0.15);
 }
 
 .terminal-3d.faded {
@@ -103,7 +105,8 @@ html, body {
 /* === SVG Object inside panel === */
 .terminal-3d object {
   width: 100%;
-  height: 936px;
+  flex: 1;
+  min-height: 0;
   display: block;
   pointer-events: none;
   border-bottom-left-radius: 48px;
@@ -233,6 +236,7 @@ html, body {
   transition: border-color 0.2s;
   background: #1c1c1e;
   flex-shrink: 0;
+  position: relative;
 }
 
 .thumbnail-item:hover {
@@ -252,6 +256,25 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
   font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+}
+
+.thumb-minimize {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  background: rgba(255, 80, 80, 0.7);
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  border-radius: 3px;
+  cursor: pointer;
+  z-index: 5;
+}
+.thumb-minimize:hover {
+  background: rgba(255, 80, 80, 1);
 }
 
 .thumbnail-item object {

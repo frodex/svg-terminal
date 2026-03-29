@@ -163,42 +163,47 @@ function getScrollAction(e, isFocused) {
   return null;
 }
 
-// Apply font scale to a terminal's <object> element.
-// This is visual-only — does not change PTY cols/rows.
-// The 4x scale trick is preserved: fontScale operates INSIDE the terminal panel,
-// separate from the CSS3DObject.scale which handles the 4x rendering.
-function applyFontScale(t) {
+// Calculate optimal cols/rows to fill the terminal's card at the current text size.
+// Uses cell dimensions from the SVG to determine how many cols/rows fit the card.
+function optimizeTerminalFit(t, sessionName) {
   const obj = t.dom.querySelector('object');
   if (!obj) return;
-  obj.style.transformOrigin = '0 0';
-  obj.style.transform = 'scale(' + t.fontScale + ')';
-  // Do NOT adjust width/height — let the scaled content overflow.
-  // .terminal-3d has overflow:hidden to clip it.
-  // Clear any stale inline width/height from previous buggy code
-  obj.style.width = '';
-  obj.style.height = '';
-}
+  const currentCols = t.screenCols || 80;
+  const currentRows = t.screenRows || 24;
+  // Card DOM is 4x. Object area = card minus header (56px).
+  const cardW = parseInt(t.dom.style.width) || 1280;
+  const cardH = (parseInt(t.dom.style.height) || 992) - 56;
 
-// Calculate optimal cols/rows to fill the terminal's card at the current font scale,
-// then resize the PTY via tmux and reset fontScale to 1.0.
-// At fontScale > 1 (zoomed in), fewer cols/rows are visible — optimize resizes
-// the PTY so the zoomed view fills the card exactly, then resets scale.
-function optimizeTerminalFit(t, sessionName) {
-  const renderInfo = getTermRenderInfo(t);
-  if (!renderInfo) return;
-
-  const scale = t.fontScale || 1.0;
-  // renderInfo.cols/rows are the current PTY dimensions.
-  // At fontScale, the visible area shows current_cols/fontScale cols.
-  // We want the PTY to have exactly that many cols/rows so it fills the card at scale=1.
-  const cols = Math.max(20, Math.round(renderInfo.cols / scale));
-  const rows = Math.max(5, Math.round(renderInfo.rows / scale));
-
-  t.sendInput({ type: 'resize', cols: cols, rows: rows });
-
-  // Reset font scale — the PTY now has the right dimensions to fill the card
-  t.fontScale = 1.0;
-  applyFontScale(t);
+  // Cell pixel size: the SVG is aspect-fit into the card.
+  // Current content fills some portion of the card. Cell pixel size depends on which
+  // axis constrains the fit.
+  try {
+    const svgDoc = obj.contentDocument;
+    const measure = svgDoc && svgDoc.getElementById('measure');
+    if (measure) {
+      const bbox = measure.getBBox();
+      if (bbox.width > 0) {
+        const cellW = bbox.width / 10; // SVG units per cell
+        const cellH = bbox.height;
+        const contentW = currentCols * cellW; // total SVG width in SVG units
+        const contentH = currentRows * cellH; // total SVG height in SVG units
+        // SVG aspect-fits: find the scale factor from SVG units to card DOM pixels
+        const scaleW = cardW / contentW;
+        const scaleH = cardH / contentH;
+        const fitScale = Math.min(scaleW, scaleH); // aspect-fit uses the smaller scale
+        // Cell size in card DOM pixels at this fit
+        const cellPxW = cellW * fitScale;
+        const cellPxH = cellH * fitScale;
+        // How many cells fill the card?
+        const cols = Math.max(20, Math.round(cardW / cellPxW));
+        const rows = Math.max(5, Math.round(cardH / cellPxH));
+        t.sendInput({ type: 'resize', cols: cols, rows: rows });
+        return;
+      }
+    }
+  } catch (e) {}
+  // Fallback if SVG not accessible: assume current layout fills the card
+  t.sendInput({ type: 'resize', cols: currentCols, rows: currentRows });
 }
 
 // === Constants ===
@@ -232,7 +237,8 @@ let ringAssignments = { outer: [], inner: [] };
 // dragMode 'ctrlPending' means ctrl+mousedown happened but we don't know if it's a
 // click (multi-focus) or drag (rotate-origin) yet. Resolved by dragDistance threshold.
 let isDragging = false;
-let dragMode = null; // 'orbit' | 'dollyXY' | 'rotateOrigin' | 'ctrlPending'
+let dragMode = null; // 'orbit' | 'dollyXY' | 'rotateOrigin' | 'ctrlPending' | 'moveCard'
+let _moveCardSession = null; // session name being dragged by title bar
 let dragStart = { x: 0, y: 0 };
 let dragDistance = 0;        // total px moved during drag — used to distinguish click vs drag
 let ctrlHeld = false;        // tracked via keydown/keyup because e.ctrlKey is unreliable in click events on Windows
@@ -308,60 +314,150 @@ function computeRingPos(index, total, config, angle) {
 }
 
 // === Multi-Focus Layout ===
-// Arrange focused terminals in a grid pattern that maximizes screen space:
-// 1=center, 2=side-by-side, 3=triangle, 4=2x2, 5+=grid
+// Frustum projection: layout in screen pixels, project into 3D.
+// Camera looks straight at origin. No offsets. Everything is a card in one frustum.
+// Each terminal gets a screen rectangle proportional to its cell count.
+// The card sits at whatever Z depth makes its world size fill that screen rectangle.
+const STATUS_BAR_H = 50;
+const LAYOUT_GAP_PX = 8;
+
 function calculateFocusedLayout() {
   const now = clock.getElapsedTime();
   const count = focusedSessions.size;
   if (count === 0) return;
 
-  // Grid dimensions
-  const cols = Math.ceil(Math.sqrt(count * (window.innerWidth / window.innerHeight)));
-  const rows = Math.ceil(count / cols);
+  // Full viewport — sidebar and status bar are just overlays, not subtracted.
+  // But we avoid placing cards under them.
+  const screenW = window.innerWidth;
+  const screenH = window.innerHeight;
 
-  // Card world size and spacing
-  const cardW = 320;
-  const cardH = 248;
-  const gap = 30;
-  const totalW = cols * cardW + (cols - 1) * gap;
-  const totalH = rows * cardH + (rows - 1) * gap;
+  // Available region: left of sidebar, above status bar
+  const availW = screenW - SIDEBAR_WIDTH;
+  const availH = screenH - STATUS_BAR_H;
 
-  let idx = 0;
+  // Build cards with cell counts
   const names = [...focusedSessions];
-  for (let row = 0; row < rows; row++) {
-    for (let col = 0; col < cols; col++) {
-      if (idx >= count) break;
-      const name = names[idx];
-      const t = terminals.get(name);
-      if (!t) { idx++; continue; }
+  const cards = names.map(name => {
+    const t = terminals.get(name);
+    const cols = t ? t.screenCols || 80 : 80;
+    const rows = t ? t.screenRows || 24 : 24;
+    const cells = cols * rows;
+    const aspect = (cols * SVG_CELL_W) / (rows * SVG_CELL_H);
+    const worldW = (t ? t.baseCardW || 1280 : 1280) * 0.25;
+    const worldH = (t ? t.baseCardH || 992 : 992) * 0.25;
+    return { name, cols, rows, cells, aspect, worldW, worldH };
+  });
 
-      t.morphFrom = { ...t.currentPos };
-      t.targetPos = {
-        x: (col - (cols - 1) / 2) * (cardW + gap),
-        y: ((rows - 1) / 2 - row) * (cardH + gap),
-        z: 0
-      };
-      t.morphStart = now;
-      t.focusQuatFrom = t.css3dObject.quaternion.clone();
-      idx++;
+  const totalCells = cards.reduce((sum, c) => sum + c.cells, 0);
+  cards.sort((a, b) => b.cells - a.cells);
+
+  // Allocate screen rectangles proportional to cell count.
+  // Start with proportional areas, then scale everything to fit.
+  for (const card of cards) {
+    const share = card.cells / totalCells;
+    const area = share * availW * availH;
+    card.screenW = Math.sqrt(area * card.aspect);
+    card.screenH = area / card.screenW;
+  }
+
+  // Masonry pack into columns — try each column count, pick best
+  let bestLayout = null;
+  let bestScore = -Infinity;
+
+  for (let numCols = 1; numCols <= Math.min(count, 4); numCols++) {
+    const colH = new Array(numCols).fill(0);
+    const colW = new Array(numCols).fill(0);
+    const placements = [];
+
+    for (const card of cards) {
+      let minCol = 0;
+      for (let c = 1; c < numCols; c++) if (colH[c] < colH[minCol]) minCol = c;
+      placements.push({ name: card.name, col: minCol, y: colH[minCol], sw: card.screenW, sh: card.screenH, worldW: card.worldW, worldH: card.worldH });
+      colH[minCol] += card.screenH + LAYOUT_GAP_PX;
+      colW[minCol] = Math.max(colW[minCol], card.screenW);
+    }
+
+    const rawW = colW.reduce((a, b) => a + b, 0) + (numCols - 1) * LAYOUT_GAP_PX;
+    const rawH = Math.max(...colH) - LAYOUT_GAP_PX;
+
+    // Scale factor to fit into available area
+    const scaleX = availW / rawW;
+    const scaleY = availH / rawH;
+    const scale = Math.min(scaleX, scaleY) * 0.95; // 5% margin
+
+    const fitW = rawW * scale;
+    const fitH = rawH * scale;
+    const coverage = (fitW * fitH) / (availW * availH);
+
+    if (coverage > bestScore) {
+      bestScore = coverage;
+      bestLayout = { placements, colW, rawW, rawH, scale, numCols };
     }
   }
 
-  // Camera distance: pull back enough to see the whole grid
+  if (!bestLayout) return;
+  const { placements, colW, rawW, rawH, scale, numCols } = bestLayout;
+
+  // Compute screen positions — centered in the available area
+  // Available area starts at (0, 0) and extends to (availW, availH)
+  const fitW = rawW * scale;
+  const fitH = rawH * scale;
+  const originX = (availW - fitW) / 2;
+  const originY = (availH - fitH) / 2;
+
+  // Column X positions (scaled)
+  const colX = [];
+  let rx = 0;
+  for (let c = 0; c < numCols; c++) {
+    colX.push(rx + (colW[c] * scale) / 2);
+    rx += colW[c] * scale + LAYOUT_GAP_PX * scale;
+  }
+
+  // Project each placement into 3D
   const vFov = camera.fov * DEG2RAD;
-  const distForH = (totalH / 2) / Math.tan(vFov / 2) * 1.05;
-  const distForW = (totalW / 2) / (Math.tan(vFov / 2) * camera.aspect) * 1.05;
-  const dist = Math.max(FOCUS_DIST, Math.max(distForH, distForW));
+  const halfTan = Math.tan(vFov / 2);
 
-  const vFovH = 2 * dist * Math.tan(vFov / 2);
-  const pxToWorld = vFovH / window.innerHeight;
-  const offX = (SIDEBAR_WIDTH / 2) * pxToWorld;
+  for (const p of placements) {
+    const t = terminals.get(p.name);
+    if (!t) continue;
 
+    // Screen center of this card (in full viewport coordinates)
+    p._cx = originX + colX[p.col];
+    p._cy = originY + p.y * scale + (p.sh * scale) / 2;
+    p._fracH = (p.sh * scale) / screenH;
+    p._depth = p.worldH / (p._fracH * 2 * halfTan);
+  }
+
+  // Camera must be far enough back that all focused cards sit in front of the ring.
+  // Ring orbits at Z≈0 with radius ~500. Cards should be at Z > 100.
+  const maxDepth = Math.max(...placements.map(p => p._depth));
+  const minCardZ = 150; // focused cards must be well in front of ring
+  const camZ = Math.max(FOCUS_DIST, maxDepth + minCardZ);
+
+  // Second pass: position each card using the final camera Z
+  for (const p of placements) {
+    const t = terminals.get(p.name);
+    if (!t) continue;
+
+    const cardZ = camZ - p._depth;
+    const visHAtDepth = 2 * p._depth * halfTan;
+    const px2w = visHAtDepth / screenH;
+    const wx = (p._cx - screenW / 2) * px2w;
+    const wy = -(p._cy - screenH / 2) * px2w;
+
+    t.morphFrom = { ...t.currentPos };
+    t.targetPos = { x: wx, y: wy, z: cardZ };
+    t.morphStart = now;
+    t.focusQuatFrom = t.css3dObject.quaternion.clone();
+  }
+
+  // Camera looks at the midpoint of focused cards
+  const avgZ = placements.reduce((s, p) => s + (camZ - p._depth), 0) / placements.length;
   cameraTween = {
     from: camera.position.clone(),
-    to: new THREE.Vector3(offX, 0, dist),
+    to: new THREE.Vector3(0, 0, camZ),
     lookFrom: currentLookTarget.clone(),
-    lookTo: new THREE.Vector3(offX, 0, 0),
+    lookTo: new THREE.Vector3(0, 0, avgZ),
     start: now,
     duration: 1.0
   };
@@ -464,6 +560,28 @@ function onMouseMove(e) {
       dragMode = 'rotateOrigin';
     }
 
+    if (dragMode === 'moveCard') {
+      // Drag card by title bar — move in screen-projected world space
+      const t = _moveCardSession && terminals.get(_moveCardSession);
+      if (t) {
+        const vFov = camera.fov * DEG2RAD;
+        // Get card's current Z depth relative to camera
+        const worldPos = new THREE.Vector3();
+        t.css3dObject.getWorldPosition(worldPos);
+        const depthFromCamera = camera.position.z - worldPos.z;
+        const visHAtDepth = 2 * depthFromCamera * Math.tan(vFov / 2);
+        const px2w = visHAtDepth / window.innerHeight;
+        // Move card position in world space
+        t.currentPos.x += dx * px2w;
+        t.currentPos.y -= dy * px2w;
+        t.targetPos.x = t.currentPos.x;
+        t.targetPos.y = t.currentPos.y;
+        t.css3dObject.position.x = t.currentPos.x;
+        t.css3dObject.position.y = t.currentPos.y;
+      }
+      return;
+    }
+
     if (dragMode === 'orbit') {
       // Orbit camera around its look target at current distance
       orbitAngle -= dx * 0.005;
@@ -515,8 +633,15 @@ function onMouseMove(e) {
       const newH = Math.max(496, currentH + dy * scaleF);
       t.dom.style.width = newW + 'px';
       t.dom.style.height = newH + 'px';
-      // Update CSS3DObject scale to maintain world-size consistency
-      t.css3dObject.scale.setScalar(248 / newH);
+      // Update .terminal-inner to match card dimensions
+      const inner = t.dom.querySelector('.terminal-inner');
+      if (inner) {
+        inner.style.width = newW + 'px';
+        inner.style.height = newH + 'px';
+      }
+      // Save as user's preferred size — survives focus/unfocus
+      t.baseCardW = newW;
+      t.baseCardH = newH;
     }
   }
 }
@@ -531,6 +656,23 @@ function onMouseDown(e) {
   const isFocused = focusedSessions.size > 0;
 
   if (e.button === 0) {
+    // Check if mousedown is on a terminal header (title bar drag to move card)
+    const headerEl = e.target.closest && e.target.closest('.terminal-3d header');
+    if (headerEl && isFocused) {
+      const card = headerEl.closest('.terminal-3d');
+      const sessionName = card && card.dataset.session;
+      if (sessionName && focusedSessions.has(sessionName)) {
+        isDragging = true;
+        dragMode = 'moveCard';
+        dragDistance = 0;
+        dragStart.x = e.clientX;
+        dragStart.y = e.clientY;
+        _moveCardSession = sessionName;
+        e.preventDefault();
+        return;
+      }
+    }
+
     const action = getDragAction(e, isFocused);
 
     if (action === 'selectText') {
@@ -542,6 +684,16 @@ function onMouseDown(e) {
       dragDistance = 0;
       dragStart.x = e.clientX;
       dragStart.y = e.clientY;
+      // Save card dimensions and cols/rows at drag start for proportional resize
+      if (activeInputSession) {
+        const rt = terminals.get(activeInputSession);
+        if (rt) {
+          rt._resizeStartW = parseInt(rt.dom.style.width) || 1280;
+          rt._resizeStartH = (parseInt(rt.dom.style.height) || 992) - 56;
+          rt._resizeStartCols = rt.screenCols || 80;
+          rt._resizeStartRows = rt.screenRows || 24;
+        }
+      }
       e.preventDefault();
     } else if (action === 'rotateOrigin') {
       // Don't commit to rotateOrigin yet — could be ctrl+click for multi-focus.
@@ -614,18 +766,31 @@ function onMouseUp(e) {
       // Ctrl+click on 3D scene — skip if click was on sidebar (thumbnail handles it)
       if (!mouseDownOnSidebar) {
         handleCtrlClick(e);
+        suppressNextClick = true; // only suppress if we handled a 3D scene ctrl+click
       }
-      suppressNextClick = true;
       isDragging = false;
       dragMode = null;
       return;
     }
   }
-  // After resize drag, calculate optimal cols/rows and send resize
+  // Title bar click (not drag) — switch input to that terminal
+  if (dragMode === 'moveCard' && dragDistance <= 5 && _moveCardSession) {
+    setActiveInput(_moveCardSession);
+  }
+  // After resize drag, calculate cols/rows proportionally.
+  // Same text size: cell pixel size stays constant, so cols/rows scale with card size.
   if (dragMode === 'resize' && activeInputSession) {
     const t = terminals.get(activeInputSession);
     if (t) {
-      optimizeTerminalFit(t, activeInputSession);
+      const startW = t._resizeStartW || 1280;
+      const startH = t._resizeStartH || 936;
+      const startCols = t._resizeStartCols || 80;
+      const startRows = t._resizeStartRows || 24;
+      const cardW = parseInt(t.dom.style.width) || 1280;
+      const cardH = (parseInt(t.dom.style.height) || 992) - 56;
+      const newCols = Math.max(20, Math.round(startCols * cardW / startW));
+      const newRows = Math.max(5, Math.round(startRows * cardH / startH));
+      t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
     }
   }
   isDragging = false;
@@ -773,10 +938,12 @@ function onWheel(e) {
   if (action === 'fontZoom' && activeInputSession) {
     const t = terminals.get(activeInputSession);
     if (t) {
-      const scaleDelta = delta > 0 ? 0.9 : 1.1;
-      t.fontScale = (t.fontScale || 1.0) * scaleDelta;
-      t.fontScale = Math.max(0.3, Math.min(3.0, t.fontScale));
-      applyFontScale(t);
+      // Scroll up = fewer cols/rows (text appears bigger)
+      // Scroll down = more cols/rows (text appears smaller)
+      const step = delta > 0 ? 2 : -2;
+      const newCols = Math.max(20, Math.min(300, (t.screenCols || 80) + step));
+      const newRows = Math.max(5, Math.min(100, (t.screenRows || 24) + Math.round(step / 2)));
+      t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
     }
     return;
   }
@@ -873,6 +1040,18 @@ function createThumbnail(sessionName) {
   label.textContent = sessionName;
   item.appendChild(label);
 
+  // Minimize button — only visible when this terminal is in a focused group
+  const minBtn = document.createElement('div');
+  minBtn.className = 'thumb-minimize';
+  minBtn.textContent = '⌊';
+  minBtn.title = 'Remove from focus group';
+  minBtn.style.display = 'none';
+  minBtn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    removeFromFocus(sessionName);
+  });
+  item.appendChild(minBtn);
+
   const obj = document.createElement('object');
   obj.type = 'image/svg+xml';
   obj.data = '/terminal.svg?session=' + encodeURIComponent(sessionName);
@@ -907,8 +1086,12 @@ async function refreshSessions() {
     let changed = false;
     for (const session of sessions) {
       if (!existingNames.has(session.name)) {
-        addTerminal(session.name);
+        addTerminal(session.name, session.cols, session.rows);
         changed = true;
+      } else {
+        // Update card size if tmux dimensions changed (e.g. resized from another client)
+        const t = terminals.get(session.name);
+        if (t) updateCardForNewSize(t, session.cols, session.rows);
       }
     }
     for (const name of existingNames) {
@@ -950,16 +1133,84 @@ function updateTerminalTitle(sessionName, title) {
   if (thumbLabel) thumbLabel.textContent = title;
 }
 
-function addTerminal(sessionName) {
+// SVG cell dimensions — measured from actual font rendering in terminal.svg.
+// terminal.svg measures via a 10-char span: bbox.width/10 ≈ 8.65, bbox.height ≈ 17.
+// These MUST match what the SVG actually renders or card aspect will be wrong.
+const SVG_CELL_W = 8.65;
+const SVG_CELL_H = 17;
+const HEADER_H = 72;        // 4x header: 56px height + 16px padding (content-box)
+const MIN_CARD_W = 640;
+const MAX_CARD_W = 3200;
+const MIN_CARD_H = 496;
+const MAX_CARD_H = 2400;
+// Target world-space area — same visual weight as original 320×248 card
+const TARGET_WORLD_AREA = 320 * 248; // ~79,360 sq world units
+
+// Calculate card DOM dimensions from terminal cols×rows.
+// All cards have roughly the same visual weight (world-space area),
+// but each card's shape matches its terminal's aspect ratio.
+function calcCardSize(cols, rows) {
+  const termAspect = (cols * SVG_CELL_W) / (rows * SVG_CELL_H);
+  // Solve for world dimensions with target area and correct aspect:
+  // worldW * worldH = TARGET_WORLD_AREA
+  // worldW / worldH = termAspect
+  // worldW = sqrt(TARGET_WORLD_AREA * termAspect)
+  const worldW = Math.sqrt(TARGET_WORLD_AREA * termAspect);
+  const worldH = TARGET_WORLD_AREA / worldW;
+  // Convert world → DOM at 4x (world * 4 = DOM pixels)
+  let cardW = Math.round(worldW * 4);
+  let cardH = Math.round(worldH * 4) + HEADER_H;
+  // Clamp to bounds
+  cardW = Math.max(MIN_CARD_W, Math.min(MAX_CARD_W, cardW));
+  cardH = Math.max(MIN_CARD_H, Math.min(MAX_CARD_H, cardH));
+  return { cardW, cardH };
+}
+
+// Reactively update a terminal's card size when cols/rows change.
+// Called from WebSocket onmessage when screenCols/screenRows differ.
+// Update card base size when tmux dimensions change.
+// Always updates baseCardW/baseCardH (so unfocus restores correctly).
+// Only updates DOM if not focused (focus manages its own DOM sizing).
+function updateCardForNewSize(t, newCols, newRows) {
+  if (newCols === t.screenCols && newRows === t.screenRows) return;
+  t.screenCols = newCols;
+  t.screenRows = newRows;
+  const { cardW, cardH } = calcCardSize(newCols, newRows);
+  t.baseCardW = cardW;
+  t.baseCardH = cardH;
+  // Don't resize card DOM while focused — focus has its own layout.
+  // baseCardW/baseCardH are updated above so unfocus restores correctly.
+  if (t.dom.classList.contains('focused')) return;
+  t.dom.style.width = cardW + 'px';
+  t.dom.style.height = cardH + 'px';
+  const inner = t.dom.querySelector('.terminal-inner');
+  if (inner) {
+    inner.style.width = cardW + 'px';
+    inner.style.height = cardH + 'px';
+  }
+}
+
+function addTerminal(sessionName, cols, rows) {
+  cols = cols || 80;
+  rows = rows || 24;
+  const { cardW, cardH } = calcCardSize(cols, rows);
+
   const dom = createTerminalDOM(sessionName);
+  dom.style.width = cardW + 'px';
+  dom.style.height = cardH + 'px';
+  const inner = dom.querySelector('.terminal-inner');
+  if (inner) {
+    inner.style.width = cardW + 'px';
+    inner.style.height = cardH + 'px';
+  }
+
   const shadowDiv = createShadowDOM();
   const thumbnail = createThumbnail(sessionName);
 
   const css3dObj = new CSS3DObject(dom);
-  // IMPORTANT: DOM element is 1280x992 (4x), scaled to 0.25 in 3D = 320x248 world units.
-  // This forces Chrome to rasterize text at 4x resolution before the 3D transform scales
-  // it down, producing sharper text than a native-size element. DO NOT change this to 1.0
-  // with a 320x248 DOM element — text will be blurry. See note 1 in header.
+  // IMPORTANT: DOM element is sized to match terminal at 4x scale.
+  // CSS3DObject scale 0.25 forces Chrome to rasterize at 4x resolution.
+  // DO NOT change to 1.0 with smaller DOM — text will be blurry. See note 1.
   css3dObj.scale.setScalar(0.25);
   // Start tilted so the fly-in shows 3D angle. Without this, CSS3DObjects default to
   // facing -Z (toward camera), so the fly-in looks flat. See note 7 in header.
@@ -983,17 +1234,18 @@ function addTerminal(sessionName) {
     shadowDiv: shadowDiv,
     dom: dom,
     thumbnail: thumbnail,
+    baseCardW: cardW,   // original calculated card size — restore on unfocus
+    baseCardH: cardH,
     currentPos: { x: 0, y: 0, z: -500 },
     targetPos: { x: 0, y: 0, z: -500 },
     morphStart: clock.getElapsedTime(),
     morphFrom: { x: 0, y: 0, z: -500 },
     billboardArrival: null,  // set when terminal first reaches its ring position
     inputWs: null,
-    fontScale: 1.0,
     scrollOffset: 0,
     screenLines: [],  // text content from server for copy/paste
-    screenCols: 80,
-    screenRows: 24,
+    screenCols: cols,
+    screenRows: rows,
     sendInput: function(msg) {
       if (this.inputWs && this.inputWs.readyState === WebSocket.OPEN) {
         this.inputWs.send(JSON.stringify(msg));
@@ -1063,17 +1315,28 @@ function createControlsBar() {
     return btn;
   };
 
-  bar.appendChild(mkBtn('−', 'Decrease font', () => {
+  bar.appendChild(mkBtn('−', 'Smaller text (more cols)', () => {
     const t = terminals.get(_controlsSession);
-    if (t) { t.fontScale = Math.max(0.3, (t.fontScale || 1.0) / 1.1); applyFontScale(t); }
+    if (t) {
+      const newCols = Math.min(300, (t.screenCols || 80) + 4);
+      const newRows = Math.min(100, (t.screenRows || 24) + 2);
+      t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
+    }
   }));
-  bar.appendChild(mkBtn('+', 'Increase font', () => {
+  bar.appendChild(mkBtn('+', 'Bigger text (fewer cols)', () => {
     const t = terminals.get(_controlsSession);
-    if (t) { t.fontScale = Math.min(3.0, (t.fontScale || 1.0) * 1.1); applyFontScale(t); }
+    if (t) {
+      const newCols = Math.max(20, (t.screenCols || 80) - 4);
+      const newRows = Math.max(5, (t.screenRows || 24) - 2);
+      t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
+    }
   }));
   bar.appendChild(mkBtn('⊡', 'Optimize fit', () => {
     const t = terminals.get(_controlsSession);
     if (t) optimizeTerminalFit(t, _controlsSession);
+  }));
+  bar.appendChild(mkBtn('⌊', 'Minimize (return to ring)', () => {
+    if (_controlsSession) removeFromFocus(_controlsSession);
   }));
 
   document.body.appendChild(bar);
@@ -1130,8 +1393,7 @@ function focusTerminal(sessionName) {
         t.screenLines = msg.lines.map(function(l) {
           return l.spans.map(function(s) { return s.text; }).join('');
         });
-        t.screenCols = msg.width || 80;
-        t.screenRows = msg.height || 24;
+        updateCardForNewSize(t, msg.width || 80, msg.height || 24);
         if (msg.cursor) t._lastCursor = msg.cursor;
       } else if (msg.type === 'delta' && msg.changed) {
         for (const [idx, spans] of Object.entries(msg.changed)) {
@@ -1158,25 +1420,52 @@ function focusTerminal(sessionName) {
   orbitAngle = 0;
   orbitPitch = 0;
 
-  // 1:1 pixel mapping for single terminal focus
+  // Scale card to fill viewport while preserving terminal aspect ratio.
+  // Use the card's base aspect (from tmux cols×rows) to fill available screen space.
+  const baseW = t.baseCardW || 1280;
+  const baseH = t.baseCardH || 992;
+  const baseAspect = baseW / baseH;
+
   const vFov = camera.fov * DEG2RAD;
   const visH = 2 * FOCUS_DIST * Math.tan(vFov / 2);
+  const visW = visH * camera.aspect;
   const pxToWorld = visH / window.innerHeight;
-  const offX = (SIDEBAR_WIDTH / 2) * pxToWorld;
-  const offY = -(50 / 2) * pxToWorld;
 
-  const worldH = 248;
-  const worldW = 320;
+  // Available world space (accounting for sidebar)
+  const sidebarWorld = SIDEBAR_WIDTH * pxToWorld;
+  const availW = visW - sidebarWorld;
+  const availH = visH;
+
+  // Fit card into available space preserving aspect
+  let worldW, worldH;
+  if (availW / availH > baseAspect) {
+    // Height-limited
+    worldH = availH * 0.92;
+    worldW = worldH * baseAspect;
+  } else {
+    // Width-limited
+    worldW = availW * 0.92;
+    worldH = worldW / baseAspect;
+  }
+
+  // Convert world → DOM pixels for the focused card
   const screenH = Math.round((worldH / visH) * window.innerHeight);
-  const screenW = Math.round(screenH * (worldW / worldH));
-  const innerScale = screenW / 1280;
+  const screenW = Math.round(screenH * baseAspect);
+  const innerScale = screenW / baseW;
 
   t.dom.style.width = screenW + 'px';
   t.dom.style.height = screenH + 'px';
-  t.dom.style.borderRadius = Math.round(48 * innerScale) + 'px';
+  t.dom.style.borderRadius = Math.round(48 * (screenW / 1280)) + 'px';
   const inner = t.dom.querySelector('.terminal-inner');
-  if (inner) inner.style.transform = 'scale(' + innerScale + ')';
+  if (inner) {
+    inner.style.width = baseW + 'px';
+    inner.style.height = baseH + 'px';
+    inner.style.transform = 'scale(' + innerScale + ')';
+  }
   t.css3dObject.scale.setScalar(worldH / screenH);
+
+  const offX = (SIDEBAR_WIDTH / 2) * pxToWorld;
+  const offY = -(50 / 2) * pxToWorld;
 
   cameraTween = {
     from: camera.position.clone(),
@@ -1207,11 +1496,13 @@ function addToFocus(sessionName) {
   for (const fname of focusedSessions) {
     const ft = terminals.get(fname);
     if (ft) {
-      ft.dom.style.width = '';
-      ft.dom.style.height = '';
+      const rw = ft.baseCardW || 1280;
+      const rh = ft.baseCardH || 992;
+      ft.dom.style.width = rw + 'px';
+      ft.dom.style.height = rh + 'px';
       ft.dom.style.borderRadius = '';
       const inner = ft.dom.querySelector('.terminal-inner');
-      if (inner) inner.style.transform = '';
+      if (inner) { inner.style.transform = ''; inner.style.width = rw + 'px'; inner.style.height = rh + 'px'; }
       ft.css3dObject.scale.setScalar(0.25);
     }
   }
@@ -1228,8 +1519,7 @@ function addToFocus(sessionName) {
         t.screenLines = msg.lines.map(function(l) {
           return l.spans.map(function(s) { return s.text; }).join('');
         });
-        t.screenCols = msg.width || 80;
-        t.screenRows = msg.height || 24;
+        updateCardForNewSize(t, msg.width || 80, msg.height || 24);
         if (msg.cursor) t._lastCursor = msg.cursor;
       } else if (msg.type === 'delta' && msg.changed) {
         for (const [idx, spans] of Object.entries(msg.changed)) {
@@ -1253,6 +1543,7 @@ function setActiveInput(sessionName) {
   activeInputSession = sessionName;
   updateFocusStyles();
   document.getElementById('input-target').textContent = sessionName;
+  showTermControls(sessionName);
 }
 
 // Update CSS classes for all terminals based on focus state
@@ -1261,11 +1552,15 @@ function updateFocusStyles() {
     term.dom.classList.remove('faded', 'focused', 'input-active');
     term.thumbnail.classList.remove('active');
 
+    // Show/hide minimize button on thumbnail
+    const minBtn = term.thumbnail.querySelector('.thumb-minimize');
+    if (minBtn) minBtn.style.display = (focusedSessions.has(name) && focusedSessions.size > 1) ? 'block' : 'none';
+
     if (focusedSessions.size > 0) {
       if (focusedSessions.has(name)) {
         term.dom.classList.add('focused');
         term.thumbnail.classList.add('active');
-        if (name === activeInputSession && focusedSessions.size > 1) {
+        if (name === activeInputSession) {
           term.dom.classList.add('input-active');
         }
       } else {
@@ -1285,14 +1580,15 @@ function restoreFocusedTerminal(name) {
   }
   const now = clock.getElapsedTime();
   term.dom.classList.remove('faded', 'focused', 'input-active');
-  term.dom.style.width = '';
-  term.dom.style.height = '';
+  // Restore card to its base calculated size (not CSS default 1280×992)
+  const restoreW = term.baseCardW || 1280;
+  const restoreH = term.baseCardH || 992;
+  term.dom.style.width = restoreW + 'px';
+  term.dom.style.height = restoreH + 'px';
   term.dom.style.borderRadius = '';
   const inner = term.dom.querySelector('.terminal-inner');
-  if (inner) inner.style.transform = '';
+  if (inner) { inner.style.transform = ''; inner.style.width = restoreW + 'px'; inner.style.height = restoreH + 'px'; }
   term.css3dObject.scale.setScalar(0.25);
-  // Reset font scale
-  term.fontScale = 1.0;
   const obj = term.dom.querySelector('object');
   if (obj) {
     obj.style.transform = '';
@@ -1302,6 +1598,30 @@ function restoreFocusedTerminal(name) {
   term.morphFrom = { ...term.currentPos };
   term.morphStart = now;
   term.billboardArrival = null;
+}
+
+// Remove a single terminal from the focused set (minimize).
+// If other terminals remain focused, recalculate layout.
+// If none remain, unfocus entirely.
+function removeFromFocus(sessionName) {
+  if (!focusedSessions.has(sessionName)) return;
+  restoreFocusedTerminal(sessionName);
+  focusedSessions.delete(sessionName);
+
+  if (focusedSessions.size === 0) {
+    unfocusTerminal();
+    return;
+  }
+
+  // Switch active input if we just removed the active one
+  if (activeInputSession === sessionName) {
+    activeInputSession = [...focusedSessions][0];
+    showTermControls(activeInputSession);
+  }
+
+  updateFocusStyles();
+  assignRings(); // reassign ring positions including the restored terminal
+  calculateFocusedLayout();
 }
 
 // Restore all focused terminals

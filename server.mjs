@@ -236,17 +236,19 @@ async function handleInput(req, res) {
 async function handleSessions(req, res) {
   try {
     const raw = (await tmuxAsync(
-      'list-sessions', '-F', '#{session_name} #{session_windows}'
+      'list-sessions', '-F', '#{session_name} #{session_windows} #{window_width} #{window_height}'
     )).trim();
 
     const sessions = raw
       .split('\n')
       .filter(Boolean)
       .map((line) => {
-        const spaceIdx = line.lastIndexOf(' ');
-        const name = line.slice(0, spaceIdx);
-        const windows = parseInt(line.slice(spaceIdx + 1), 10);
-        return { name, windows };
+        const parts = line.split(' ');
+        const height = parseInt(parts.pop(), 10);
+        const width = parseInt(parts.pop(), 10);
+        const windows = parseInt(parts.pop(), 10);
+        const name = parts.join(' ');
+        return { name, windows, cols: width, rows: height };
       });
 
     sendJson(res, 200, sessions);
