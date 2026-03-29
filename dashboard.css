@@ -55,11 +55,12 @@ html, body {
 }
 
 
-/* Active input indicator — gold neon only on the terminal receiving keystrokes.
-   No outline when focused but not active input. Disappears on unfocus. */
-.terminal-3d.input-active {
-  border: 3px solid rgba(254, 188, 46, 0.9);
-  box-shadow: 0 0 15px rgba(254, 188, 46, 0.5), 0 0 40px rgba(254, 188, 46, 0.15);
+/* Active input indicator — header lights up gold.
+   Only the header background changes — avoids layout/border changes
+   that trigger Chrome to re-rasterize the entire card under CSS3D transforms. */
+.terminal-3d.input-active header {
+  background: #4a4020;
+  box-shadow: 0 2px 8px rgba(254, 188, 46, 0.3);
 }
 
 .terminal-3d.faded {
