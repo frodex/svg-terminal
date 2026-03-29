@@ -168,7 +168,7 @@
 - #22: Session owner/group permissions in browser UI
 
 ## What's Next
-- Terminal resize design (in progress — first principles discussion with user)
+- **Terminal resize — BROKEN, needs fresh agent.** See docs/handoff-resize-fix.md for full details. KEYBINDINGS config added, font zoom/optimize/alt-drag implemented but coordinate system bugs make it non-functional. The applyFontScale and optimizeTerminalFit functions need rewriting.
 - claude-proxy v2 integration Phase B (adapt client to new API endpoints)
 - claude-proxy v2 integration Phase C (merge, QC, code style unification)
-- Clean up dashboard.mjs — consolidate keydown listeners, investigate removing belt-and-suspenders guards
+- Clean up dashboard.mjs — consolidate keydown listeners
