@@ -1807,9 +1807,23 @@ function restoreAllFocused() {
 // Deselect: remove input focus but keep camera and cards in place.
 // Cards stay where they are, just lose the focus highlight and keyboard input.
 function deselectTerminals() {
+  // Slide active card back to layout Z
+  if (activeInputSession) {
+    const prevT = terminals.get(activeInputSession);
+    if (prevT && prevT._layoutZ !== undefined) {
+      prevT.targetPos.z = prevT._layoutZ;
+      prevT.morphFrom = { ...prevT.currentPos };
+      prevT.morphStart = clock.getElapsedTime();
+    }
+  }
   activeInputSession = null;
+  _zoomedSession = null;
+  // Remove input/highlight indicators but keep focusedSessions intact.
+  // Cards stay where they are — the animation loop keeps them at their targetPos
+  // because they're still in focusedSessions.
   for (const [name, term] of terminals) {
     term.dom.classList.remove('input-active');
+    term.dom.classList.remove('faded'); // show ring cards normally
     const hdrCtrl = term.dom.querySelector('.header-controls');
     if (hdrCtrl) hdrCtrl.style.display = 'none';
   }
@@ -1820,14 +1834,6 @@ function deselectTerminals() {
       ft.inputWs.close();
       ft.inputWs = null;
     }
-  }
-  focusedSessions.clear();
-  // Remove faded class from ring terminals so they show normally
-  for (const [name, term] of terminals) {
-    term.dom.classList.remove('faded', 'focused');
-    term.thumbnail.classList.remove('active');
-    const minBtn = term.thumbnail.querySelector('.thumb-minimize');
-    if (minBtn) minBtn.style.display = 'none';
   }
   hideTermControls();
   document.getElementById('input-bar').classList.remove('visible');
