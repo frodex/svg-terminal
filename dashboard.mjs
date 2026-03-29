@@ -1693,7 +1693,7 @@ function addToFocus(sessionName) {
 // Set which focused terminal receives input
 // Standard "reading distance" Z — active card slides forward to this depth
 // relative to camera, so text is always the same readable size.
-const READING_Z_OFFSET = 80; // world units forward from the card's layout Z
+const READING_Z_OFFSET = 25; // subtle forward slide — just enough to layer in front
 
 function setActiveInput(sessionName) {
   if (!focusedSessions.has(sessionName)) return;
@@ -1710,6 +1710,7 @@ function setActiveInput(sessionName) {
       prevT.targetPos.z = prevT._savedZ;
       prevT.morphFrom = { ...prevT.currentPos };
       prevT.morphStart = clock.getElapsedTime();
+      // Don't reset focusQuatFrom — keep current rotation, just slide Z
       delete prevT._savedZ;
     }
   }
@@ -1721,6 +1722,9 @@ function setActiveInput(sessionName) {
     t.targetPos.z += READING_Z_OFFSET;
     t.morphFrom = { ...t.currentPos };
     t.morphStart = clock.getElapsedTime();
+    // Capture current rotation so the slerp starts from where it IS,
+    // not from the original ring angle. This makes the tilt subtle.
+    t.focusQuatFrom = t.css3dObject.quaternion.clone();
   }
 }
 
