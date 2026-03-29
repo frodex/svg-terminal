@@ -505,6 +505,22 @@ function onMouseMove(e) {
       camera.position.copy(origin).add(offset);
       currentLookTarget.copy(origin);
       camera.lookAt(currentLookTarget);
+
+    } else if (dragMode === 'resize') {
+      // Alt+drag: resize the focused terminal card
+      if (!activeInputSession) return;
+      const t = terminals.get(activeInputSession);
+      if (!t) return;
+      // Scale the drag delta to 4x (since DOM is 4x)
+      const scaleF = 4;
+      const currentW = parseInt(t.dom.style.width) || 1280;
+      const currentH = parseInt(t.dom.style.height) || 992;
+      const newW = Math.max(640, currentW + dx * scaleF);
+      const newH = Math.max(496, currentH + dy * scaleF);
+      t.dom.style.width = newW + 'px';
+      t.dom.style.height = newH + 'px';
+      // Update CSS3DObject scale to maintain world-size consistency
+      t.css3dObject.scale.setScalar(248 / newH);
     }
   }
 }
@@ -607,6 +623,13 @@ function onMouseUp(e) {
       isDragging = false;
       dragMode = null;
       return;
+    }
+  }
+  // After resize drag, calculate optimal cols/rows and send resize
+  if (dragMode === 'resize' && activeInputSession) {
+    const t = terminals.get(activeInputSession);
+    if (t) {
+      optimizeTerminalFit(t, activeInputSession);
     }
   }
   isDragging = false;
