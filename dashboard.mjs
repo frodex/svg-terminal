@@ -837,48 +837,10 @@ function createTerminalDOM(sessionName) {
   name.textContent = sessionName;
   header.appendChild(name);
 
-  const controls = document.createElement('span');
-  controls.className = 'term-controls';
-
-  const btnMinus = document.createElement('button');
-  btnMinus.className = 'term-ctrl-btn';
-  btnMinus.textContent = '−';
-  btnMinus.title = 'Decrease font';
-  btnMinus.addEventListener('click', function(ev) {
-    ev.stopPropagation();
-    const t = terminals.get(sessionName);
-    if (!t) return;
-    t.fontScale = Math.max(0.3, (t.fontScale || 1.0) / 1.1);
-    applyFontScale(t);
-  });
-
-  const btnPlus = document.createElement('button');
-  btnPlus.className = 'term-ctrl-btn';
-  btnPlus.textContent = '+';
-  btnPlus.title = 'Increase font';
-  btnPlus.addEventListener('click', function(ev) {
-    ev.stopPropagation();
-    const t = terminals.get(sessionName);
-    if (!t) return;
-    t.fontScale = Math.min(3.0, (t.fontScale || 1.0) * 1.1);
-    applyFontScale(t);
-  });
-
-  const btnOptimize = document.createElement('button');
-  btnOptimize.className = 'term-ctrl-btn';
-  btnOptimize.textContent = '⊡';
-  btnOptimize.title = 'Optimize — resize terminal to fill card';
-  btnOptimize.addEventListener('click', function(ev) {
-    ev.stopPropagation();
-    const t = terminals.get(sessionName);
-    if (!t) return;
-    optimizeTerminalFit(t, sessionName);
-  });
-
-  controls.appendChild(btnMinus);
-  controls.appendChild(btnPlus);
-  controls.appendChild(btnOptimize);
-  header.appendChild(controls);
+  // Controls are NOT inside the CSS3DObject DOM — getBoundingClientRect() returns
+  // NaN for elements inside CSS3DRenderer's matrix3d transforms, making buttons
+  // unclickable. Instead, controls are created as a fixed HTML overlay positioned
+  // over the focused terminal. See showTermControls/hideTermControls.
   inner.appendChild(header);
 
   const obj = document.createElement('object');
@@ -1073,6 +1035,70 @@ function removeTerminal(sessionName) {
 // === Focus / Unfocus ===
 
 // Focus a single terminal (replaces all focused).
+// === Terminal Controls Overlay ===
+// Floating HTML bar outside the 3D scene — positioned over the focused terminal's header.
+// Can't put buttons inside CSS3DObject DOM because getBoundingClientRect() returns NaN
+// for elements under matrix3d transforms, making them unclickable.
+let _controlsBar = null;
+let _controlsSession = null;
+
+function createControlsBar() {
+  const bar = document.createElement('div');
+  bar.id = 'term-controls-bar';
+  bar.style.cssText = 'position:fixed;z-index:60;display:none;gap:6px;align-items:center;pointer-events:auto;';
+
+  const mkBtn = (text, title, fn) => {
+    const btn = document.createElement('button');
+    btn.className = 'term-ctrl-btn-overlay';
+    btn.textContent = text;
+    btn.title = title;
+    btn.style.cssText = 'width:28px;height:28px;border:none;border-radius:6px;background:rgba(255,255,255,0.12);color:#ccc;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;';
+    btn.addEventListener('mouseenter', () => { btn.style.background = 'rgba(255,255,255,0.25)'; btn.style.color = '#fff'; });
+    btn.addEventListener('mouseleave', () => { btn.style.background = 'rgba(255,255,255,0.12)'; btn.style.color = '#ccc'; });
+    btn.addEventListener('click', (ev) => { ev.stopPropagation(); ev.preventDefault(); fn(); });
+    return btn;
+  };
+
+  bar.appendChild(mkBtn('−', 'Decrease font', () => {
+    const t = terminals.get(_controlsSession);
+    if (t) { t.fontScale = Math.max(0.3, (t.fontScale || 1.0) / 1.1); applyFontScale(t); }
+  }));
+  bar.appendChild(mkBtn('+', 'Increase font', () => {
+    const t = terminals.get(_controlsSession);
+    if (t) { t.fontScale = Math.min(3.0, (t.fontScale || 1.0) * 1.1); applyFontScale(t); }
+  }));
+  bar.appendChild(mkBtn('⊡', 'Optimize fit', () => {
+    const t = terminals.get(_controlsSession);
+    if (t) optimizeTerminalFit(t, _controlsSession);
+  }));
+
+  document.body.appendChild(bar);
+  return bar;
+}
+
+function showTermControls(sessionName) {
+  if (!_controlsBar) _controlsBar = createControlsBar();
+  _controlsSession = sessionName;
+  _controlsBar.style.display = 'flex';
+  updateControlsPosition();
+}
+
+function hideTermControls() {
+  if (_controlsBar) _controlsBar.style.display = 'none';
+  _controlsSession = null;
+}
+
+function updateControlsPosition() {
+  if (!_controlsBar || !_controlsSession) return;
+  const t = terminals.get(_controlsSession);
+  if (!t) return;
+  const rect = t.dom.getBoundingClientRect();
+  if (rect.width < 10) return;
+  // Position at top-right of the terminal card
+  _controlsBar.style.left = (rect.right - 110) + 'px';
+  _controlsBar.style.top = (rect.top + 4) + 'px';
+}
+
 // The lastAddToFocusTime guard prevents this from firing immediately after addToFocus().
 // Without it, the event sequence mouseup→click causes addToFocus (correct) then
 // focusTerminal (wrong, replaces everything). The 200ms window covers the gap between
@@ -1159,6 +1185,7 @@ function focusTerminal(sessionName) {
 
   document.getElementById('input-bar').classList.add('visible');
   document.getElementById('input-target').textContent = sessionName;
+  showTermControls(sessionName);
 }
 
 // Add a terminal to the multi-focus set (ctrl+click)
@@ -1305,6 +1332,7 @@ function unfocusTerminal() {
   };
 
   document.getElementById('input-bar').classList.remove('visible');
+  hideTermControls();
 }
 
 // === Animation Loop ===
@@ -1469,6 +1497,9 @@ function animate() {
   }
 
   renderer.render(scene, camera);
+
+  // Update floating controls position to track the focused terminal
+  updateControlsPosition();
 }
 
 // === Direct Keystroke Capture ===
@@ -1832,10 +1863,19 @@ document.addEventListener('mousemove', function(e) {
 document.addEventListener('mouseup', function(e) {
   if (!selTerminal || !selStart) return;
   selEnd = screenToCell(e, selTerminal);
+
+  // Only keep selection if mouse actually moved (not just a click)
+  const isRealSelection = selStart && selEnd && (selStart.row !== selEnd.row || selStart.col !== selEnd.col);
+  if (!isRealSelection) {
+    // Just a click, not a drag — clear everything
+    clearSel();
+    selTerminal = null;
+    return;
+  }
+
   if (selEnd) drawSelHighlight(selTerminal);
 
-  // Copy if real selection (not just a click)
-  if (selStart && selEnd && (selStart.row !== selEnd.row || selStart.col !== selEnd.col)) {
+  if (isRealSelection) {
     const text = getSelectedTextFromSvg(selTerminal);
     if (text) {
       copyToClipboard(text);
