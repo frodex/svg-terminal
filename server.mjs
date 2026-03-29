@@ -3,7 +3,7 @@
 // Zero npm dependencies — uses Node built-ins only
 
 import http from 'node:http';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execFile as execFileCb } from 'node:child_process';
 import { parseLine } from './sgr-parser.mjs';
 import { WebSocketServer } from 'ws';
@@ -407,6 +407,42 @@ function router(req, res) {
     }
     if (pathname === '/api/pane') {
       handlePane(req, res, url.searchParams).catch(err => sendError(res, 500, err.message));
+      return;
+    }
+    if (pathname === '/api/layout') {
+      setCors(res);
+      const uid = url.searchParams.get('uid');
+      if (!uid || !/^[a-zA-Z0-9_-]+$/.test(uid)) { sendError(res, 400, 'Invalid uid'); return; }
+      const profileDir = staticPath('profiles');
+      if (!existsSync(profileDir)) mkdirSync(profileDir, { recursive: true });
+      const profilePath = profileDir + '/' + uid + '.json';
+
+      if (req.method === 'GET') {
+        try {
+          const data = readFileSync(profilePath, 'utf8');
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(200);
+          res.end(data);
+        } catch {
+          sendJson(res, 200, {});
+        }
+        return;
+      }
+      if (req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+          try {
+            JSON.parse(body); // validate JSON
+            writeFileSync(profilePath, body);
+            sendJson(res, 200, { ok: true });
+          } catch (err) {
+            sendError(res, 400, 'Invalid JSON: ' + err.message);
+          }
+        });
+        return;
+      }
+      sendError(res, 405, 'GET or POST only');
       return;
     }
     if (pathname === '/api/sessions') {

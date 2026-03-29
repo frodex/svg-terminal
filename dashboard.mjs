@@ -574,18 +574,25 @@ function onMouseMove(e) {
     }
 
     if (dragMode === 'moveCard') {
-      // Drag card by title bar — move in screen-projected world space.
-      // Update targetPos so the animation loop picks it up (don't set css3dObject directly).
+      // Drag card by title bar — move along camera's right/up vectors
+      // so dragging "right" on screen always moves the card right from the user's perspective.
       const t = _moveCardSession && terminals.get(_moveCardSession);
       if (t) {
-        const vFov = camera.fov * DEG2RAD;
         const worldPos = new THREE.Vector3();
         t.css3dObject.getWorldPosition(worldPos);
-        const depthFromCamera = camera.position.z - worldPos.z;
+        const depthFromCamera = worldPos.clone().sub(camera.position).length();
+        const vFov = camera.fov * DEG2RAD;
         const visHAtDepth = 2 * depthFromCamera * Math.tan(vFov / 2);
         const px2w = visHAtDepth / window.innerHeight;
-        t.targetPos.x += dx * px2w;
-        t.targetPos.y -= dy * px2w;
+        // Camera's right and up vectors in world space
+        const right = new THREE.Vector3();
+        const up = new THREE.Vector3();
+        camera.getWorldDirection(new THREE.Vector3()); // ensure matrix is current
+        right.setFromMatrixColumn(camera.matrixWorld, 0); // right = column 0
+        up.setFromMatrixColumn(camera.matrixWorld, 1);    // up = column 1
+        t.targetPos.x += right.x * dx * px2w + up.x * (-dy) * px2w;
+        t.targetPos.y += right.y * dx * px2w + up.y * (-dy) * px2w;
+        t.targetPos.z += right.z * dx * px2w + up.z * (-dy) * px2w;
         t.morphFrom = { ...t.targetPos };
         t.morphStart = 0;
         t._userPositioned = true;
@@ -672,13 +679,26 @@ function onMouseDown(e) {
   const isFocused = focusedSessions.size > 0;
 
   if (e.button === 0) {
-    // Check if mousedown is on a terminal header (title bar drag to move card)
-    // Skip if clicking on a button inside the header — let the button handle it
-    const headerEl = e.target.closest && e.target.closest('.terminal-3d header');
-    const isButton = e.target.closest && e.target.closest('button');
-    if (headerEl && isFocused && !isButton) {
-      const card = headerEl.closest('.terminal-3d');
-      const sessionName = card && card.dataset.session;
+    // Check if mousedown is on any focused card's header (title bar drag).
+    // Can't rely on e.target.closest — CSS3D hit testing is 2D, ignores Z depth.
+    // Check click coordinates against all focused card headers.
+    let headerHitSession = null;
+    let isButton = e.target.closest && e.target.closest('button');
+    if (isFocused && !isButton) {
+      for (const fname of focusedSessions) {
+        const ft = terminals.get(fname);
+        if (!ft) continue;
+        const hdr = ft.dom.querySelector('header');
+        if (!hdr) continue;
+        const hr = hdr.getBoundingClientRect();
+        if (e.clientX >= hr.left && e.clientX <= hr.right && e.clientY >= hr.top && e.clientY <= hr.bottom) {
+          headerHitSession = fname;
+          break;
+        }
+      }
+    }
+    if (headerHitSession) {
+      const sessionName = headerHitSession;
       if (sessionName && focusedSessions.has(sessionName)) {
         isDragging = true;
         dragMode = 'moveCard';
@@ -2171,8 +2191,17 @@ document.addEventListener('mousedown', function(e) {
   if (e.button !== 0) return;
   if (!matchBinding(KEYBINDINGS.selectText, e, focusedSessions.size > 0)) return;
   if (!activeInputSession) return;
-  // Don't start text selection on the header — that's for title bar drag
-  if (e.target.closest && e.target.closest('.terminal-3d header')) return;
+  // Don't start text selection on any focused card's header — that's for title bar drag.
+  // Can't use e.target.closest because CSS3D hit testing is 2D (ignores Z depth).
+  // Instead check if click coordinates are within any focused card's header rect.
+  for (const fname of focusedSessions) {
+    const ft = terminals.get(fname);
+    if (!ft) continue;
+    const hdr = ft.dom.querySelector('header');
+    if (!hdr) continue;
+    const hr = hdr.getBoundingClientRect();
+    if (e.clientX >= hr.left && e.clientX <= hr.right && e.clientY >= hr.top && e.clientY <= hr.bottom) return;
+  }
   const t = terminals.get(activeInputSession);
   if (!t) return;
 
@@ -2238,3 +2267,80 @@ document.addEventListener('keydown', function(e) {
 
 // === Start ===
 init();
+
+// Debug: export current layout state to console for sharing
+// === Browser Profile ===
+// Each browser gets a UID stored in localStorage. Layout auto-saves to server.
+// Share layout via URL: ?profile=<uid>
+(function() {
+  let _uid = localStorage.getItem('svg-terminal-uid');
+  if (!_uid) {
+    _uid = 'browser-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+    localStorage.setItem('svg-terminal-uid', _uid);
+  }
+  // Check URL for shared profile
+  const urlUid = new URLSearchParams(location.search).get('profile');
+  const activeUid = urlUid || _uid;
+
+  window._getLayoutState = function() {
+    const state = {
+      uid: activeUid,
+      timestamp: Date.now(),
+      viewport: { w: window.innerWidth, h: window.innerHeight },
+      userAgent: navigator.userAgent.slice(0, 80),
+      camera: {
+        x: parseFloat(camera.position.x.toFixed(2)),
+        y: parseFloat(camera.position.y.toFixed(2)),
+        z: parseFloat(camera.position.z.toFixed(2)),
+        fov: camera.fov
+      },
+      focused: [...focusedSessions],
+      activeInput: activeInputSession,
+      cards: {}
+    };
+    for (const [name, t] of terminals) {
+      const r = t.dom.getBoundingClientRect();
+      const h = t.dom.querySelector('header')?.getBoundingClientRect();
+      state.cards[name] = {
+        domW: parseInt(t.dom.style.width) || 0,
+        domH: parseInt(t.dom.style.height) || 0,
+        baseW: t.baseCardW, baseH: t.baseCardH,
+        cols: t.screenCols, rows: t.screenRows,
+        screen: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+        header: h ? { x: Math.round(h.x), y: Math.round(h.y), w: Math.round(h.width), h: Math.round(h.height) } : null,
+        focused: focusedSessions.has(name),
+        worldPos: {
+          x: parseFloat(t.currentPos.x.toFixed(2)),
+          y: parseFloat(t.currentPos.y.toFixed(2)),
+          z: parseFloat((t.targetPos.z || 0).toFixed(2))
+        }
+      };
+    }
+    return state;
+  };
+
+  window._saveLayout = function() {
+    const state = window._getLayoutState();
+    fetch('/api/layout?uid=' + encodeURIComponent(activeUid), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(state)
+    }).then(r => r.json()).then(d => console.log('Layout saved:', activeUid));
+    return state;
+  };
+
+  window._getShareUrl = function() {
+    const url = location.origin + location.pathname + '?profile=' + encodeURIComponent(activeUid);
+    console.log('Share URL:', url);
+    return url;
+  };
+
+  // Auto-save on focus changes
+  const origUpdateFocusStyles = updateFocusStyles;
+  // Save layout periodically when focused (every 10s)
+  setInterval(function() {
+    if (focusedSessions.size > 0) window._saveLayout();
+  }, 10000);
+
+  console.log('Browser UID:', _uid, urlUid ? '(viewing profile: ' + urlUid + ')' : '');
+})();
