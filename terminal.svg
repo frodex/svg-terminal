@@ -44,6 +44,7 @@
   <g id="bg-layer"></g>
   <g id="text-layer" class="fg"></g>
   <g id="sel-layer"></g>
+  <g id="link-layer"></g>
   <rect id="cursor" width="8" height="17" fill="#c5c5c5" opacity="0.7">
     <animate attributeName="opacity" values="0.7;0;0.7" dur="1s" repeatCount="indefinite" />
   </rect>
@@ -104,8 +105,12 @@
       var root         = document.getElementById('root');
       var textLayer    = document.getElementById('text-layer');
       var bgLayer      = document.getElementById('bg-layer');
+      var linkLayer    = document.getElementById('link-layer');
       var cursorEl     = document.getElementById('cursor');
       var errorOverlay = document.getElementById('error-overlay');
+
+      // URL regex for detecting links in terminal output
+      var URL_RE = /https?:\/\/[^\s<>"')\]]+/g;
 
       // -----------------------------------------------------------------------
       // State
@@ -210,6 +215,65 @@
         }
       }
 
+      // Detect URLs in terminal lines and create clickable link overlays
+      function rebuildLinkLayer(lines) {
+        while (linkLayer.firstChild) linkLayer.removeChild(linkLayer.firstChild);
+        for (var row = 0; row < lines.length; row++) {
+          // Concatenate all spans to get full line text
+          var lineText = '';
+          var spans = lines[row].spans;
+          for (var s = 0; s < spans.length; s++) lineText += spans[s].text;
+
+          var match;
+          URL_RE.lastIndex = 0;
+          while ((match = URL_RE.exec(lineText)) !== null) {
+            var url = match[0];
+            var col = match.index;
+            var len = url.length;
+
+            // Underline the URL
+            var underline = document.createElementNS(SVG_NS, 'line');
+            underline.setAttribute('x1', (col * CELL_W).toFixed(2));
+            underline.setAttribute('y1', ((row + 1) * CELL_H - 1).toFixed(2));
+            underline.setAttribute('x2', ((col + len) * CELL_W).toFixed(2));
+            underline.setAttribute('y2', ((row + 1) * CELL_H - 1).toFixed(2));
+            underline.setAttribute('stroke', '#5c8fff');
+            underline.setAttribute('stroke-width', '1');
+            underline.setAttribute('opacity', '0.6');
+            linkLayer.appendChild(underline);
+
+            // Invisible clickable rect over the URL
+            var rect = document.createElementNS(SVG_NS, 'rect');
+            rect.setAttribute('x', (col * CELL_W).toFixed(2));
+            rect.setAttribute('y', (row * CELL_H).toFixed(2));
+            rect.setAttribute('width', (len * CELL_W).toFixed(2));
+            rect.setAttribute('height', CELL_H.toFixed(2));
+            rect.setAttribute('fill', 'transparent');
+            rect.setAttribute('cursor', 'pointer');
+            rect.dataset.url = url;
+            rect.style.pointerEvents = 'all';
+            rect.addEventListener('click', (function(u) {
+              return function(evt) {
+                if (evt.altKey) {
+                  // Alt+click: open in a browser card in the 3D scene
+                  evt.preventDefault();
+                  evt.stopPropagation();
+                  if (window.parent && window.parent._addBrowserCard) {
+                    window.parent._addBrowserCard(u);
+                  }
+                } else {
+                  // Regular click: open in new tab
+                  evt.preventDefault();
+                  evt.stopPropagation();
+                  window.open(u, '_blank');
+                }
+              };
+            })(url));
+            linkLayer.appendChild(rect);
+          }
+        }
+      }
+
       // -----------------------------------------------------------------------
       // Initialization: set up row <text> elements
       // -----------------------------------------------------------------------
@@ -274,7 +338,7 @@
               updateLine(i, msg.lines[i].spans);
               prevState[i] = JSON.stringify(msg.lines[i].spans);
             }
-            rebuildBgLayer(msg.lines);
+            rebuildBgLayer(msg.lines); rebuildLinkLayer(msg.lines);
             if (msg.cursor) {
               cursorEl.setAttribute('x', (msg.cursor.x * CELL_W).toFixed(2));
               cursorEl.setAttribute('y', msg.cursor.y * CELL_H);
@@ -290,7 +354,7 @@
               allLines[idx] = { spans: spans };
               prevState[idx] = JSON.stringify(spans);
             }
-            if (keys.length > 0) rebuildBgLayer(allLines);
+            if (keys.length > 0) { rebuildBgLayer(allLines); rebuildLinkLayer(allLines); }
             if (msg.cursor) {
               cursorEl.setAttribute('x', (msg.cursor.x * CELL_W).toFixed(2));
               cursorEl.setAttribute('y', msg.cursor.y * CELL_H);
@@ -358,7 +422,7 @@
 
             // Rebuild background layer if anything changed
             if (anyChanged) {
-              rebuildBgLayer(lines);
+              rebuildBgLayer(lines); rebuildLinkLayer(lines);
             }
 
             // Update cursor position

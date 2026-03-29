@@ -1094,12 +1094,14 @@ function updateCameraOrbit() {
 }
 
 // === Terminal DOM ===
-function createTerminalDOM(sessionName) {
+// Generic card DOM factory — same structure for any content type.
+// config: { id, title, type: 'terminal'|'browser', controls: [...], contentEl }
+function createCardDOM(config) {
   const el = document.createElement('div');
   el.className = 'terminal-3d';
-  el.dataset.session = sessionName;
+  el.dataset.session = config.id;
+  el.dataset.cardType = config.type || 'terminal';
 
-  // Inner wrapper — content is always at 4x layout, wrapper scales to fit outer
   const inner = document.createElement('div');
   inner.className = 'terminal-inner';
 
@@ -1116,10 +1118,10 @@ function createTerminalDOM(sessionName) {
     dots.appendChild(dot);
   }
   header.appendChild(dots);
-  const name = document.createElement('span');
-  name.className = 'session-name';
-  name.textContent = sessionName;
-  header.appendChild(name);
+  const nameEl = document.createElement('span');
+  nameEl.className = 'session-name';
+  nameEl.textContent = config.title || config.id;
+  header.appendChild(nameEl);
 
   // Controls inside the header — shown when focused
   const controls = document.createElement('span');
@@ -1132,45 +1134,85 @@ function createTerminalDOM(sessionName) {
     btn.addEventListener('click', function(ev) { ev.stopPropagation(); ev.preventDefault(); fn(); });
     return btn;
   };
-  controls.appendChild(mkHdrBtn('−', 'Smaller text (more cols)', function() {
-    const t = terminals.get(sessionName);
-    if (t) {
-      const newCols = Math.min(300, (t.screenCols || 80) + 4);
-      const newRows = Math.min(100, (t.screenRows || 24) + 2);
-      t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
+  // Add custom controls from config
+  if (config.controls) {
+    for (const ctrl of config.controls) {
+      controls.appendChild(mkHdrBtn(ctrl.label, ctrl.title, ctrl.fn));
     }
-  }));
-  controls.appendChild(mkHdrBtn('+', 'Bigger text (fewer cols)', function() {
-    const t = terminals.get(sessionName);
-    if (t) {
-      const newCols = Math.max(20, (t.screenCols || 80) - 4);
-      const newRows = Math.max(5, (t.screenRows || 24) - 2);
-      t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
-    }
-  }));
-  controls.appendChild(mkHdrBtn('⊡', 'Fit terminal to card', function() {
-    const t = terminals.get(sessionName);
-    if (t) optimizeTermToCard(t);
-  }));
-  controls.appendChild(mkHdrBtn('⊞', 'Fit card to terminal', function() {
-    const t = terminals.get(sessionName);
-    if (t) optimizeCardToTerm(t);
-  }));
+  }
+  // Minimize is always available
   controls.appendChild(mkHdrBtn('⌊', 'Minimize', function() {
-    removeFromFocus(sessionName);
+    removeFromFocus(config.id);
   }));
   header.appendChild(controls);
-
   inner.appendChild(header);
 
+  // Content area — provided by the caller
+  if (config.contentEl) {
+    inner.appendChild(config.contentEl);
+  }
+
+  el.appendChild(inner);
+  return el;
+}
+
+// Terminal card
+function createTerminalDOM(sessionName) {
   const obj = document.createElement('object');
   obj.type = 'image/svg+xml';
   obj.data = '/terminal.svg?session=' + encodeURIComponent(sessionName);
-  inner.appendChild(obj);
 
-  el.appendChild(inner);
-  // Click handling is done in onSceneClick/onMouseUp — no per-element handler
-  return el;
+  return createCardDOM({
+    id: sessionName,
+    title: sessionName,
+    type: 'terminal',
+    controls: [
+      { label: '−', title: 'Smaller text (more cols)', fn: function() {
+        const t = terminals.get(sessionName);
+        if (t) {
+          const newCols = Math.min(300, (t.screenCols || 80) + 4);
+          const newRows = Math.min(100, (t.screenRows || 24) + 2);
+          t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
+        }
+      }},
+      { label: '+', title: 'Bigger text (fewer cols)', fn: function() {
+        const t = terminals.get(sessionName);
+        if (t) {
+          const newCols = Math.max(20, (t.screenCols || 80) - 4);
+          const newRows = Math.max(5, (t.screenRows || 24) - 2);
+          t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
+        }
+      }},
+      { label: '⊡', title: 'Fit terminal to card', fn: function() {
+        const t = terminals.get(sessionName);
+        if (t) optimizeTermToCard(t);
+      }},
+      { label: '⊞', title: 'Fit card to terminal', fn: function() {
+        const t = terminals.get(sessionName);
+        if (t) optimizeCardToTerm(t);
+      }}
+    ],
+    contentEl: obj
+  });
+}
+
+// Browser card — iframe with URL
+function createBrowserDOM(cardId, url) {
+  const iframe = document.createElement('iframe');
+  iframe.src = url;
+  iframe.style.cssText = 'width:100%;border:none;flex:1;min-height:0;border-bottom-left-radius:48px;border-bottom-right-radius:48px;';
+  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups');
+
+  return createCardDOM({
+    id: cardId,
+    title: url.length > 60 ? url.substring(0, 57) + '...' : url,
+    type: 'browser',
+    controls: [
+      { label: '↻', title: 'Reload', fn: function() { iframe.src = iframe.src; }},
+      { label: '↗', title: 'Open in new tab', fn: function() { window.open(url, '_blank'); }}
+    ],
+    contentEl: iframe
+  });
 }
 
 function createShadowDOM() {
@@ -1222,6 +1264,72 @@ function createThumbnail(sessionName) {
   document.getElementById('sidebar').appendChild(item);
   return item;
 }
+
+// === Browser Cards ===
+function addBrowserCard(url) {
+  const cardId = 'browser-' + Date.now().toString(36);
+  const cardW = 1280;
+  const cardH = 992;
+
+  const dom = createBrowserDOM(cardId, url);
+  dom.style.width = cardW + 'px';
+  dom.style.height = cardH + 'px';
+  const inner = dom.querySelector('.terminal-inner');
+  if (inner) {
+    inner.style.width = cardW + 'px';
+    inner.style.height = cardH + 'px';
+  }
+
+  const shadowDiv = createShadowDOM();
+  const css3dObj = new CSS3DObject(dom);
+  css3dObj.scale.setScalar(0.25);
+  css3dObj.rotation.set(
+    (40 + Math.random() * 30) * DEG2RAD,
+    (-30 + Math.random() * 60) * DEG2RAD,
+    (-20 + Math.random() * 40) * DEG2RAD
+  );
+  terminalGroup.add(css3dObj);
+  dom.style.pointerEvents = 'auto';
+
+  const shadowObj = new CSS3DObject(shadowDiv);
+  shadowObj.rotation.x = -Math.PI / 2;
+  shadowGroup.add(shadowObj);
+
+  terminals.set(cardId, {
+    css3dObject: css3dObj,
+    shadowObject: shadowObj,
+    shadowDiv: shadowDiv,
+    dom: dom,
+    thumbnail: null, // browser cards don't have thumbnails (yet)
+    baseCardW: cardW,
+    baseCardH: cardH,
+    currentPos: { x: 0, y: 0, z: -500 },
+    targetPos: { x: 0, y: 0, z: -500 },
+    morphStart: clock.getElapsedTime(),
+    morphFrom: { x: 0, y: 0, z: -500 },
+    billboardArrival: null,
+    inputWs: null,
+    scrollOffset: 0,
+    screenLines: [],
+    screenCols: 80,
+    screenRows: 24,
+    sendInput: function() {}, // browser cards don't send terminal input
+    scrollBy: function() {},
+    _lastCursor: null,
+    url: url
+  });
+
+  sessionOrder.push(cardId);
+  assignRings();
+
+  // Auto-focus the new browser card
+  focusTerminal(cardId);
+
+  return cardId;
+}
+
+// Expose globally so terminal.svg alt+click can call it
+window._addBrowserCard = addBrowserCard;
 
 // === Session Discovery ===
 async function refreshSessions() {
