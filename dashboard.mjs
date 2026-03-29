@@ -230,6 +230,8 @@ const clock = new THREE.Clock();
 
 // Ring state
 let outerAngle = 0, innerAngle = 0;
+let ringZOffset = 0;        // current ring Z offset (eases toward target)
+const RING_Z_BACK = -800;   // how far back to push ring during focus
 let ringAssignments = { outer: [], inner: [] };
 
 // Mouse state
@@ -647,6 +649,10 @@ function onMouseMove(e) {
 }
 
 function onMouseDown(e) {
+  // Reset drag distance on every mousedown — prevents stale values from
+  // previous interactions causing wasDrag() to return true on fresh clicks.
+  dragDistance = 0;
+
   // Track whether mousedown started on sidebar — if so, the thumbnail's own click
   // handler manages ctrl+click. Without this flag, handleCtrlClick in onMouseUp
   // ALSO fires and finds a different terminal behind the sidebar via bounding rect
@@ -849,11 +855,17 @@ document.addEventListener('keyup', function(e) {
 });
 window.addEventListener('blur', function() { ctrlHeld = false; altHeld = false; });
 
+let _zoomedSession = null; // which terminal is currently zoomed in multi-focus
+
 function onKeyDown(e) {
   if (e.key === 'Escape') {
     const panel = document.getElementById('help-panel');
     if (panel.classList.contains('visible')) {
       panel.classList.remove('visible');
+    } else if (_zoomedSession) {
+      // Return from zoomed view to multi-focus layout
+      _zoomedSession = null;
+      calculateFocusedLayout();
     } else if (focusedSessions.size > 0) {
       unfocusTerminal();
     }
@@ -861,6 +873,43 @@ function onKeyDown(e) {
   if (e.key === '?' && focusedSessions.size === 0) {
     toggleHelp();
   }
+  // Shift+Tab: cycle through focused terminals, zooming each to fill viewport
+  if (e.key === 'Tab' && e.shiftKey && focusedSessions.size > 1) {
+    e.preventDefault();
+    const names = [...focusedSessions];
+    const currentIdx = _zoomedSession ? names.indexOf(_zoomedSession) : -1;
+    const nextIdx = (currentIdx + 1) % names.length;
+    _zoomedSession = names[nextIdx];
+    zoomToFocusedTerminal(_zoomedSession);
+  }
+}
+
+// Zoom camera to a single terminal within the multi-focus set.
+// The focus set stays intact — this just moves the camera to see one terminal large.
+function zoomToFocusedTerminal(sessionName) {
+  const t = terminals.get(sessionName);
+  if (!t) return;
+
+  setActiveInput(sessionName);
+
+  const now = clock.getElapsedTime();
+  const vFov = camera.fov * DEG2RAD;
+  const halfTan = Math.tan(vFov / 2);
+
+  // Calculate camera distance to fill ~85% of viewport height with this card
+  const worldH = (t.baseCardH || 992) * 0.25;
+  const depth = worldH / (0.85 * 2 * halfTan);
+
+  // Camera flies to look directly at this terminal's position
+  const cardPos = t.targetPos || t.currentPos;
+  cameraTween = {
+    from: camera.position.clone(),
+    to: new THREE.Vector3(cardPos.x, cardPos.y, cardPos.z + depth),
+    lookFrom: currentLookTarget.clone(),
+    lookTo: new THREE.Vector3(cardPos.x, cardPos.y, cardPos.z),
+    start: now,
+    duration: 0.6
+  };
 }
 
 function onSceneClick(e) {
@@ -1616,8 +1665,10 @@ function removeFromFocus(sessionName) {
   // Switch active input if we just removed the active one
   if (activeInputSession === sessionName) {
     activeInputSession = [...focusedSessions][0];
-    showTermControls(activeInputSession);
   }
+  // Always update controls — even if a non-active terminal was removed,
+  // the controls bar must follow the active session, not the removed one
+  showTermControls(activeInputSession);
 
   updateFocusStyles();
   assignRings(); // reassign ring positions including the restored terminal
@@ -1635,12 +1686,16 @@ function restoreAllFocused() {
 function unfocusTerminal() {
   restoreAllFocused();
   activeInputSession = null;
+  _zoomedSession = null;
   const now = clock.getElapsedTime();
 
   for (const [name, term] of terminals) {
     term.dom.classList.remove('faded', 'focused', 'input-active');
     term.thumbnail.classList.remove('active');
+    const minBtn = term.thumbnail.querySelector('.thumb-minimize');
+    if (minBtn) minBtn.style.display = 'none';
   }
+  hideTermControls();
 
   cameraTween = {
     from: camera.position.clone(),
@@ -1683,6 +1738,10 @@ function animate() {
   outerAngle += RING.outer.spinSpeed * RING.outer.spinDir;
   innerAngle += RING.inner.spinSpeed * RING.inner.spinDir;
 
+  // Ease ring Z offset — smoothly push back during focus, smoothly return on unfocus
+  const ringZTarget = focusedSessions.size > 0 ? RING_Z_BACK : 0;
+  ringZOffset += (ringZTarget - ringZOffset) * 0.05;
+
   // Per-terminal updates
   let idx = 0;
   for (const [name, t] of terminals) {
@@ -1701,6 +1760,9 @@ function animate() {
       const ringIdx = ringNames.indexOf(name);
       if (ringIdx < 0) { idx++; continue; }
       const ringPos = computeRingPos(ringIdx, ringNames.length, config, angle);
+
+      // Ease ring behind focused cards (ringZOffset transitions smoothly)
+      ringPos.z += ringZOffset;
 
       // Smooth return from focus (morph toward ring position)
       const morphElapsed = time - t.morphStart;
@@ -1847,6 +1909,9 @@ document.addEventListener('keydown', function(e) {
 
   // Escape: unfocus terminal (handled by existing onKeyDown)
   if (e.key === 'Escape') return;
+
+  // Shift+Tab: cycle focused terminals (handled by onKeyDown)
+  if (e.key === 'Tab' && e.shiftKey && focusedSessions.size > 1) return;
 
   e.preventDefault();
 
