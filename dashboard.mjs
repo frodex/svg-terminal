@@ -1715,11 +1715,13 @@ function setActiveInput(sessionName) {
     }
   }
 
-  // Slide new active card forward — save its current Z first
+  // Slide new active card forward — only if not already slid forward
   const t = terminals.get(sessionName);
   if (t) {
-    t._savedZ = t.targetPos.z;
-    t.targetPos.z += READING_Z_OFFSET;
+    if (t._savedZ === undefined) {
+      t._savedZ = t.targetPos.z;
+      t.targetPos.z += READING_Z_OFFSET;
+    }
     t.morphFrom = { ...t.currentPos };
     t.morphStart = clock.getElapsedTime();
     // Capture current rotation so the slerp starts from where it IS,
@@ -1811,8 +1813,20 @@ function restoreAllFocused() {
 // Deselect: remove input focus but keep camera and cards in place.
 // Cards stay where they are, just lose the focus highlight and keyboard input.
 function deselectTerminals() {
-  // Don't move any cards. Leave everything exactly where it is.
-  // Just remove input focus and visual indicators.
+  // Slide active card back to its pre-slide Z, then clear saved state
+  if (activeInputSession) {
+    const t = terminals.get(activeInputSession);
+    if (t && t._savedZ !== undefined) {
+      t.targetPos.z = t._savedZ;
+      t.morphFrom = { ...t.currentPos };
+      t.morphStart = clock.getElapsedTime();
+      delete t._savedZ;
+    }
+  }
+  // Clear all _savedZ to prevent accumulation
+  for (const [name, term] of terminals) {
+    delete term._savedZ;
+  }
   activeInputSession = null;
   _zoomedSession = null;
   // Remove input/highlight indicators but keep focusedSessions intact.
