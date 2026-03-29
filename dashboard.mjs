@@ -644,16 +644,13 @@ function onMouseMove(e) {
       const newH = Math.max(496, currentH + dy * scaleF);
       t.dom.style.width = newW + 'px';
       t.dom.style.height = newH + 'px';
-      // Inner must match card size and have no scale transform.
-      // Focus sets inner to baseW with a scale() to fit the viewport,
-      // but during resize we want the content to fill the new card directly.
+      // Inner matches card — no scale transform in camera-only architecture
       const inner = t.dom.querySelector('.terminal-inner');
       if (inner) {
         inner.style.width = newW + 'px';
         inner.style.height = newH + 'px';
-        inner.style.transform = '';
       }
-      // Save as user's preferred size — survives focus/unfocus
+      // Save as user's preferred size
       t.baseCardW = newW;
       t.baseCardH = newH;
       t._userPositioned = true; // prevent layout from overriding user's resize
@@ -676,8 +673,10 @@ function onMouseDown(e) {
 
   if (e.button === 0) {
     // Check if mousedown is on a terminal header (title bar drag to move card)
+    // Skip if clicking on a button inside the header — let the button handle it
     const headerEl = e.target.closest && e.target.closest('.terminal-3d header');
-    if (headerEl && isFocused) {
+    const isButton = e.target.closest && e.target.closest('button');
+    if (headerEl && isFocused && !isButton) {
       const card = headerEl.closest('.terminal-3d');
       const sessionName = card && card.dataset.session;
       if (sessionName && focusedSessions.has(sessionName)) {
@@ -1282,11 +1281,9 @@ function updateCardForNewSize(t, newCols, newRows) {
   const { cardW, cardH } = calcCardSize(newCols, newRows);
   t.baseCardW = cardW;
   t.baseCardH = cardH;
-  // When focused: DON'T resize the card. The card is the user's chosen window.
-  // +/- and alt+scroll change cols/rows inside the same card (font size changes).
-  // The SVG re-renders with new cols/rows — text gets bigger/smaller in the same space.
+  // When focused: don't reshape the card. +/- changes font size inside the same card.
+  // The card is the user's chosen window — only explicit actions (alt+drag, ⊞) change it.
   if (t.dom.classList.contains('focused')) return;
-  // When unfocused (ring): reshape card to match new terminal aspect
   t.dom.style.width = cardW + 'px';
   t.dom.style.height = cardH + 'px';
   const inner = t.dom.querySelector('.terminal-inner');
@@ -1401,83 +1398,14 @@ function removeTerminal(sessionName) {
 // Floating HTML bar outside the 3D scene — positioned over the focused terminal's header.
 // Can't put buttons inside CSS3DObject DOM because getBoundingClientRect() returns NaN
 // for elements under matrix3d transforms, making them unclickable.
-let _controlsBar = null;
+// Old floating controls bar removed — controls are now inline in each card's header.
+let _controlsBar = null; // kept as null, never created
 let _controlsSession = null;
 
-function createControlsBar() {
-  const bar = document.createElement('div');
-  bar.id = 'term-controls-bar';
-  bar.style.cssText = 'position:fixed;z-index:60;display:none;gap:6px;align-items:center;pointer-events:auto;';
-
-  const mkBtn = (text, title, fn) => {
-    const btn = document.createElement('button');
-    btn.className = 'term-ctrl-btn-overlay';
-    btn.textContent = text;
-    btn.title = title;
-    btn.style.cssText = 'width:28px;height:28px;border:none;border-radius:6px;background:rgba(255,255,255,0.12);color:#ccc;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;';
-    btn.addEventListener('mouseenter', () => { btn.style.background = 'rgba(255,255,255,0.25)'; btn.style.color = '#fff'; });
-    btn.addEventListener('mouseleave', () => { btn.style.background = 'rgba(255,255,255,0.12)'; btn.style.color = '#ccc'; });
-    btn.addEventListener('click', (ev) => { ev.stopPropagation(); ev.preventDefault(); fn(); });
-    return btn;
-  };
-
-  bar.appendChild(mkBtn('−', 'Smaller text (more cols)', () => {
-    const t = terminals.get(_controlsSession);
-    if (t) {
-      const newCols = Math.min(300, (t.screenCols || 80) + 4);
-      const newRows = Math.min(100, (t.screenRows || 24) + 2);
-      t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
-    }
-  }));
-  bar.appendChild(mkBtn('+', 'Bigger text (fewer cols)', () => {
-    const t = terminals.get(_controlsSession);
-    if (t) {
-      const newCols = Math.max(20, (t.screenCols || 80) - 4);
-      const newRows = Math.max(5, (t.screenRows || 24) - 2);
-      t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
-    }
-  }));
-  bar.appendChild(mkBtn('⊡', 'Fit terminal to card', () => {
-    const t = terminals.get(_controlsSession);
-    if (t) optimizeTermToCard(t);
-  }));
-  bar.appendChild(mkBtn('⊞', 'Fit card to terminal', () => {
-    const t = terminals.get(_controlsSession);
-    if (t) optimizeCardToTerm(t);
-  }));
-  bar.appendChild(mkBtn('⌊', 'Minimize (return to ring)', () => {
-    if (_controlsSession) removeFromFocus(_controlsSession);
-  }));
-
-  document.body.appendChild(bar);
-  return bar;
-}
-
-function showTermControls(sessionName) {
-  if (!_controlsBar) _controlsBar = createControlsBar();
-  _controlsSession = sessionName;
-  _controlsBar.style.display = 'flex';
-  updateControlsPosition();
-}
-
-function hideTermControls() {
-  if (_controlsBar) _controlsBar.style.display = 'none';
-  _controlsSession = null;
-}
-
-function updateControlsPosition() {
-  if (!_controlsBar || !_controlsSession) return;
-  const t = terminals.get(_controlsSession);
-  if (!t) return;
-  const rect = t.dom.getBoundingClientRect();
-  if (rect.width < 10) return;
-  const header = t.dom.querySelector('header');
-  const headerRect = header ? header.getBoundingClientRect() : rect;
-  const barW = _controlsBar.offsetWidth || 170;
-  // Center horizontally on the card, vertically on the title bar
-  _controlsBar.style.left = (rect.left + (rect.width - barW) / 2) + 'px';
-  _controlsBar.style.top = (headerRect.top + (headerRect.height - 28) / 2) + 'px';
-}
+// Controls are now inline in each card's header — no floating overlay needed.
+function showTermControls(sessionName) { _controlsSession = sessionName; }
+function hideTermControls() { _controlsSession = null; }
+function updateControlsPosition() { /* no-op — controls are inside the card */ }
 
 // The lastAddToFocusTime guard prevents this from firing immediately after addToFocus().
 // Without it, the event sequence mouseup→click causes addToFocus (correct) then
@@ -1533,58 +1461,27 @@ function focusTerminal(sessionName) {
   orbitAngle = 0;
   orbitPitch = 0;
 
-  // Scale card to fill viewport while preserving terminal aspect ratio.
-  // Use the card's base aspect (from tmux cols×rows) to fill available screen space.
-  const baseW = t.baseCardW || 1280;
-  const baseH = t.baseCardH || 992;
-  const baseAspect = baseW / baseH;
+  // CAMERA-ONLY FOCUS: card stays at base size, camera moves close enough
+  // to fill the viewport. No DOM changes. No inner scale transform.
+  const worldW = (t.baseCardW || 1280) * 0.25;
+  const worldH = (t.baseCardH || 992) * 0.25;
 
   const vFov = camera.fov * DEG2RAD;
-  const visH = 2 * FOCUS_DIST * Math.tan(vFov / 2);
-  const visW = visH * camera.aspect;
-  const pxToWorld = visH / window.innerHeight;
+  const halfTan = Math.tan(vFov / 2);
 
-  // Available world space (accounting for sidebar)
-  const sidebarWorld = SIDEBAR_WIDTH * pxToWorld;
-  const availW = visW - sidebarWorld;
-  const availH = visH;
+  // Calculate camera distance where card fills ~90% of viewport height
+  const targetScreenFrac = 0.90;
+  const camDist = worldH / (targetScreenFrac * 2 * halfTan);
 
-  // Fit card into available space preserving aspect
-  let worldW, worldH;
-  if (availW / availH > baseAspect) {
-    // Height-limited
-    worldH = availH * 0.92;
-    worldW = worldH * baseAspect;
-  } else {
-    // Width-limited
-    worldW = availW * 0.92;
-    worldH = worldW / baseAspect;
-  }
-
-  // Convert world → DOM pixels for the focused card
-  const screenH = Math.round((worldH / visH) * window.innerHeight);
-  const screenW = Math.round(screenH * baseAspect);
-  const innerScale = screenW / baseW;
-
-  t.dom.style.width = screenW + 'px';
-  t.dom.style.height = screenH + 'px';
-  t.dom.style.borderRadius = Math.round(48 * (screenW / 1280)) + 'px';
-  const inner = t.dom.querySelector('.terminal-inner');
-  if (inner) {
-    inner.style.width = baseW + 'px';
-    inner.style.height = baseH + 'px';
-    inner.style.transform = 'scale(' + innerScale + ')';
-  }
-  t.css3dObject.scale.setScalar(worldH / screenH);
-
-  const offX = (SIDEBAR_WIDTH / 2) * pxToWorld;
-  const offY = -(50 / 2) * pxToWorld;
+  // Offset for sidebar (card at origin, camera shifted so card centers in usable area)
+  const visHAtDist = 2 * camDist * halfTan;
+  const px2w = visHAtDist / window.innerHeight;
 
   cameraTween = {
     from: camera.position.clone(),
-    to: new THREE.Vector3(offX, offY, FOCUS_DIST),
+    to: new THREE.Vector3(0, 0, camDist),
     lookFrom: currentLookTarget.clone(),
-    lookTo: new THREE.Vector3(offX, offY, 0),
+    lookTo: new THREE.Vector3(0, 0, 0),
     start: now,
     duration: 1.0
   };
@@ -1605,20 +1502,7 @@ function addToFocus(sessionName) {
   }
   lastAddToFocusTime = performance.now();
 
-  // If switching from single-focus to multi-focus, restore DOM sizing on all existing focused
-  for (const fname of focusedSessions) {
-    const ft = terminals.get(fname);
-    if (ft) {
-      const rw = ft.baseCardW || 1280;
-      const rh = ft.baseCardH || 992;
-      ft.dom.style.width = rw + 'px';
-      ft.dom.style.height = rh + 'px';
-      ft.dom.style.borderRadius = '';
-      const inner = ft.dom.querySelector('.terminal-inner');
-      if (inner) { inner.style.transform = ''; inner.style.width = rw + 'px'; inner.style.height = rh + 'px'; }
-      ft.css3dObject.scale.setScalar(0.25);
-    }
-  }
+  // Camera-only: no DOM to restore. Cards are always at base size.
 
   focusedSessions.add(sessionName);
   activeInputSession = sessionName;
@@ -1697,22 +1581,9 @@ function restoreFocusedTerminal(name) {
   }
   const now = clock.getElapsedTime();
   term.dom.classList.remove('faded', 'focused', 'input-active');
-  term._userPositioned = false; // allow layout to manage this card again
-  // Restore card to its base calculated size (not CSS default 1280×992)
-  const restoreW = term.baseCardW || 1280;
-  const restoreH = term.baseCardH || 992;
-  term.dom.style.width = restoreW + 'px';
-  term.dom.style.height = restoreH + 'px';
-  term.dom.style.borderRadius = '';
-  const inner = term.dom.querySelector('.terminal-inner');
-  if (inner) { inner.style.transform = ''; inner.style.width = restoreW + 'px'; inner.style.height = restoreH + 'px'; }
-  term.css3dObject.scale.setScalar(0.25);
-  const obj = term.dom.querySelector('object');
-  if (obj) {
-    obj.style.transform = '';
-    obj.style.width = '';
-    obj.style.height = '';
-  }
+  term._userPositioned = false;
+  // Card was never changed during focus — nothing to restore.
+  // Just morph position back to ring.
   term.morphFrom = { ...term.currentPos };
   term.morphStart = now;
   term.billboardArrival = null;
@@ -1763,6 +1634,8 @@ function unfocusTerminal() {
     term.thumbnail.classList.remove('active');
     const minBtn = term.thumbnail.querySelector('.thumb-minimize');
     if (minBtn) minBtn.style.display = 'none';
+    const hdrCtrl = term.dom.querySelector('.header-controls');
+    if (hdrCtrl) hdrCtrl.style.display = 'none';
   }
   hideTermControls();
 

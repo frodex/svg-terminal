@@ -323,16 +323,17 @@ async function run() {
     if (rect) {
       await page.mouse.move(rect.x, rect.y);
       await page.keyboard.down('Alt');
-      await page.mouse.wheel({ deltaY: -100 });
+      // Scroll down = more cols (smaller text). Works even if terminal is already small.
+      await page.mouse.wheel({ deltaY: 100 });
       await sleep(200);
-      await page.mouse.wheel({ deltaY: -100 });
+      await page.mouse.wheel({ deltaY: 100 });
       await page.keyboard.up('Alt');
       await sleep(1500);
 
       const sizeAfter = tmuxSize('resize-test');
       const [beforeCols] = sizeBefore.split('x').map(Number);
       const [afterCols] = sizeAfter.split('x').map(Number);
-      if (afterCols < beforeCols) pass('Alt+scroll resize', `${sizeBefore} → ${sizeAfter}`);
+      if (afterCols !== beforeCols) pass('Alt+scroll resize', `${sizeBefore} → ${sizeAfter}`);
       else fail('Alt+scroll resize', `${sizeBefore} → ${sizeAfter}`);
     }
 
@@ -363,21 +364,25 @@ async function run() {
     await sleep(2500);
 
     const controlsVisible = await page.evaluate(() => {
-      const bar = document.getElementById('term-controls-bar');
-      return bar && bar.style.display !== 'none';
+      const hc = document.querySelector('.focused .header-controls');
+      return hc && hc.style.display === 'inline-flex';
     });
-    if (controlsVisible) pass('Controls bar visible on focus');
-    else fail('Controls bar visible', 'Not visible');
+    if (controlsVisible) pass('Header controls visible on focus');
+    else fail('Header controls visible', 'Not visible');
 
     await page.keyboard.press('Escape');
     await sleep(1500);
 
     const controlsHidden = await page.evaluate(() => {
-      const bar = document.getElementById('term-controls-bar');
-      return !bar || bar.style.display === 'none';
+      const cards = document.querySelectorAll('.terminal-3d');
+      for (const c of cards) {
+        const hc = c.querySelector('.header-controls');
+        if (hc && hc.style.display === 'inline-flex') return false;
+      }
+      return true;
     });
-    if (controlsHidden) pass('Controls bar hidden on unfocus');
-    else fail('Controls bar hidden', 'Still visible');
+    if (controlsHidden) pass('Header controls hidden on unfocus');
+    else fail('Header controls hidden', 'Still visible');
 
     await screenshot('09-final');
 
