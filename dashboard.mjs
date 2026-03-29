@@ -965,6 +965,7 @@ function addTerminal(sessionName) {
     morphFrom: { x: 0, y: 0, z: -500 },
     billboardArrival: null,  // set when terminal first reaches its ring position
     inputWs: null,
+    fontScale: 1.0,
     scrollOffset: 0,
     screenLines: [],  // text content from server for copy/paste
     screenCols: 80,
@@ -1201,6 +1202,14 @@ function restoreFocusedTerminal(name) {
   const inner = term.dom.querySelector('.terminal-inner');
   if (inner) inner.style.transform = '';
   term.css3dObject.scale.setScalar(0.25);
+  // Reset font scale
+  term.fontScale = 1.0;
+  const obj = term.dom.querySelector('object');
+  if (obj) {
+    obj.style.transform = '';
+    obj.style.width = '';
+    obj.style.height = '';
+  }
   term.morphFrom = { ...term.currentPos };
   term.morphStart = now;
   term.billboardArrival = null;
