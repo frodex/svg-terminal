@@ -102,6 +102,109 @@ const SPECIAL_KEY_MAP = {
   ' ': 'Space',
 };
 
+// === Keybinding Config ===
+// ALL input mappings are defined here. No hardcoded modifier checks elsewhere.
+// To remap: change this config. Future: per-user preferences load into this.
+// context: 'focused' = terminal focused, 'unfocused' = overview, 'any' = both
+const KEYBINDINGS = {
+  // Mouse drag actions (button 0 = left, 2 = right)
+  orbit:         { mouse: 0, modifier: null,    context: 'unfocused', desc: 'Orbit camera' },
+  selectText:    { mouse: 0, modifier: null,    context: 'focused',   desc: 'Select text' },
+  resize:        { mouse: 0, modifier: 'alt',   context: 'focused',   desc: 'Resize terminal' },
+  dollyXY:       { mouse: 0, modifier: 'shift', context: 'any',       desc: 'Pan X / Y' },
+  rotateOrigin:  { mouse: 0, modifier: 'ctrl',  context: 'any',       desc: 'Rotate origin' },
+  orbitRight:    { mouse: 2, modifier: null,     context: 'any',       desc: 'Orbit (right-click)' },
+  orbitMiddle:   { mouse: 1, modifier: null,     context: 'any',       desc: 'Pan (middle-click)' },
+
+  // Scroll actions
+  scrollContent: { wheel: true, modifier: null,    context: 'focused',   desc: 'Scroll terminal' },
+  fontZoom:      { wheel: true, modifier: 'alt',   context: 'focused',   desc: 'Font zoom' },
+  zoomFOV:       { wheel: true, modifier: null,    context: 'unfocused', desc: 'Zoom' },
+  zoomFOVCtrl:   { wheel: true, modifier: 'ctrl',  context: 'any',       desc: 'Zoom' },
+  dollyZ:        { wheel: true, modifier: 'shift', context: 'any',       desc: 'Dolly' },
+
+  // Keyboard shortcuts
+  unfocus:       { key: 'Escape', modifier: null, context: 'focused',   desc: 'Unfocus' },
+  help:          { key: '?',      modifier: null, context: 'unfocused', desc: 'Toggle help' },
+};
+
+// Check if an event matches a keybinding entry
+function matchBinding(binding, e, isFocused) {
+  // Context check
+  if (binding.context === 'focused' && !isFocused) return false;
+  if (binding.context === 'unfocused' && isFocused) return false;
+
+  // Modifier check
+  if (binding.modifier === 'alt' && !e.altKey) return false;
+  if (binding.modifier === 'shift' && !e.shiftKey) return false;
+  if (binding.modifier === 'ctrl' && !(e.ctrlKey || ctrlHeld)) return false;
+  if (binding.modifier === null && (e.altKey || e.shiftKey || e.ctrlKey)) return false;
+
+  return true;
+}
+
+// Find which drag action an event maps to
+function getDragAction(e, isFocused) {
+  if (e.button === 2) return 'orbitRight';
+  if (e.button === 1) return 'orbitMiddle';
+  for (const [name, b] of Object.entries(KEYBINDINGS)) {
+    if (b.mouse === undefined || b.mouse !== e.button) continue;
+    if (!b.wheel && matchBinding(b, e, isFocused)) return name;
+  }
+  return null;
+}
+
+// Find which scroll action an event maps to
+function getScrollAction(e, isFocused) {
+  for (const [name, b] of Object.entries(KEYBINDINGS)) {
+    if (!b.wheel) continue;
+    if (matchBinding(b, e, isFocused)) return name;
+  }
+  return null;
+}
+
+// Apply font scale to a terminal's <object> element.
+// This is visual-only — does not change PTY cols/rows.
+// The 4x scale trick is preserved: fontScale operates INSIDE the terminal panel,
+// separate from the CSS3DObject.scale which handles the 4x rendering.
+function applyFontScale(t) {
+  const obj = t.dom.querySelector('object');
+  if (!obj) return;
+  obj.style.transformOrigin = '0 0';
+  obj.style.transform = 'scale(' + t.fontScale + ')';
+  // Adjust object container to prevent overflow
+  obj.style.width = (100 / t.fontScale) + '%';
+  obj.style.height = (936 / t.fontScale) + 'px'; // 936 = 4x content height (992 - 56 header)
+}
+
+// Calculate cols/rows to fill the current card at the current font scale,
+// then resize the PTY via tmux.
+function optimizeTerminalFit(t, sessionName) {
+  const obj = t.dom.querySelector('object');
+  if (!obj) return;
+
+  let cellW = 8.4, cellH = 17;
+  try {
+    const svgDoc = obj.contentDocument;
+    if (svgDoc) {
+      const measure = svgDoc.getElementById('measure');
+      if (measure) {
+        const bbox = measure.getBBox();
+        if (bbox.width > 0) { cellW = bbox.width / 10; cellH = bbox.height; }
+      }
+    }
+  } catch (err) {}
+
+  const cardW = parseInt(t.dom.style.width) || 1280;
+  const cardH = (parseInt(t.dom.style.height) || 992) - 56;
+  const scale = t.fontScale || 1.0;
+
+  const cols = Math.max(20, Math.round(cardW / (cellW * scale)));
+  const rows = Math.max(5, Math.round(cardH / (cellH * scale)));
+
+  t.sendInput({ type: 'resize', cols: cols, rows: rows });
+}
+
 // === Constants ===
 const LIGHT_DIR = new THREE.Vector3(-0.7, 0.7, -0.3).normalize();
 const FLOOR_Y = -300;
@@ -304,6 +407,41 @@ function init() {
   document.getElementById('help-btn').addEventListener('click', toggleHelp);
   document.getElementById('help-close').addEventListener('click', toggleHelp);
 
+  // Auto-generate help panel from KEYBINDINGS
+  const helpControls = document.querySelector('.help-controls');
+  if (helpControls) {
+    helpControls.innerHTML = '';
+    const seen = new Set();
+    for (const [name, b] of Object.entries(KEYBINDINGS)) {
+      if (seen.has(b.desc)) continue;
+      seen.add(b.desc);
+      let kbd = '';
+      if (b.modifier) kbd += b.modifier.charAt(0).toUpperCase() + b.modifier.slice(1) + ' + ';
+      if (b.mouse !== undefined) kbd += 'Drag';
+      else if (b.wheel) kbd += 'Scroll';
+      else if (b.key) kbd += b.key;
+      if (b.context !== 'any') kbd += ' (' + b.context + ')';
+      const row = document.createElement('div');
+      row.className = 'help-row';
+      row.innerHTML = '<kbd>' + kbd + '</kbd><span>' + b.desc + '</span>';
+      helpControls.appendChild(row);
+    }
+    // Add non-keybinding entries
+    const extras = [
+      ['Ctrl + C', 'Copy selection / Break'],
+      ['Ctrl + V', 'Paste to terminal'],
+      ['Ctrl + Click', 'Multi-focus'],
+      ['Shift + Arrows', 'Select text'],
+      ['PgUp / PgDn', 'Page scroll'],
+    ];
+    for (const [k, d] of extras) {
+      const row = document.createElement('div');
+      row.className = 'help-row';
+      row.innerHTML = '<kbd>' + k + '</kbd><span>' + d + '</span>';
+      helpControls.appendChild(row);
+    }
+  }
+
   refreshSessions();
   setInterval(refreshSessions, 5000);
   setInterval(refreshTitles, 10000);
@@ -378,21 +516,22 @@ function onMouseDown(e) {
   // hit detection, causing two terminals to be added per ctrl+click.
   const sidebar = document.getElementById('sidebar');
   mouseDownOnSidebar = sidebar && sidebar.contains(e.target);
+  const isFocused = focusedSessions.size > 0;
+
   if (e.button === 0) {
-    if (focusedSessions.size > 0 && !e.altKey && !e.ctrlKey && !e.shiftKey) {
-      // Focused + plain drag: text selection — handled by selection system below.
-      // Alt+drag orbits when focused (swapped from unfocused behavior).
+    const action = getDragAction(e, isFocused);
+
+    if (action === 'selectText') {
+      // Text selection — handled by selection mousedown handler below
       return;
-    } else if (e.altKey && focusedSessions.size > 0) {
-      // Alt+drag when focused: orbit (same as plain drag when unfocused)
+    } else if (action === 'resize') {
       isDragging = true;
-      dragMode = 'orbit';
+      dragMode = 'resize';
       dragDistance = 0;
-      syncOrbitFromCamera();
       dragStart.x = e.clientX;
       dragStart.y = e.clientY;
       e.preventDefault();
-    } else if (e.ctrlKey) {
+    } else if (action === 'rotateOrigin') {
       // Don't commit to rotateOrigin yet — could be ctrl+click for multi-focus.
       // If dragDistance stays < 5px, onMouseUp treats it as ctrl+click.
       // If dragDistance exceeds 5px, onMouseMove promotes to 'rotateOrigin'.
@@ -403,14 +542,13 @@ function onMouseDown(e) {
       dragStart.y = e.clientY;
       // IMPORTANT: No preventDefault here — it suppresses the click event entirely,
       // which broke ctrl+click handling when we relied on onSceneClick.
-    } else if (e.shiftKey) {
+    } else if (action === 'dollyXY') {
       isDragging = true;
       dragMode = 'dollyXY';
       dragStart.x = e.clientX;
       dragStart.y = e.clientY;
       e.preventDefault();
-    } else {
-      // Plain left drag: orbit
+    } else if (action === 'orbit') {
       isDragging = true;
       dragMode = 'orbit';
       dragDistance = 0;
@@ -420,14 +558,12 @@ function onMouseDown(e) {
       e.preventDefault();
     }
   } else if (e.button === 1) {
-    // Middle button: pan
     isDragging = true;
     dragMode = 'dollyXY';
     dragStart.x = e.clientX;
     dragStart.y = e.clientY;
     e.preventDefault();
   } else if (e.button === 2) {
-    // Right button: orbit
     isDragging = true;
     dragMode = 'orbit';
     dragStart.x = e.clientX;
@@ -549,7 +685,7 @@ function onSceneClick(e) {
   // onMouseUp and onSceneClick find different terminals via overlapping bounding
   // rects in the 3D scene. This was the root cause of the "ctrl+click adds 2
   // terminals" bug. See note 3 in header.
-  if (suppressNextClick || ctrlHeld || e.ctrlKey || altHeld) {
+  if (suppressNextClick || ctrlHeld || e.ctrlKey || altHeld || e.altKey) {
     suppressNextClick = false;
     return;
   }
@@ -600,40 +736,44 @@ function onSceneClick(e) {
 function onWheel(e) {
   e.preventDefault();
   const delta = e.deltaY;
+  const isFocused = focusedSessions.size > 0;
+  const action = getScrollAction(e, isFocused);
 
-  if (focusedSessions.size > 0 && activeInputSession && !e.shiftKey && !e.ctrlKey) {
+  if (action === 'scrollContent' && activeInputSession) {
     const t = terminals.get(activeInputSession);
     if (t) {
-      if (e.altKey) {
-        // Alt+scroll: Up/Down arrow (command history at prompt)
-        const key = delta > 0 ? 'Down' : 'Up';
-        t.sendInput({ type: 'input', specialKey: key });
-      } else {
-        // Scroll: server-side scrollback with client-side smooth animation.
-        // 1) Apply immediate CSS translateY for visual smoothness
-        // 2) Send scroll command to server for actual content update
-        // 3) Reset translateY when server content arrives (handled in WebSocket onmessage)
-        // Acceleration-aware scroll — fast flick = bigger jumps
-        const absDelta = Math.abs(delta);
-        const step = absDelta > 300 ? 12 : absDelta > 150 ? 6 : absDelta > 50 ? 3 : 1;
-        t.scrollBy(delta < 0 ? step : -step);
-      }
+      // Scroll: server-side scrollback with client-side smooth animation.
+      // Acceleration-aware scroll — fast flick = bigger jumps
+      const absDelta = Math.abs(delta);
+      const step = absDelta > 300 ? 12 : absDelta > 150 ? 6 : absDelta > 50 ? 3 : 1;
+      t.scrollBy(delta < 0 ? step : -step);
     }
     return;
   }
 
-  if (e.shiftKey) {
-    // Shift+scroll: dolly Z (move camera forward/backward along view direction)
+  if (action === 'fontZoom' && activeInputSession) {
+    const t = terminals.get(activeInputSession);
+    if (t) {
+      const scaleDelta = delta > 0 ? 0.9 : 1.1;
+      t.fontScale = (t.fontScale || 1.0) * scaleDelta;
+      t.fontScale = Math.max(0.3, Math.min(3.0, t.fontScale));
+      applyFontScale(t);
+    }
+    return;
+  }
+
+  if (action === 'dollyZ') {
     const dir = new THREE.Vector3();
     camera.getWorldDirection(dir);
     camera.position.addScaledVector(dir, -delta * 0.5);
     orbitDist = camera.position.distanceTo(currentLookTarget);
     camera.lookAt(currentLookTarget);
-  } else {
-    // Scroll (unfocused or ctrl+scroll): zoom (change FOV)
-    camera.fov = Math.max(10, Math.min(120, camera.fov + delta * 0.05));
-    camera.updateProjectionMatrix();
+    return;
   }
+
+  // Default: zoom FOV
+  camera.fov = Math.max(10, Math.min(120, camera.fov + delta * 0.05));
+  camera.updateProjectionMatrix();
 }
 
 // Derive orbitAngle/orbitPitch/orbitDist from camera's actual position relative to look target.
@@ -1600,8 +1740,7 @@ function fallbackCopy(text) {
 // Alt+drag orbits when focused (swapped).
 document.addEventListener('mousedown', function(e) {
   if (e.button !== 0) return;
-  if (e.altKey || e.ctrlKey || e.shiftKey) return; // modifiers = camera controls
-  if (focusedSessions.size === 0) return; // not focused = orbit, not selection
+  if (!matchBinding(KEYBINDINGS.selectText, e, focusedSessions.size > 0)) return;
   if (!activeInputSession) return;
   const t = terminals.get(activeInputSession);
   if (!t) return;
