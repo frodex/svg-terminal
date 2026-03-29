@@ -247,17 +247,17 @@ Card background is `#2e2e32` (lightened from `#1c1c1e`) to see card vs terminal 
 
 ## 8. Constraints
 
-| Constraint | Reason | Violation consequence |
-|-----------|--------|----------------------|
-| 4x scale trick (oversized DOM, 0.25 CSS3DObject scale) | Chrome rasterization quality | Text blurs |
-| SVG rendering target | Cross-browser universality | Edge/Chrome render HTML overlays differently |
-| Camera-only focus (no DOM resize) | Eliminates two-state sizing bugs | Every feature fights focus state |
-| No per-terminal DOM click handlers | Double-fire with ctrl+click | Multi-focus breaks |
-| Coordinate-based hit testing in CSS3D | 2D hit testing ignores Z depth | Wrong card intercepts clicks |
-| No CSS border/box-shadow on .terminal-3d | Triggers GPU re-rasterization | Text sharpness mutation |
-| Atomic tmux capture (`;` separator) | Race condition between cursor and content | Cursor offset |
-| `tmux resize-window` not `resize-pane` | resize-pane fails without attached client | Silent resize failure |
-| `cp-*` sessions don't accept resize | Managed by claude-proxy with SSH clients | Test only with standalone sessions |
+| Constraint | Reason | Violation consequence | Verified by |
+|-----------|--------|----------------------|-------------|
+| 4x scale trick (oversized DOM, 0.25 CSS3DObject scale) | Chrome rasterization quality | Text blurs | agent 1 (discovered), agent 3 (confirmed) |
+| SVG rendering target | Cross-browser universality | Edge/Chrome render HTML overlays differently | `[UNVERIFIED]` agent 1 — user directive, not tested cross-browser by agent 3 |
+| Camera-only focus (no DOM resize) | Eliminates two-state sizing bugs | Every feature fights focus state | agent 3 (designed and validated) |
+| No per-terminal DOM click handlers | Double-fire with ctrl+click | Multi-focus breaks | `[UNVERIFIED]` agent 1 |
+| Coordinate-based hit testing in CSS3D | 2D hit testing ignores Z depth | Wrong card intercepts clicks | agent 3 (discovered and fixed) |
+| No CSS border/box-shadow on .terminal-3d | Triggers GPU re-rasterization | Text sharpness mutation | agent 3 (user reported, fixed) |
+| Atomic tmux capture (`;` separator) | Race condition between cursor and content | Cursor offset | `[UNVERIFIED]` agent 1 |
+| `tmux resize-window` not `resize-pane` | resize-pane fails without attached client | Silent resize failure | `[UNVERIFIED]` agent 2 |
+| `cp-*` sessions don't accept resize | Managed by claude-proxy with SSH clients | Test only with standalone sessions | agent 3 (confirmed empirically) |
 
 ---
 
@@ -277,24 +277,26 @@ Each entry notes whether the change was due to **misunderstood intent** (agents 
 | `_layoutZ` for Z-slide restore | Stale after user moves card | `_savedZ` captures current Z | **Misunderstood intent.** Agents assumed cards return to layout position. User expected cards to stay where they were put. |
 | Floating overlay controls bar | Positioning unreliable, intercepts header clicks | Controls inline in card header | **Misunderstood constraint.** Originally thought CSS3D DOM couldn't receive button clicks (getBoundingClientRect returns NaN). Testing proved buttons inside headers work fine. |
 | Hardcoded 1280×992 for all cards | Letterboxing, aspect mismatch | `calcCardSize` from tmux cols/rows | **Misunderstood intent.** User expected cards shaped by their terminal content. "You're killing that when you start by forcing all terminals into a forced aspect." |
-| Smooth scroll with CSS translateY | Transform and content update overlap, bounce | No animation, 30ms server response sufficient | **Misunderstood constraint.** 8+ iterations tried. The 30ms server response makes animation unnecessary. |
+| Smooth scroll with CSS translateY | Transform and content update overlap, bounce | No animation, 30ms server response sufficient | **Misunderstood constraint.** `[UNVERIFIED]` agent 1 — 8+ iterations tried. The 30ms server response makes animation unnecessary. |
 
 ---
 
 ## 10. Break Tests
 
-| Mutation | What breaks | Detection |
-|----------|------------|-----------|
-| Remove `syncOrbitFromCamera()` on orbit start | Camera snaps to stale position | Visual: camera jumps |
-| Remove `focusQuatFrom` on focus | Card snaps flat before fly-in | Visual: rotation snap |
-| Change CSS3DObject scale from 0.25 | Text blurs | Visual: fuzzy text |
-| Add per-terminal click handlers | Ctrl+click double-fire | Terminal count wrong |
-| Remove event routing flags | Various click/focus bugs | Multi-focus breaks |
-| Clear `focusedSessions` on deselect | Cards scatter to ring | Visual: cards fly away |
-| Don't delete `_savedZ` on deselect | Z accumulates per cycle | Card creeps toward camera |
-| Use `e.target.closest` for header hits | Wrong card intercepts | Drag fails on overlapping cards |
-| Add border to `.terminal-3d.input-active` | Text sharpness mutation | Visual: text changes on focus switch |
-| Use `resize-pane` instead of `resize-window` | Silent failure | Terminal size unchanged |
+Items tagged `[UNVERIFIED]` were inherited from agent 1/2 resume docs and not independently tested by agent 3. They were true when written but may have drifted.
+
+| Mutation | What breaks | Detection | Verified by |
+|----------|------------|-----------|-------------|
+| Remove `syncOrbitFromCamera()` on orbit start | Camera snaps to stale position | Visual: camera jumps | `[UNVERIFIED]` agent 1 |
+| Remove `focusQuatFrom` on focus | Card snaps flat before fly-in | Visual: rotation snap | `[UNVERIFIED]` agent 1 |
+| Change CSS3DObject scale from 0.25 | Text blurs | Visual: fuzzy text | agent 3 (confirmed) |
+| Add per-terminal click handlers | Ctrl+click double-fire | Terminal count wrong | `[UNVERIFIED]` agent 1 |
+| Remove event routing flags | Various click/focus bugs | Multi-focus breaks | agent 3 (hit multiple times) |
+| Clear `focusedSessions` on deselect | Cards scatter to ring | Visual: cards fly away | agent 3 (discovered and fixed) |
+| Don't delete `_savedZ` on deselect | Z accumulates per cycle | Card creeps toward camera | agent 3 (discovered and fixed) |
+| Use `e.target.closest` for header hits | Wrong card intercepts | Drag fails on overlapping cards | agent 3 (discovered and fixed) |
+| Add border to `.terminal-3d.input-active` | Text sharpness mutation | Visual: text changes on focus switch | agent 3 (user reported, fixed) |
+| Use `resize-pane` instead of `resize-window` | Silent failure | Terminal size unchanged | `[UNVERIFIED]` agent 2 |
 
 ---
 
