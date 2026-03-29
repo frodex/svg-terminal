@@ -172,29 +172,33 @@ function applyFontScale(t) {
   if (!obj) return;
   obj.style.transformOrigin = '0 0';
   obj.style.transform = 'scale(' + t.fontScale + ')';
-  // Adjust object container to prevent overflow
-  obj.style.width = (100 / t.fontScale) + '%';
-  obj.style.height = (936 / t.fontScale) + 'px'; // 936 = 4x content height (992 - 56 header)
+  // Do NOT adjust width/height — let the scaled content overflow.
+  // .terminal-3d has overflow:hidden to clip it.
+  // Clear any stale inline width/height from previous buggy code
+  obj.style.width = '';
+  obj.style.height = '';
 }
 
-// Calculate cols/rows to fill the current card at the current font scale,
-// then resize the PTY via tmux.
-// Calculate optimal cols/rows to fill the terminal's card at the current font scale.
-// Uses the <object>'s rendered bounding rect and SVG cell dimensions.
-// The card is 4x-scaled DOM but the <object> renders the SVG scaled to fit.
-// We need: rendered pixel area / rendered cell pixel size = cols/rows.
+// Calculate optimal cols/rows to fill the terminal's card at the current font scale,
+// then resize the PTY via tmux and reset fontScale to 1.0.
+// At fontScale > 1 (zoomed in), fewer cols/rows are visible — optimize resizes
+// the PTY so the zoomed view fills the card exactly, then resets scale.
 function optimizeTerminalFit(t, sessionName) {
   const renderInfo = getTermRenderInfo(t);
   if (!renderInfo) return;
 
   const scale = t.fontScale || 1.0;
-  // renderInfo.cellW/cellH are in rendered pixels (already account for SVG scaling)
-  // At fontScale=1, these are the normal cell sizes. At fontScale!=1, we want
-  // more/fewer cells to fill the same space.
+  // renderInfo.cols/rows are the current PTY dimensions.
+  // At fontScale, the visible area shows current_cols/fontScale cols.
+  // We want the PTY to have exactly that many cols/rows so it fills the card at scale=1.
   const cols = Math.max(20, Math.round(renderInfo.cols / scale));
   const rows = Math.max(5, Math.round(renderInfo.rows / scale));
 
   t.sendInput({ type: 'resize', cols: cols, rows: rows });
+
+  // Reset font scale — the PTY now has the right dimensions to fill the card
+  t.fontScale = 1.0;
+  applyFontScale(t);
 }
 
 // === Constants ===
