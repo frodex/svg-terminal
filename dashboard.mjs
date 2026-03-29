@@ -491,7 +491,7 @@ function init() {
 
   // Events
   window.addEventListener('resize', onResize);
-  renderer.domElement.addEventListener('mousemove', onMouseMove);
+  document.addEventListener('mousemove', onMouseMove);
   document.addEventListener('mousedown', onMouseDown);
   document.addEventListener('mouseup', onMouseUp);
   renderer.domElement.addEventListener('mouseleave', onMouseLeave);
@@ -563,23 +563,20 @@ function onMouseMove(e) {
     }
 
     if (dragMode === 'moveCard') {
-      // Drag card by title bar — move in screen-projected world space
+      // Drag card by title bar — move in screen-projected world space.
+      // Update targetPos so the animation loop picks it up (don't set css3dObject directly).
       const t = _moveCardSession && terminals.get(_moveCardSession);
       if (t) {
         const vFov = camera.fov * DEG2RAD;
-        // Get card's current Z depth relative to camera
         const worldPos = new THREE.Vector3();
         t.css3dObject.getWorldPosition(worldPos);
         const depthFromCamera = camera.position.z - worldPos.z;
         const visHAtDepth = 2 * depthFromCamera * Math.tan(vFov / 2);
         const px2w = visHAtDepth / window.innerHeight;
-        // Move card position in world space
-        t.currentPos.x += dx * px2w;
-        t.currentPos.y -= dy * px2w;
-        t.targetPos.x = t.currentPos.x;
-        t.targetPos.y = t.currentPos.y;
-        t.css3dObject.position.x = t.currentPos.x;
-        t.css3dObject.position.y = t.currentPos.y;
+        t.targetPos.x += dx * px2w;
+        t.targetPos.y -= dy * px2w;
+        t.morphFrom = { ...t.targetPos };
+        t.morphStart = 0;
       }
       return;
     }
