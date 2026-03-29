@@ -77,6 +77,12 @@ html, body {
   padding: 8px 24px;
   gap: 12px;
   user-select: none;
+  position: relative;
+  z-index: 2;
+  cursor: grab;
+}
+.terminal-3d header:active {
+  cursor: grabbing;
 }
 
 .terminal-3d .dots {
