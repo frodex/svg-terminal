@@ -459,6 +459,7 @@ function calculateFocusedLayout() {
     const wy = -(p._cy - screenH / 2) * px2w;
 
     t.morphFrom = { ...t.currentPos };
+    t._layoutZ = cardZ; // save layout Z for active-card slide
     t.targetPos = { x: wx, y: wy, z: cardZ };
     t.morphStart = now;
     t.focusQuatFrom = t.css3dObject.quaternion.clone();
@@ -1690,12 +1691,37 @@ function addToFocus(sessionName) {
 }
 
 // Set which focused terminal receives input
+// Standard "reading distance" Z — active card slides forward to this depth
+// relative to camera, so text is always the same readable size.
+const READING_Z_OFFSET = 80; // world units forward from the card's layout Z
+
 function setActiveInput(sessionName) {
   if (!focusedSessions.has(sessionName)) return;
+  const prevActive = activeInputSession;
   activeInputSession = sessionName;
   updateFocusStyles();
   document.getElementById('input-target').textContent = sessionName;
   showTermControls(sessionName);
+
+  // Slide previous active card back to its layout Z
+  if (prevActive && prevActive !== sessionName) {
+    const prevT = terminals.get(prevActive);
+    if (prevT && prevT._layoutZ !== undefined) {
+      prevT.targetPos.z = prevT._layoutZ;
+      prevT.morphFrom = { ...prevT.currentPos };
+      prevT.morphStart = clock.getElapsedTime();
+    }
+  }
+
+  // Slide new active card forward to reading distance
+  const t = terminals.get(sessionName);
+  if (t) {
+    // Save the layout Z if we haven't already
+    if (t._layoutZ === undefined) t._layoutZ = t.targetPos.z || 0;
+    t.targetPos.z = t._layoutZ + READING_Z_OFFSET;
+    t.morphFrom = { ...t.currentPos };
+    t.morphStart = clock.getElapsedTime();
+  }
 }
 
 // Update CSS classes for all terminals based on focus state
