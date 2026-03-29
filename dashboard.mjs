@@ -337,19 +337,22 @@ function calculateFocusedLayout() {
   const availW = screenW - SIDEBAR_WIDTH;
   const availH = screenH - STATUS_BAR_H;
 
-  // Build cards with cell counts
+  // Build cards with cell counts — skip user-positioned terminals
   const names = [...focusedSessions];
-  const cards = names.map(name => {
+  const cards = [];
+  for (const name of names) {
     const t = terminals.get(name);
+    if (t && t._userPositioned) continue; // user dragged/resized — don't override
     const cols = t ? t.screenCols || 80 : 80;
     const rows = t ? t.screenRows || 24 : 24;
     const cells = cols * rows;
     const aspect = (cols * SVG_CELL_W) / (rows * SVG_CELL_H);
     const worldW = (t ? t.baseCardW || 1280 : 1280) * 0.25;
     const worldH = (t ? t.baseCardH || 992 : 992) * 0.25;
-    return { name, cols, rows, cells, aspect, worldW, worldH };
-  });
+    cards.push({ name, cols, rows, cells, aspect, worldW, worldH });
+  }
 
+  if (cards.length === 0) return; // all cards user-positioned, nothing to layout
   const totalCells = cards.reduce((sum, c) => sum + c.cells, 0);
   cards.sort((a, b) => b.cells - a.cells);
 
@@ -577,6 +580,7 @@ function onMouseMove(e) {
         t.targetPos.y -= dy * px2w;
         t.morphFrom = { ...t.targetPos };
         t.morphStart = 0;
+        t._userPositioned = true;
       }
       return;
     }
@@ -644,6 +648,7 @@ function onMouseMove(e) {
       // Save as user's preferred size — survives focus/unfocus
       t.baseCardW = newW;
       t.baseCardH = newH;
+      t._userPositioned = true; // prevent layout from overriding user's resize
     }
   }
 }
@@ -695,7 +700,7 @@ function onMouseDown(e) {
         const rt = terminals.get(activeInputSession);
         if (rt) {
           rt._resizeStartW = parseInt(rt.dom.style.width) || 1280;
-          rt._resizeStartH = (parseInt(rt.dom.style.height) || 992) - 56;
+          rt._resizeStartH = (parseInt(rt.dom.style.height) || 992) - HEADER_H;
           rt._resizeStartCols = rt.screenCols || 80;
           rt._resizeStartRows = rt.screenRows || 24;
         }
@@ -793,7 +798,7 @@ function onMouseUp(e) {
       const startCols = t._resizeStartCols || 80;
       const startRows = t._resizeStartRows || 24;
       const cardW = parseInt(t.dom.style.width) || 1280;
-      const cardH = (parseInt(t.dom.style.height) || 992) - 56;
+      const cardH = (parseInt(t.dom.style.height) || 992) - HEADER_H;
       const newCols = Math.max(20, Math.round(startCols * cardW / startW));
       const newRows = Math.max(5, Math.round(startRows * cardH / startH));
       t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
@@ -1229,18 +1234,21 @@ function updateCardForNewSize(t, newCols, newRows) {
   if (newCols === t.screenCols && newRows === t.screenRows) return;
   t.screenCols = newCols;
   t.screenRows = newRows;
+  // Always update base values so unfocus restores to correct size
   const { cardW, cardH } = calcCardSize(newCols, newRows);
   t.baseCardW = cardW;
   t.baseCardH = cardH;
-  // Always update DOM — card must reshape to match new terminal aspect.
-  // During focus, clear the inner scale transform so content fills directly.
+  // When focused: DON'T resize the card. The card is the user's chosen window.
+  // +/- and alt+scroll change cols/rows inside the same card (font size changes).
+  // The SVG re-renders with new cols/rows — text gets bigger/smaller in the same space.
+  if (t.dom.classList.contains('focused')) return;
+  // When unfocused (ring): reshape card to match new terminal aspect
   t.dom.style.width = cardW + 'px';
   t.dom.style.height = cardH + 'px';
   const inner = t.dom.querySelector('.terminal-inner');
   if (inner) {
     inner.style.width = cardW + 'px';
     inner.style.height = cardH + 'px';
-    inner.style.transform = '';
   }
 }
 
@@ -1634,6 +1642,7 @@ function restoreFocusedTerminal(name) {
   }
   const now = clock.getElapsedTime();
   term.dom.classList.remove('faded', 'focused', 'input-active');
+  term._userPositioned = false; // allow layout to manage this card again
   // Restore card to its base calculated size (not CSS default 1280×992)
   const restoreW = term.baseCardW || 1280;
   const restoreH = term.baseCardH || 992;
