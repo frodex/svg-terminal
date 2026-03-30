@@ -1,0 +1,117 @@
+import Database from 'better-sqlite3';
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS users (
+  email TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  linux_user TEXT,
+  provider TEXT,
+  provider_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  approved_by TEXT,
+  can_approve_users INTEGER NOT NULL DEFAULT 0,
+  can_approve_admins INTEGER NOT NULL DEFAULT 0,
+  can_approve_sudo INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  last_login TEXT
+);
+
+CREATE TABLE IF NOT EXISTS provider_links (
+  provider TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  email TEXT NOT NULL REFERENCES users(email),
+  linked_at TEXT NOT NULL,
+  PRIMARY KEY (provider, provider_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_links_email ON provider_links(email);
+`;
+
+export class UserStore {
+  constructor(dbPath) {
+    this.db = new Database(dbPath);
+    this.db.pragma('journal_mode = WAL');
+    this.db.exec(SCHEMA);
+  }
+
+  findByEmail(email) {
+    return this.db.prepare('SELECT * FROM users WHERE email = ?').get(email) || null;
+  }
+
+  findByProvider(provider, providerId) {
+    const link = this.db.prepare(
+      'SELECT email FROM provider_links WHERE provider = ? AND provider_id = ?'
+    ).get(provider, providerId);
+    if (!link) return null;
+    return this.findByEmail(link.email);
+  }
+
+  createPendingUser({ email, displayName, provider, providerId }) {
+    this.db.prepare(
+      "INSERT OR IGNORE INTO users (email, display_name, provider, provider_id, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)"
+    ).run(email, displayName, provider || null, providerId || null, new Date().toISOString());
+    if (provider && providerId) {
+      this.db.prepare(
+        'INSERT OR IGNORE INTO provider_links (provider, provider_id, email, linked_at) VALUES (?, ?, ?, ?)'
+      ).run(provider, providerId, email, new Date().toISOString());
+    }
+  }
+
+  approveUser(email, approvedBy) {
+    this.db.prepare("UPDATE users SET status = 'approved', approved_by = ? WHERE email = ?").run(approvedBy, email);
+  }
+
+  denyUser(email) {
+    this.db.prepare("UPDATE users SET status = 'denied' WHERE email = ?").run(email);
+  }
+
+  listPending() {
+    return this.db.prepare("SELECT * FROM users WHERE status = 'pending' ORDER BY created_at").all();
+  }
+
+  listUsers() {
+    return this.db.prepare('SELECT * FROM users ORDER BY email').all();
+  }
+
+  preApprove(emails, approvedBy) {
+    const stmt = this.db.prepare(
+      "INSERT OR IGNORE INTO users (email, display_name, status, approved_by, created_at) VALUES (?, ?, 'approved', ?, ?)"
+    );
+    const now = new Date().toISOString();
+    for (const email of emails) {
+      stmt.run(email, email.split('@')[0], approvedBy, now);
+    }
+  }
+
+  updateFlags(email, flags) {
+    const sets = [];
+    const vals = [];
+    for (const [key, val] of Object.entries(flags)) {
+      if (['can_approve_users', 'can_approve_admins', 'can_approve_sudo'].includes(key)) {
+        sets.push(key + ' = ?');
+        vals.push(val);
+      }
+    }
+    if (sets.length === 0) return;
+    vals.push(email);
+    this.db.prepare('UPDATE users SET ' + sets.join(', ') + ' WHERE email = ?').run(...vals);
+  }
+
+  setLinuxUser(email, linuxUser) {
+    this.db.prepare('UPDATE users SET linux_user = ? WHERE email = ?').run(linuxUser, email);
+  }
+
+  updateLastLogin(email) {
+    this.db.prepare('UPDATE users SET last_login = ? WHERE email = ?').run(new Date().toISOString(), email);
+  }
+
+  linkProvider(email, provider, providerId) {
+    this.db.prepare(
+      'INSERT OR REPLACE INTO provider_links (provider, provider_id, email, linked_at) VALUES (?, ?, ?, ?)'
+    ).run(provider, providerId, email, new Date().toISOString());
+  }
+
+  close() {
+    this.db.close();
+  }
+}
