@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign In — Claude Proxy</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #1a1a2e; color: #e0e0e0; font-family: system-ui, sans-serif;
+           display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+    .card { background: #16213e; border-radius: 12px; padding: 48px; max-width: 400px; width: 100%;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
+    h1 { font-size: 1.5rem; margin-bottom: 8px; color: #fff; }
+    p { color: #999; margin-bottom: 32px; font-size: 0.9rem; }
+    .btn { display: block; width: 100%; padding: 14px; margin-bottom: 12px; border: none;
+           border-radius: 8px; font-size: 1rem; cursor: pointer; text-align: center;
+           text-decoration: none; color: #fff; transition: opacity 0.2s; }
+    .btn:hover { opacity: 0.85; }
+    .btn-google { background: #4285f4; }
+    .btn-github { background: #333; }
+    .btn-microsoft { background: #00a4ef; }
+    .error { background: #3d1515; color: #ff6b6b; padding: 12px; border-radius: 8px;
+             margin-bottom: 16px; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Claude Proxy</h1>
+    <p>Sign in to access terminal sessions</p>
+    <div id="error" class="error" style="display:none"></div>
+    <a class="btn btn-google" href="/auth/google">Sign in with Google</a>
+    <a class="btn btn-github" href="/auth/github">Sign in with GitHub</a>
+    <a class="btn btn-microsoft" href="/auth/microsoft">Sign in with Microsoft</a>
+  </div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const err = params.get('error');
+    if (err) {
+      const el = document.getElementById('error');
+      el.textContent = err;
+      el.style.display = 'block';
+    }
+  </script>
+</body>
+</html>

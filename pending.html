@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Access Pending — Claude Proxy</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #1a1a2e; color: #e0e0e0; font-family: system-ui, sans-serif;
+           display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+    .card { background: #16213e; border-radius: 12px; padding: 48px; max-width: 480px; width: 100%;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4); text-align: center; }
+    h1 { font-size: 1.5rem; margin-bottom: 8px; color: #fff; }
+    .icon { font-size: 3rem; margin-bottom: 16px; }
+    p { color: #999; margin-bottom: 16px; font-size: 0.9rem; line-height: 1.5; }
+    .email { color: #4285f4; font-weight: 600; }
+    .btn { display: inline-block; padding: 12px 24px; margin-top: 16px; border: 1px solid #444;
+           border-radius: 8px; color: #e0e0e0; background: transparent; cursor: pointer;
+           font-size: 0.9rem; text-decoration: none; transition: background 0.2s; }
+    .btn:hover { background: #1e3a5f; }
+    .status { margin-top: 16px; color: #999; font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">&#x23F3;</div>
+    <h1>Access Requested</h1>
+    <p>Your request to access Claude Proxy has been submitted.</p>
+    <p>Signed in as <span class="email" id="email"></span></p>
+    <p>An administrator will review your request. You'll be able to access the dashboard once approved.</p>
+    <button class="btn" id="check">Check Status</button>
+    <div class="status" id="status"></div>
+  </div>
+  <script>
+    var params = new URLSearchParams(location.search);
+    document.getElementById('email').textContent = params.get('email') || '';
+    document.getElementById('check').addEventListener('click', async function() {
+      var statusEl = document.getElementById('status');
+      statusEl.textContent = 'Checking...';
+      try {
+        var res = await fetch('/auth/me');
+        if (res.ok) {
+          var data = await res.json();
+          if (data.status === 'approved') { location.href = '/'; }
+          else { statusEl.textContent = 'Still pending. Check back soon.'; }
+        } else { statusEl.textContent = 'Still pending. Check back soon.'; }
+      } catch(e) { statusEl.textContent = 'Could not check status.'; }
+    });
+  </script>
+</body>
+</html>
