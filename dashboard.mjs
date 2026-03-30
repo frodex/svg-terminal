@@ -2547,6 +2547,27 @@ function getSelectedTextFromSvg(t) {
   }
 }
 
+// Move the terminal cursor to a target position by sending arrow key presses.
+// Only works on the same line (horizontal movement) — moving across lines is
+// unpredictable because programs handle Up/Down differently.
+function moveCursorTo(t, cursorPos, targetPos) {
+  // Only move horizontally on the same row as the cursor
+  if (targetPos.row !== cursorPos.y) return;
+
+  const dx = targetPos.col - cursorPos.x;
+  if (dx === 0) return;
+
+  const key = dx > 0 ? 'Right' : 'Left';
+  const steps = Math.abs(dx);
+  // Cap at reasonable number to avoid flooding
+  const maxSteps = 80;
+  const actualSteps = Math.min(steps, maxSteps);
+
+  for (let i = 0; i < actualSteps; i++) {
+    t.sendInput({ type: 'input', specialKey: key });
+  }
+}
+
 function clearSel() {
   selTerminal = null;
   selStart = null;
@@ -2624,7 +2645,23 @@ document.addEventListener('mouseup', function(e) {
   // Only keep selection if mouse actually moved (not just a click)
   const isRealSelection = selStart && selEnd && (selStart.row !== selEnd.row || selStart.col !== selEnd.col);
   if (!isRealSelection) {
-    // Just a click, not a drag — clear everything
+    // Just a click, not a drag — try to move cursor to clicked position.
+    // Fetch current cursor from server (more reliable than _lastCursor which
+    // depends on inputWs having received a screen/delta event).
+    if (selStart && activeInputSession) {
+      const t = terminals.get(activeInputSession);
+      if (t) {
+        const clickedCell = selStart;
+        fetch('/api/pane?session=' + encodeURIComponent(activeInputSession) + '&pane=0')
+          .then(r => r.json())
+          .then(data => {
+            if (data && data.cursor) {
+              moveCursorTo(t, data.cursor, clickedCell);
+            }
+          })
+          .catch(() => {});
+      }
+    }
     clearSel();
     selTerminal = null;
     return;
