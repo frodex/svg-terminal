@@ -110,7 +110,7 @@ async function capturePane(session, pane) {
   // is the captured screen.
   const combined = await tmuxAsync(
     'display-message', '-p', '-t', target,
-    '#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{pane_title}',
+    '#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{pane_pid} #{history_size} #{pane_dead} #{pane_current_command} #{pane_current_path} #{pane_title}',
     ';', 'capture-pane', '-p', '-e', '-t', target
   );
 
@@ -121,14 +121,20 @@ async function capturePane(session, pane) {
   const height = parseInt(metaParts[1], 10);
   const cursorX = parseInt(metaParts[2], 10);
   const cursorY = parseInt(metaParts[3], 10);
-  const title = metaParts.slice(4).join(' ');
+  const pid = parseInt(metaParts[4], 10);
+  const historySize = parseInt(metaParts[5], 10);
+  const dead = metaParts[6] === '1';
+  const command = metaParts[7] || '';
+  const path = metaParts[8] || '';
+  const title = metaParts.slice(9).join(' ');
 
   // Screen content starts at line 1 (after metadata line)
   const rawLines = allLines.slice(1);
   if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop();
   const lines = rawLines.map((line) => ({ spans: parseLine(line) }));
 
-  return { width, height, cursor: { x: cursorX, y: cursorY }, title, lines };
+  return { width, height, cursor: { x: cursorX, y: cursorY }, title,
+           path, command, pid, historySize, dead, lines };
 }
 
 // Capture pane at a scroll offset (lines above the bottom).
@@ -136,12 +142,17 @@ async function capturePane(session, pane) {
 async function capturePaneAt(session, pane, offset) {
   const target = session + ':' + pane;
   const metaRaw = await tmuxAsync('display-message', '-p', '-t', target,
-    '#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{pane_title}');
+    '#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{pane_pid} #{history_size} #{pane_dead} #{pane_current_command} #{pane_current_path} #{pane_title}');
 
   const metaParts = metaRaw.trim().split(' ');
   const width = parseInt(metaParts[0], 10);
   const height = parseInt(metaParts[1], 10);
-  const title = metaParts.slice(4).join(' ');
+  const pid = parseInt(metaParts[4], 10);
+  const historySize = parseInt(metaParts[5], 10);
+  const dead = metaParts[6] === '1';
+  const command = metaParts[7] || '';
+  const path = metaParts[8] || '';
+  const title = metaParts.slice(9).join(' ');
 
   // Capture a window of 'height' lines shifted up by 'offset' lines.
   // tmux line 0 = first visible line, negative = scrollback history.
@@ -157,7 +168,8 @@ async function capturePaneAt(session, pane, offset) {
   const lines = rawLines.map((line) => ({ spans: parseLine(line) }));
 
   // Cursor not meaningful when viewing history
-  return { width, height, cursor: { x: -1, y: -1 }, title, lines };
+  return { width, height, cursor: { x: -1, y: -1 }, title,
+           path, command, pid, historySize, dead, lines };
 }
 
 async function handlePane(req, res, params) {

@@ -211,6 +211,24 @@ test('WebSocket input sends keys and receives update', async () => {
   ws.close();
 });
 
+test('GET /api/pane returns metadata fields', async () => {
+  execFileSync('tmux', ['new-session', '-d', '-s', 'meta-test', '-x', '80', '-y', '24']);
+  await new Promise(r => setTimeout(r, 500));
+  try {
+    const res = await fetch(`${BASE}/api/pane?session=meta-test&pane=0`);
+    const data = await res.json();
+    assert.ok('path' in data, 'response has path field');
+    assert.ok('command' in data, 'response has command field');
+    assert.ok('pid' in data, 'response has pid field');
+    assert.ok('historySize' in data, 'response has historySize field');
+    assert.ok('dead' in data, 'response has dead field');
+    assert.equal(typeof data.pid, 'number');
+    assert.equal(typeof data.dead, 'boolean');
+  } finally {
+    execFileSync('tmux', ['kill-session', '-t', 'meta-test'], { stdio: 'ignore' });
+  }
+});
+
 test('WebSocket resize message is processed by server', async () => {
   // This test verifies the server processes resize messages without error.
   // Note: tmux may not actually change dimensions if the pane is attached to a
