@@ -2224,17 +2224,7 @@ document.addEventListener('keydown', function(e) {
   // Any keystroke resets scroll to live view
   t.scrollReset();
 
-  // Ctrl+C: if text is selected, copy instead of sending C-c to terminal
-  if (e.ctrlKey && e.key.toLowerCase() === 'c' && selStart) {
-    const text = getSelectedTextFromSvg(t);
-    if (text) {
-      copyToClipboard(text);
-    }
-    clearSel();
-    return;
-  }
-
-  // Ctrl combos (C-c only reaches here if no selection)
+  // Ctrl combos — selection is auto-copied on mouseup, no persistent selection to check
   if (e.ctrlKey && e.key.length === 1) {
     t.sendInput({ type: 'input', keys: e.key.toLowerCase(), ctrl: true });
     return;
@@ -2558,10 +2548,22 @@ function moveCursorTo(t, cursorPos, targetPos) {
 }
 
 function clearSel() {
+  // Clear SVG sel-layer rects via contentDocument (selOverlay is unreliable)
+  if (activeInputSession) {
+    var ct = terminals.get(activeInputSession);
+    if (ct) {
+      var layer = getSelOverlay(ct);
+      if (layer) while (layer.firstChild) layer.removeChild(layer.firstChild);
+    }
+  }
+  // Also try the selTerminal if different
+  if (selTerminal) {
+    var layer2 = getSelOverlay(selTerminal);
+    if (layer2) while (layer2.firstChild) layer2.removeChild(layer2.firstChild);
+  }
   selTerminal = null;
   selStart = null;
   selEnd = null;
-  if (selOverlay) selOverlay.innerHTML = '';
 }
 
 // Clipboard write with fallback for non-HTTPS contexts
@@ -2610,11 +2612,22 @@ document.addEventListener('mousedown', function(e) {
   const t = terminals.get(activeInputSession);
   if (!t) return;
 
+  // Don't start selection if click is outside the focused terminal's card body
+  var selObj = t.dom ? t.dom.querySelector('object') : null;
+  if (selObj) {
+    var selObjRect = selObj.getBoundingClientRect();
+    if (e.clientX < selObjRect.left || e.clientX > selObjRect.right ||
+        e.clientY < selObjRect.top || e.clientY > selObjRect.bottom) return;
+  }
+
   const cell = screenToCell(e, t);
   if (!cell) return;
 
   e.preventDefault();
   e.stopPropagation();
+  // Store pixel start for minimum drag distance check
+  t._selDragStartX = e.clientX;
+  t._selDragStartY = e.clientY;
   selTerminal = t;
   selStart = cell;
   selEnd = cell;
@@ -2631,24 +2644,33 @@ document.addEventListener('mouseup', function(e) {
   if (!selTerminal || !selStart) return;
   selEnd = screenToCell(e, selTerminal);
 
-  // Only keep selection if mouse actually moved (not just a click)
-  const isRealSelection = selStart && selEnd && (selStart.row !== selEnd.row || selStart.col !== selEnd.col);
+  // Minimum drag distance — prevent accidental 1-char selections from clicks.
+  // Require > 1.5 cell widths of pixel movement before treating as a real selection.
+  var isRealSelection = false;
+  var t2 = terminals.get(activeInputSession);
+  if (selStart && selEnd && t2) {
+    var dx = e.clientX - (t2._selDragStartX || 0);
+    var dy = e.clientY - (t2._selDragStartY || 0);
+    var pixelDist = Math.sqrt(dx * dx + dy * dy);
+    var renderInfo = getTermRenderInfo(t2);
+    var minDragPx = renderInfo ? renderInfo.cellW * 1.5 : 15;
+    isRealSelection = pixelDist > minDragPx;
+  }
+
   if (!isRealSelection) {
     // Just a click, not a drag — try to move cursor to clicked position.
-    // Fetch current cursor from server (more reliable than _lastCursor which
-    // depends on _screenCallback having received a screen/delta event).
     if (selStart && activeInputSession) {
-      const t = terminals.get(activeInputSession);
-      if (t) {
-        const clickedCell = selStart;
+      var ct = terminals.get(activeInputSession);
+      if (ct) {
+        var clickedCell = selStart;
         fetch('/api/pane?session=' + encodeURIComponent(activeInputSession) + '&pane=0')
-          .then(r => r.json())
-          .then(data => {
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
             if (data && data.cursor) {
-              moveCursorTo(t, data.cursor, clickedCell);
+              moveCursorTo(ct, data.cursor, clickedCell);
             }
           })
-          .catch(() => {});
+          .catch(function() {});
       }
     }
     clearSel();
@@ -2656,34 +2678,46 @@ document.addEventListener('mouseup', function(e) {
     return;
   }
 
+  // Real selection — draw final highlight, copy to clipboard, then fade out
   if (selEnd) drawSelHighlight(selTerminal);
 
-  if (isRealSelection) {
-    const text = getSelectedTextFromSvg(selTerminal);
-    if (text) {
-      copyToClipboard(text);
+  var text = getSelectedTextFromSvg(selTerminal);
+  if (text) {
+    copyToClipboard(text);
+  }
+
+  // Flash bright then fade out over 2 seconds
+  var fadeTerminal = selTerminal;
+  var layer = getSelOverlay(fadeTerminal);
+  if (layer && layer.children.length > 0) {
+    // Flash to bright
+    for (var fi = 0; fi < layer.children.length; fi++) {
+      layer.children[fi].setAttribute('fill', 'rgba(200, 200, 255, 0.6)');
     }
+    // Fade out
+    var fadeStart = performance.now();
+    function fadeSel() {
+      var elapsed = performance.now() - fadeStart;
+      var progress = Math.min(1, elapsed / 2000);
+      var opacity = 0.6 * (1 - progress);
+      for (var fj = 0; fj < layer.children.length; fj++) {
+        layer.children[fj].setAttribute('opacity', String(opacity));
+      }
+      if (progress < 1) {
+        requestAnimationFrame(fadeSel);
+      } else {
+        clearSel();
+      }
+    }
+    requestAnimationFrame(fadeSel);
+  } else {
+    clearSel();
   }
 
   // Stop the selection drag — critical. Without this, mousemove keeps updating selEnd
   // after mouseup, causing the "keeps dragging after release" bug.
   selTerminal = null;
-  // Keep selStart/selEnd/highlight visible for Ctrl+C. clearSel() on next keystroke.
   suppressNextClick = true;
-});
-
-// Clear selection on any keystroke EXCEPT selection-related keys.
-// Ctrl+C copy is handled in the main keystroke handler above — not here.
-document.addEventListener('keydown', function(e) {
-  // Don't clear on shift+arrow (keyboard selection extending)
-  if (e.shiftKey && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
-  // Don't clear on Ctrl+C — the main handler copies the selection
-  if (e.ctrlKey && e.key.toLowerCase() === 'c') return;
-  // Don't clear on bare modifiers
-  if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
-  if (selStart && !e.altKey) {
-    clearSel();
-  }
 });
 
 // === Start ===
