@@ -6,7 +6,7 @@
 ## Project Identity
 
 **Repo:** svg-terminal (`/srv/svg-terminal`) — github.com/frodex/svg-terminal
-**Branch:** dev
+**Branch:** camera-only-test (active), dev (integration target)
 **What this is:** A standalone SVG-based terminal viewer with a 3D dashboard. Renders live tmux sessions as vector graphics. First consumer: claude-proxy. Future: PHAT TOAD hierarchical agent dashboard.
 
 ---
@@ -30,12 +30,17 @@ Key requirement: terminals should be oriented in 3D (not flat/locked), with lazy
 [2026-03-27] Use journaling, sessions, and bibliography skills for all design/research phases.
 [2026-03-27] Branch strategy: dev (active work) → test (staging/QA) → main (production releases). Repo: github.com/frodex/svg-terminal
 [2026-03-27] Public dev preview: needs port remapping from 51045 to whatever the brainstorm companion starts on (port not configurable)
+[2026-03-29] New tmux sessions use `trap '' TSTP` to ignore Ctrl+Z (SIGTSTP). Prevents accidental server suspension. Existing sessions unprotected.
+[2026-03-29] QC procedure: use checkerboard test pattern (alternating █ and ─, offset each row) at various card sizes, terminal sizes, and aspect ratios to verify overlay alignment. Drift is visible as pattern/overlay phase mismatch.
 
 ---
 
 ## Key Technical Decisions
 
-[2026-03-27] Zero npm dependencies for server — Node built-in `http` module only
+[2026-03-27] Zero npm dependencies for server — Node built-in `http` module only (relaxed 2026-03-30: added better-sqlite3, openid-client for auth)
+[2026-03-30] Auth architecture: server.mjs owns sessions/cookies, calls claude-proxy API for sessions only. OAuth/user-store/provisioner live in svg-terminal.
+[2026-03-30] User approval model: pending→approved→Linux account. Tiered: can_approve_users/admins/sudo. Root delegates. Pre-approve by email.
+[2026-03-30] Auth disabled when no OAuth env vars set (dev mode returns root user for all requests)
 [2026-03-27] SVG rendering: `dominant-baseline: text-before-edge`, explicit x-positioned `<tspan>` per span, runtime font measurement via getBBox()
 [2026-03-27] Three-tier polling: >=4x6px char cells → 150ms, <4x6px → 2000ms, offscreen → stopped
 [2026-03-27] Embedded FiraCode Nerd Font Mono subset (31KB woff2, base64 data URI)
@@ -66,6 +71,60 @@ Key requirement: terminals should be oriented in 3D (not flat/locked), with lazy
 ---
 
 ## Session History (most recent first)
+
+### Session 2026-03-30 — Claude-Proxy Integration + Login/User Management
+**Part 1: WebSocket Integration**
+- Communicated directly with claude-proxy agent via WebSocket (protocol spec + sign-off)
+- Wrote integration spec + implemented 8 tasks:
+  - Normalized delta/key/scroll formats to claude-proxy standard
+  - WebSocket proxy for cp-* sessions working
+  - Session 8 renders and accepts input
+- 18 server + 23 E2E tests passing
+
+**Part 2: Login & User Management (overnight build)**
+- Brainstormed with user: OAuth login, request-access flow, admin UI
+- Key decisions:
+  - svg-terminal IS the web UI, claude-proxy is API + SSH only
+  - Codebases merging — svg-terminal leads
+  - OAuth/user-store/provisioner ported from claude-proxy into svg-terminal
+  - Tiered approval: can_approve_users/admins/sudo, root delegates
+  - Pre-approve by email for classroom enrollment
+  - Auth disabled in dev mode (no OAuth env vars)
+- Wrote spec: docs/superpowers/specs/2026-03-30-login-and-user-management-design.md
+- Wrote plan: docs/superpowers/plans/2026-03-30-login-and-user-management.md
+- Implemented all 8 tasks:
+  - session-cookie.mjs (HMAC-SHA256)
+  - user-store.mjs (SQLite: users + provider_links)
+  - provisioner.mjs (useradd, groupadd, generateUsername)
+  - auth.mjs (Google/Microsoft OIDC + GitHub OAuth)
+  - login.html, pending.html, admin.html, admin-client.mjs
+  - server.mjs wired with auth middleware + all routes
+- Tests: 18 server + 16 auth + 23 E2E = all passing
+- Pages live: /login, /pending, /admin, /auth/me
+- Auth disabled in dev (AUTH_ENABLED=false, no env vars set)
+
+**Part 3: Single WebSocket Architecture (in progress)**
+- Discovered root cause of scroll/keystroke bugs: dual WebSocket per terminal
+  - WS #1 inside SVG `<object>` (rendering), WS #2 opened by dashboard (input)
+  - For proxied sessions, two independent bridges — scroll/input don't share state
+- History: dual WS was a patch from read-only SVG cards + input bar era. Should have been removed when direct keystroke capture was added.
+- Attempted and rejected approaches:
+  - Inline SVG (Approach 3): font metrics differ between inline and `<object>` contexts. Days of calibration lost.
+  - HTML text overlay: same font mismatch — 0.248px/char drift, ~20px by column 80
+  - Confirmed: HTML text degrades under CSS3D transforms, SVG stays crisp — `<object>` SVG is correct for rendering
+- Verified via puppeteer POC: contentWindow function calls work on SVG `<object>` (set/call functions, callbacks, postMessage)
+- Architecture reviewed by two subagents, both confirmed contentWindow bridge is the right approach
+- Plan written: docs/superpowers/plans/2026-03-30-single-websocket.md
+- Task 1 complete: terminal.svg exports (sendToWs, _wsReady, _screenCallback)
+- Tasks 2-4 in progress
+
+**Still needed:**
+- Complete single-WS tasks 2-4 (sendInput routing, callback registration, remove inputWs)
+- Configure real OAuth credentials (env vars)
+- Test full OAuth flow end-to-end with a real provider
+- Test provisioning (useradd) with a real approval
+- Repo consolidation decision (svg-terminal + claude-proxy)
+- Branch: camera-only-test
 
 ### Session 2026-03-28 — Interactive Terminals (WebSocket)
 - Converted all tmux calls to async (execFileSync → tmuxAsync)

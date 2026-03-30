@@ -278,6 +278,9 @@ Each entry notes whether the change was due to **misunderstood intent** (agents 
 | Floating overlay controls bar | Positioning unreliable, intercepts header clicks | Controls inline in card header | **Misunderstood constraint.** Originally thought CSS3D DOM couldn't receive button clicks (getBoundingClientRect returns NaN). Testing proved buttons inside headers work fine. |
 | Hardcoded 1280×992 for all cards | Letterboxing, aspect mismatch | `calcCardSize` from tmux cols/rows | **Misunderstood intent.** User expected cards shaped by their terminal content. "You're killing that when you start by forcing all terminals into a forced aspect." |
 | Smooth scroll with CSS translateY | Transform and content update overlap, bounce | No animation, 30ms server response sufficient | **Misunderstood constraint.** `[UNVERIFIED]` agent 1 — 8+ iterations tried. The 30ms server response makes animation unnecessary. |
+| Inline SVG (replace `<object>`) | Font metrics differ between inline SVG and `<object>` isolated document. getBBox() returns 9.13x21.66 inline vs 8.5x25.5 in `<object>` for same font at same size. Cursor drifts, backgrounds misaligned. | Keep `<object>` isolation, use contentWindow bridge for input | **Misunderstood constraint.** HTML and SVG rendering contexts produce different font measurements. The `<object>` isolation isn't just for font loading — it creates the rendering context that makes the font calibration work. agent 4 (2026-03-30) |
+| HTML text overlay on SVG `<object>` | HTML monospace character advance differs from SVG `<tspan>` explicit x-positioning. 0.248px/char drift, ~20px off by column 80. Red text flashing test proved misalignment. | Same as above — SVG is the sole renderer | **Misunderstood constraint.** Even with same font at same size, HTML `getBoundingClientRect()` and SVG `getBBox()` produce different results. Fundamental browser rendering engine difference, not a calibration problem. agent 4 (2026-03-30) |
+| Dual WebSocket per terminal (inputWs) | Scroll broken on proxied sessions, keystroke ordering under load, silent connection death | Single WebSocket via contentWindow.sendToWs bridge | **Leftover patch.** Dual WS was added when SVG cards were read-only with a text input bar. When direct keystroke capture replaced the input bar, the second WS should have been removed. Never was. agent 4 (2026-03-30) |
 
 ---
 
@@ -325,37 +328,48 @@ Items tagged `[UNVERIFIED]` were inherited from agent 1/2 resume docs and not in
 
 ### 12.1 Status
 
-Architecture agreed in council protocol (council/issue_01). Integration docs at `/srv/claude-proxy/docs/integration/`. Phase A (screen-renderer, PtyMultiplexer, api-server on port 3101) built by claude-proxy side.
+Session discovery works — `server.mjs` merges local tmux + `GET localhost:3101/api/sessions` (uncommitted). WebSocket proxy for claude-proxy sessions is the next step.
 
-### 12.2 Blocker
+### 12.2 Integration Approach (2026-03-30)
 
-Integration docs describe the OLD dashboard architecture. Must be revised to reflect:
-- Camera-only focus
-- Frustum layout
-- Card factory (terminal + browser)
-- New WebSocket handling (updateCardForNewSize)
-- Coordinate-based event handling
+**Spec:** `docs/superpowers/specs/2026-03-30-claude-proxy-websocket-integration-design.md`
+
+**Strategy:** Code to the claude-proxy protocol standard. Adapter for legacy tmux-direct sessions. Dashboard and terminal.svg speak one protocol — the claude-proxy format. `server.mjs` acts as adapter:
+
+- **claude-proxy sessions:** WebSocket proxy bridges `/ws/terminal?session=X` to `ws://localhost:3101/api/session/:id/stream`
+- **Local tmux sessions:** Existing `handleTerminalWs` with format translation to match claude-proxy protocol
+
+**Protocol normalization (adopt claude-proxy as canonical):**
+- Delta: `changed[idx] = { spans: [...] }` (wrapped, not raw array)
+- Input: Browser key names (`Backspace`, `Delete`, `PageUp`), not tmux names (`BSpace`, `DC`, `PgUp`)
+- Ctrl combos: `{ keys: "c", ctrl: true }`, not `{ specialKey: "C-c" }`
+- Scroll: `{ type: "scroll", offset: N }`, not `{ type: "input", scrollTo: N }`
+
+**Verified with claude-proxy agent (2026-03-30):**
+- No auth needed for localhost WebSocket
+- `ws://localhost:3101/api/session/{id}/stream` — id is full tmux id
+- Delta, input, resize, scroll formats confirmed against `src/api-server.ts`
 
 ### 12.3 Phases
 
-- Phase B: Adapt svg-terminal client to claude-proxy API endpoints
+- Phase B (in progress): WebSocket proxy + protocol normalization in server.mjs, dashboard.mjs, terminal.svg
 - Phase C: Merge, QC, code style unification
+- Phase D (future): Remove server.mjs entirely — claude-proxy serves static files and all sessions
 
 ---
 
 ## 13. Roadmap
 
 ### Now
-- B1: Fix selection overlay alignment (screenToCardCoords)
-- F1: Merge camera-only-test → dev
-- F2: Test URL detection + browser cards
-- D1: Handoff doc cleanup
+- I1: claude-proxy WebSocket integration (spec written, Phase B)
+- F1: Merge camera-only-test → dev (after I1 validated)
 
 ### Next
+- B1: Fix selection overlay alignment (screenToCardCoords)
+- F2: Test URL detection + browser cards
 - F3: localStorage persistence (save/restore card prefs)
 - F4: Big bang startup animation (size morph)
 - F5: Functional dots (close/minimize/optimize)
-- I1: claude-proxy integration (after doc revision)
 
 ### Later
 - F6: ThinkOrSwim workspace system (named scenes, color tags)
