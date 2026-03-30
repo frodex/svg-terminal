@@ -927,8 +927,51 @@ document.addEventListener('keydown', function(e) {
 document.addEventListener('keyup', function(e) {
   if (e.key === 'Control') ctrlHeld = false;
   if (e.key === 'Alt') altHeld = false;
+
+  // Shift release = keyboard selection complete (same lifecycle as mouseup)
+  if (e.key === 'Shift' && selMode === 'keyboard' && selStart && selEnd) {
+    var kbT = activeInputSession ? terminals.get(activeInputSession) : null;
+    if (!kbT) { clearSel(); selMode = null; return; }
+
+    // Auto-copy to clipboard
+    var kbText = getSelectedTextFromSvg(kbT);
+    if (kbText) copyToClipboard(kbText);
+
+    // Flash bright then fade out over 2 seconds
+    var kbLayer = getSelOverlay(kbT);
+    if (kbLayer && kbLayer.children.length > 0) {
+      for (var ki = 0; ki < kbLayer.children.length; ki++) {
+        kbLayer.children[ki].setAttribute('fill', 'rgba(200, 200, 255, 0.6)');
+      }
+      selMode = 'keyboard-fading';
+      var kbFadeStart = performance.now();
+      function fadeKbSel() {
+        var kbElapsed = performance.now() - kbFadeStart;
+        var kbProgress = Math.min(1, kbElapsed / 2000);
+        var kbOpacity = 0.6 * (1 - kbProgress);
+        for (var kj = 0; kj < kbLayer.children.length; kj++) {
+          kbLayer.children[kj].setAttribute('opacity', String(kbOpacity));
+        }
+        if (kbProgress < 1) {
+          requestAnimationFrame(fadeKbSel);
+        } else {
+          if (selMode === 'keyboard-fading') {
+            clearSel();
+            selMode = null;
+          }
+        }
+      }
+      requestAnimationFrame(fadeKbSel);
+    } else {
+      clearSel();
+      selMode = null;
+    }
+  }
 });
-window.addEventListener('blur', function() { ctrlHeld = false; altHeld = false; });
+window.addEventListener('blur', function() {
+  ctrlHeld = false; altHeld = false;
+  if (selMode === 'keyboard') { clearSel(); selMode = null; }
+});
 
 let _zoomedSession = null; // which terminal is currently zoomed in multi-focus
 
@@ -2147,8 +2190,16 @@ document.addEventListener('keydown', function(e) {
   // Don't interfere with bare modifier presses
   if (e.key === 'Control' || e.key === 'Shift' || e.key === 'Alt' || e.key === 'Meta') return;
 
-  // Escape: unfocus terminal (handled by existing onKeyDown)
-  if (e.key === 'Escape') return;
+  // Escape: clear keyboard selection first, then unfocus
+  if (e.key === 'Escape') {
+    if (selMode === 'keyboard' || selMode === 'keyboard-fading') {
+      clearSel();
+      selMode = null;
+      e.preventDefault();
+      return;
+    }
+    return;
+  }
 
   // Shift+Tab: cycle focused terminals (handled by onKeyDown)
   if (e.key === 'Tab' && e.shiftKey && focusedSessions.size > 1) return;
@@ -2200,6 +2251,7 @@ document.addEventListener('keydown', function(e) {
     r = Math.max(0, Math.min(r, rows - 1));
     c = Math.max(0, Math.min(c, cols - 1));
     selEnd = { row: r, col: c };
+    selMode = 'keyboard';
 
     // Draw the highlight — get render info for positioning
     const renderInfo = getTermRenderInfo(t);
@@ -2263,6 +2315,7 @@ let selTerminal = null;
 let selStart = null;  // { row, col }
 let selEnd = null;
 let selOverlay = null; // DOM element for selection highlight
+let selMode = null;    // 'mouse' | 'keyboard' | 'mouse-fading' | 'keyboard-fading' | null
 
 function getSelOverlay(t) {
   // Selection overlay lives INSIDE the SVG document as a <g> layer.
@@ -2625,9 +2678,14 @@ document.addEventListener('mousedown', function(e) {
 
   e.preventDefault();
   e.stopPropagation();
+  // Clear any existing keyboard selection
+  if (selMode === 'keyboard' || selMode === 'keyboard-fading') {
+    clearSel();
+  }
   // Store pixel start for minimum drag distance check
   t._selDragStartX = e.clientX;
   t._selDragStartY = e.clientY;
+  selMode = 'mouse';
   selTerminal = t;
   selStart = cell;
   selEnd = cell;
@@ -2696,6 +2754,7 @@ document.addEventListener('mouseup', function(e) {
     }
     // Fade out
     var fadeStart = performance.now();
+    selMode = 'mouse-fading';
     function fadeSel() {
       var elapsed = performance.now() - fadeStart;
       var progress = Math.min(1, elapsed / 2000);
@@ -2706,12 +2765,17 @@ document.addEventListener('mouseup', function(e) {
       if (progress < 1) {
         requestAnimationFrame(fadeSel);
       } else {
-        clearSel();
+        // Don't clear if keyboard selection started during mouse fade
+        if (selMode === 'mouse-fading') {
+          clearSel();
+          selMode = null;
+        }
       }
     }
     requestAnimationFrame(fadeSel);
   } else {
     clearSel();
+    selMode = null;
   }
 
   // Stop the selection drag — critical. Without this, mousemove keeps updating selEnd
