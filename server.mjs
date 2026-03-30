@@ -8,6 +8,10 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execFile as execFileCb } from 'node:child_process';
 import { parseLine } from './sgr-parser.mjs';
 import { WebSocketServer } from 'ws';
+import { createSessionCookie, validateSessionCookie } from './session-cookie.mjs';
+import { UserStore } from './user-store.mjs';
+import { getAuthUrlAsync, handleCallback, getSupportedProviders } from './auth.mjs';
+import { createSystemAccount, addToGroup, generateUsername, ensureCpUsersGroup } from './provisioner.mjs';
 
 // ---------------------------------------------------------------------------
 // Async tmux helper
@@ -33,6 +37,28 @@ for (let i = 0; i < args.length; i++) {
     port = Number(args[i + 1]);
     break;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Auth config
+// ---------------------------------------------------------------------------
+
+const AUTH_SECRET = process.env.AUTH_SECRET || 'dev-mode-secret-change-in-production!!';
+const COOKIE_NAME = 'cp_session';
+const COOKIE_MAX_AGE = 86400;
+const AUTH_PROVIDERS = {
+  google: process.env.GOOGLE_CLIENT_ID ? { clientId: process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_CLIENT_SECRET } : null,
+  github: process.env.GITHUB_CLIENT_ID ? { clientId: process.env.GITHUB_CLIENT_ID, clientSecret: process.env.GITHUB_CLIENT_SECRET } : null,
+  microsoft: process.env.MICROSOFT_CLIENT_ID ? { clientId: process.env.MICROSOFT_CLIENT_ID, clientSecret: process.env.MICROSOFT_CLIENT_SECRET, tenant: process.env.MICROSOFT_TENANT } : null,
+};
+const AUTH_ENABLED = Object.values(AUTH_PROVIDERS).some(v => v !== null);
+
+let userStore = null;
+if (AUTH_ENABLED) {
+  mkdirSync(new URL('data', import.meta.url).pathname, { recursive: true });
+  const DB_PATH = process.env.USER_DB_PATH || new URL('data/users.db', import.meta.url).pathname;
+  userStore = new UserStore(DB_PATH);
+  try { ensureCpUsersGroup(); } catch {}
 }
 
 // ---------------------------------------------------------------------------
@@ -550,12 +576,202 @@ function handleProxy(req, res, params) {
 }
 
 // ---------------------------------------------------------------------------
+// Auth helpers
+// ---------------------------------------------------------------------------
+
+function parseCookie(req) {
+  const header = req.headers.cookie || '';
+  const match = header.match(new RegExp(COOKIE_NAME + '=([^;]+)'));
+  return match ? match[1] : null;
+}
+
+function getAuthUser(req) {
+  if (!AUTH_ENABLED) return { email: 'root@localhost', status: 'approved', linux_user: 'root',
+    display_name: 'Development', can_approve_users: 1, can_approve_admins: 1, can_approve_sudo: 1 };
+  const token = parseCookie(req);
+  if (!token) return null;
+  const payload = validateSessionCookie(token, AUTH_SECRET);
+  if (!payload) return null;
+  return userStore.findByEmail(payload.email);
+}
+
+function requireAuth(req, res) {
+  const user = getAuthUser(req);
+  if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return null; }
+  if (user.status === 'pending') { res.writeHead(302, { Location: '/pending?email=' + encodeURIComponent(user.email) }); res.end(); return null; }
+  if (user.status === 'denied') { res.writeHead(302, { Location: '/login?error=Access+denied' }); res.end(); return null; }
+  return user;
+}
+
+function requireAdmin(req, res) {
+  const user = requireAuth(req, res);
+  if (!user) return null;
+  if (user.linux_user === 'root' || user.can_approve_users || user.can_approve_admins || user.can_approve_sudo) return user;
+  res.writeHead(403); res.end('Forbidden'); return null;
+}
+
+function readBody(req) {
+  return new Promise(resolve => {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => resolve(body));
+  });
+}
+
+function serveHtml(req, res, filename) {
+  try {
+    const content = readFileSync(staticPath(filename));
+    setCors(res); res.setHeader('Content-Type', 'text/html'); res.writeHead(200); res.end(content);
+  } catch { sendError(res, 500, 'Failed to read ' + filename); }
+}
+
+function serveJs(req, res, filename) {
+  try {
+    const content = readFileSync(staticPath(filename));
+    setCors(res); res.setHeader('Content-Type', 'application/javascript'); res.writeHead(200); res.end(content);
+  } catch { sendError(res, 500, 'Failed to read ' + filename); }
+}
+
+// ---------------------------------------------------------------------------
 // Request router
 // ---------------------------------------------------------------------------
 
 function router(req, res) {
   const url = new URL(req.url, `http://localhost:${port}`);
   const pathname = url.pathname;
+
+  // Auth pages (public — no auth required)
+  if (pathname === '/login') return serveHtml(req, res, 'login.html');
+  if (pathname === '/pending') return serveHtml(req, res, 'pending.html');
+  if (pathname === '/admin-client.mjs') return serveJs(req, res, 'admin-client.mjs');
+
+  if (pathname === '/auth/me') {
+    const user = getAuthUser(req);
+    if (!user) return sendJson(res, 401, { error: 'Not authenticated' });
+    return sendJson(res, 200, { email: user.email, displayName: user.display_name, status: user.status,
+      linuxUser: user.linux_user, canApprove: !!(user.can_approve_users || user.can_approve_admins || user.can_approve_sudo) });
+  }
+
+  if (req.method === 'POST' && pathname === '/auth/logout') {
+    res.writeHead(302, { Location: '/login', 'Set-Cookie': COOKIE_NAME + '=; HttpOnly; Path=/; Max-Age=0' });
+    res.end(); return;
+  }
+
+  if (pathname === '/auth/callback') {
+    (async () => {
+      try {
+        const callbackUrl = 'http://localhost:' + port + '/auth/callback';
+        const query = { state: url.searchParams.get('state'), code: url.searchParams.get('code') };
+        const identity = await handleCallback(callbackUrl, query, AUTH_PROVIDERS);
+        let user = userStore.findByEmail(identity.email);
+        if (!user) {
+          // Check for pre-approved
+          const preApproved = userStore.findByEmail(identity.email);
+          if (preApproved && preApproved.status === 'approved' && !preApproved.provider) {
+            const linuxUser = generateUsername(identity.email);
+            createSystemAccount(linuxUser, identity.displayName);
+            addToGroup(linuxUser, 'users');
+            userStore.setLinuxUser(identity.email, linuxUser);
+            userStore.linkProvider(identity.email, identity.provider, identity.providerId);
+            user = userStore.findByEmail(identity.email);
+          } else {
+            userStore.createPendingUser({ email: identity.email, displayName: identity.displayName,
+              provider: identity.provider, providerId: identity.providerId });
+            res.writeHead(302, { Location: '/pending?email=' + encodeURIComponent(identity.email) }); res.end(); return;
+          }
+        }
+        if (!userStore.findByProvider(identity.provider, identity.providerId)) {
+          userStore.linkProvider(identity.email, identity.provider, identity.providerId);
+        }
+        userStore.updateLastLogin(identity.email);
+        if (user.status === 'pending') { res.writeHead(302, { Location: '/pending?email=' + encodeURIComponent(identity.email) }); res.end(); return; }
+        if (user.status === 'denied') { res.writeHead(302, { Location: '/login?error=Access+denied' }); res.end(); return; }
+        const cookie = createSessionCookie({ email: identity.email, displayName: identity.displayName }, AUTH_SECRET, COOKIE_MAX_AGE);
+        res.writeHead(302, { Location: '/', 'Set-Cookie': COOKIE_NAME + '=' + cookie + '; HttpOnly; Path=/; Max-Age=' + COOKIE_MAX_AGE + '; SameSite=Lax' });
+        res.end();
+      } catch (err) {
+        res.writeHead(302, { Location: '/login?error=' + encodeURIComponent(err.message) }); res.end();
+      }
+    })();
+    return;
+  }
+
+  if (pathname.startsWith('/auth/')) {
+    const provider = pathname.split('/')[2];
+    (async () => {
+      try {
+        const callbackUrl = 'http://localhost:' + port + '/auth/callback';
+        const result = await getAuthUrlAsync(provider, AUTH_PROVIDERS, callbackUrl);
+        res.writeHead(302, { Location: result.url }); res.end();
+      } catch (err) {
+        res.writeHead(302, { Location: '/login?error=' + encodeURIComponent(err.message) }); res.end();
+      }
+    })();
+    return;
+  }
+
+  // Admin routes (protected)
+  if (pathname === '/admin') { const u = requireAdmin(req, res); if (!u) return; return serveHtml(req, res, 'admin.html'); }
+  if (pathname === '/api/admin/pending') { const u = requireAdmin(req, res); if (!u) return; return sendJson(res, 200, userStore.listPending()); }
+  if (pathname === '/api/admin/users') { const u = requireAdmin(req, res); if (!u) return; return sendJson(res, 200, userStore.listUsers()); }
+
+  if (req.method === 'POST' && pathname === '/api/admin/approve') {
+    (async () => {
+      const u = requireAdmin(req, res); if (!u) return;
+      const body = await readBody(req);
+      const { email } = JSON.parse(body);
+      const target = userStore.findByEmail(email);
+      if (!target) return sendError(res, 404, 'User not found');
+      const linuxUser = generateUsername(email);
+      createSystemAccount(linuxUser, target.display_name);
+      addToGroup(linuxUser, 'users');
+      userStore.approveUser(email, u.email || 'root');
+      userStore.setLinuxUser(email, linuxUser);
+      sendJson(res, 200, { ok: true });
+    })().catch(err => sendError(res, 500, err.message));
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/admin/deny') {
+    (async () => {
+      const u = requireAdmin(req, res); if (!u) return;
+      const body = await readBody(req);
+      const { email } = JSON.parse(body);
+      userStore.denyUser(email);
+      sendJson(res, 200, { ok: true });
+    })().catch(err => sendError(res, 500, err.message));
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/admin/pre-approve') {
+    (async () => {
+      const u = requireAdmin(req, res); if (!u) return;
+      const body = await readBody(req);
+      const { emails } = JSON.parse(body);
+      userStore.preApprove(emails, u.email || 'root');
+      sendJson(res, 200, { ok: true });
+    })().catch(err => sendError(res, 500, err.message));
+    return;
+  }
+
+  if (req.method === 'PATCH' && pathname.startsWith('/api/admin/user/') && pathname.endsWith('/flags')) {
+    (async () => {
+      const u = requireAdmin(req, res); if (!u) return;
+      if (!u.can_approve_admins && !u.can_approve_sudo && u.linux_user !== 'root') return sendError(res, 403, 'Insufficient permissions');
+      const email = decodeURIComponent(pathname.split('/')[4]);
+      const body = await readBody(req);
+      const flags = JSON.parse(body);
+      userStore.updateFlags(email, flags);
+      sendJson(res, 200, { ok: true });
+    })().catch(err => sendError(res, 500, err.message));
+    return;
+  }
+
+  // Auth middleware — protect all remaining routes
+  if (AUTH_ENABLED) {
+    const user = requireAuth(req, res);
+    if (!user) return;
+  }
 
   if (req.method === 'GET') {
     if (pathname === '/') {
