@@ -246,28 +246,62 @@ async function handleInput(req, res) {
   });
 }
 
+// Claude-proxy API URL for session discovery. Sessions on custom tmux sockets
+// (created by claude-proxy) are invisible to plain `tmux list-sessions`.
+// We merge both sources: local tmux + claude-proxy API.
+const CLAUDE_PROXY_API = 'http://127.0.0.1:3101';
+
 async function handleSessions(req, res) {
+  const seen = new Set();
+  const sessions = [];
+
+  // Source 1: local tmux (default server)
   try {
     const raw = (await tmuxAsync(
       'list-sessions', '-F', '#{session_name} #{session_windows} #{window_width} #{window_height}'
     )).trim();
 
-    const sessions = raw
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => {
-        const parts = line.split(' ');
-        const height = parseInt(parts.pop(), 10);
-        const width = parseInt(parts.pop(), 10);
-        const windows = parseInt(parts.pop(), 10);
-        const name = parts.join(' ');
-        return { name, windows, cols: width, rows: height };
-      });
-
-    sendJson(res, 200, sessions);
+    for (const line of raw.split('\n').filter(Boolean)) {
+      const parts = line.split(' ');
+      const height = parseInt(parts.pop(), 10);
+      const width = parseInt(parts.pop(), 10);
+      const windows = parseInt(parts.pop(), 10);
+      const name = parts.join(' ');
+      sessions.push({ name, windows, cols: width, rows: height, source: 'tmux' });
+      seen.add(name);
+    }
   } catch (err) {
-    sendError(res, 500, `tmux error: ${err.message}`);
+    // tmux not running or no sessions — continue with claude-proxy source
   }
+
+  // Source 2: claude-proxy API (sessions on custom sockets)
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    const cpRes = await fetch(CLAUDE_PROXY_API + '/api/sessions', { signal: controller.signal });
+    clearTimeout(timeout);
+    if (cpRes.ok) {
+      const cpSessions = await cpRes.json();
+      for (const s of cpSessions) {
+        const name = s.id || s.name;
+        if (!seen.has(name)) {
+          sessions.push({
+            name,
+            windows: 1,
+            cols: s.cols || 80,
+            rows: s.rows || 24,
+            title: s.title || name,
+            source: 'claude-proxy'
+          });
+          seen.add(name);
+        }
+      }
+    }
+  } catch (err) {
+    // claude-proxy not running or unreachable — that's fine
+  }
+
+  sendJson(res, 200, sessions);
 }
 
 // ---------------------------------------------------------------------------
@@ -302,7 +336,7 @@ function diffState(prev, curr) {
     const a = JSON.stringify(prev.lines[i]);
     const b = JSON.stringify(curr.lines[i]);
     if (a !== b) {
-      changed[i] = curr.lines[i].spans;
+      changed[i] = { spans: curr.lines[i].spans };
       anyChanged = true;
     }
   }
@@ -634,7 +668,7 @@ const server = http.createServer(router);
 
 const wss = new WebSocketServer({ noServer: true });
 
-server.on('upgrade', (req, socket, head) => {
+server.on('upgrade', async (req, socket, head) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/ws/terminal') {
     const session = url.searchParams.get('session');
@@ -643,9 +677,38 @@ server.on('upgrade', (req, socket, head) => {
       socket.destroy();
       return;
     }
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      handleTerminalWs(ws, session, pane);
-    });
+
+    // Check if session is in local tmux. If not, proxy to claude-proxy API.
+    let isLocal = false;
+    try { await tmuxAsync('has-session', '-t', session); isLocal = true; } catch (e) {}
+
+    if (isLocal) {
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        handleTerminalWs(ws, session, pane);
+      });
+    } else {
+      // Proxy WebSocket to claude-proxy API for sessions on custom sockets.
+      const cpUrl = 'ws://127.0.0.1:3101/api/session/' + encodeURIComponent(session) + '/stream';
+      wss.handleUpgrade(req, socket, head, (clientWs) => {
+        const proxyWs = new WebSocket(cpUrl);
+        proxyWs.onopen = () => {
+          clientWs.on('message', (data) => {
+            if (proxyWs.readyState === WebSocket.OPEN) {
+              proxyWs.send(typeof data === 'string' ? data : data.toString());
+            }
+          });
+          proxyWs.onmessage = (evt) => {
+            if (clientWs.readyState === 1) {
+              clientWs.send(typeof evt.data === 'string' ? evt.data : evt.data.toString());
+            }
+          };
+        };
+        proxyWs.onclose = () => { try { clientWs.close(); } catch(e) {} };
+        proxyWs.onerror = () => { try { clientWs.close(); } catch(e) {} };
+        clientWs.on('close', () => { try { proxyWs.close(); } catch(e) {} });
+        clientWs.on('error', () => { try { proxyWs.close(); } catch(e) {} });
+      });
+    }
   } else {
     socket.destroy();
   }
