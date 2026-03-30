@@ -1821,18 +1821,17 @@ function setActiveInput(sessionName) {
     }
   }
 
-  // Slide new active card forward — only if not already slid forward
+  // Slide new active card forward — only in MULTI-FOCUS mode to distinguish
+  // the active input terminal from others. In single focus, the terminal is
+  // already centered — no Z slide needed.
   const t = terminals.get(sessionName);
-  if (t) {
+  if (t && focusedSessions.size > 1) {
     if (t._savedZ === undefined) {
       t._savedZ = t.targetPos.z;
       t.targetPos.z += READING_Z_OFFSET;
-      // Only start morph if we actually changed the target
       t.morphFrom = { ...t.currentPos };
       t.morphStart = clock.getElapsedTime();
     }
-    // If already slid forward (_savedZ exists), do nothing — clicking the
-    // already-active terminal should not restart the morph animation.
   }
 }
 
