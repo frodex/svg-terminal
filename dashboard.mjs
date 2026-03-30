@@ -2548,24 +2548,42 @@ function getSelectedTextFromSvg(t) {
 }
 
 // Move the terminal cursor to a target position by sending arrow key presses.
-// Only works on the same line (horizontal movement) — moving across lines is
-// unpredictable because programs handle Up/Down differently.
+// Moves vertically first (Up/Down), then horizontally (Left/Right).
+// Works in shell prompts and most editors. May behave unexpectedly in programs
+// that interpret Up/Down as something other than cursor movement (e.g., shell
+// history scrolling). Sends keys with small delays to avoid dropping.
 function moveCursorTo(t, cursorPos, targetPos) {
-  // Only move horizontally on the same row as the cursor
-  if (targetPos.row !== cursorPos.y) return;
-
+  const dy = targetPos.row - cursorPos.y;
   const dx = targetPos.col - cursorPos.x;
-  if (dx === 0) return;
+  if (dx === 0 && dy === 0) return;
 
-  const key = dx > 0 ? 'Right' : 'Left';
-  const steps = Math.abs(dx);
-  // Cap at reasonable number to avoid flooding
-  const maxSteps = 80;
-  const actualSteps = Math.min(steps, maxSteps);
+  const keys = [];
 
-  for (let i = 0; i < actualSteps; i++) {
-    t.sendInput({ type: 'input', specialKey: key });
+  // Vertical movement first
+  if (dy !== 0) {
+    const vKey = dy > 0 ? 'Down' : 'Up';
+    for (let i = 0; i < Math.min(Math.abs(dy), 50); i++) {
+      keys.push(vKey);
+    }
   }
+
+  // Then horizontal
+  if (dx !== 0) {
+    const hKey = dx > 0 ? 'Right' : 'Left';
+    for (let i = 0; i < Math.min(Math.abs(dx), 120); i++) {
+      keys.push(hKey);
+    }
+  }
+
+  // Send with small delays to avoid dropped keystrokes
+  let i = 0;
+  function sendNext() {
+    if (i >= keys.length) return;
+    t.sendInput({ type: 'input', specialKey: keys[i] });
+    i++;
+    setTimeout(sendNext, 5);
+  }
+  sendNext();
 }
 
 function clearSel() {
