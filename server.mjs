@@ -409,6 +409,12 @@ async function handleTerminalWs(ws, session, pane) {
         setTimeout(captureAndPush, 10);
         return;
       }
+      if (msg.type === 'scroll') {
+        setScrollOffset(session, pane, Math.max(0, parseInt(msg.offset) || 0));
+        lastState = null;
+        await captureAndPush();
+        return;
+      }
       if (msg.type === 'input') {
         const target = session + ':' + pane;
         if (msg.scrollTo != null) {

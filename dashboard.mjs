@@ -1620,7 +1620,7 @@ function addTerminal(sessionName, cols, rows) {
     // Unified scroll — one offset, one method. Used by mouse wheel, PgUp/PgDn, etc.
     scrollBy: function(lines) {
       this.scrollOffset = Math.max(0, this.scrollOffset + lines);
-      this.sendInput({ type: 'input', scrollTo: this.scrollOffset });
+      this.sendInput({ type: 'scroll', offset: this.scrollOffset });
     },
     scrollReset: function() {
       this.scrollOffset = 0;
