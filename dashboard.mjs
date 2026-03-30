@@ -700,6 +700,8 @@ function onMouseDown(e) {
   // Reset drag distance on every mousedown — prevents stale values from
   // previous interactions causing wasDrag() to return true on fresh clicks.
   dragDistance = 0;
+  // Disable iframe pointer events during drag to prevent iframe from capturing mouseup
+  document.querySelectorAll('.terminal-3d iframe').forEach(function(f) { f.style.pointerEvents = 'none'; });
 
   // Track whether mousedown started on sidebar — if so, the thumbnail's own click
   // handler manages ctrl+click. Without this flag, handleCtrlClick in onMouseUp
@@ -867,6 +869,8 @@ function onMouseUp(e) {
   _lastDragWasReal = isDragging && dragDistance > 5;
   isDragging = false;
   dragMode = null;
+  // Re-enable iframe pointer events after any drag
+  document.querySelectorAll('.terminal-3d iframe').forEach(function(f) { f.style.pointerEvents = 'auto'; });
 }
 
 // Find the closest non-focused terminal under the click point and add it to focus.
@@ -1258,14 +1262,8 @@ function createTerminalDOM(sessionName) {
 function createBrowserDOM(cardId, url) {
   const iframe = document.createElement('iframe');
   iframe.src = url;
-  iframe.style.cssText = 'width:100%;border:none;flex:1;min-height:0;border-bottom-left-radius:48px;border-bottom-right-radius:48px;pointer-events:auto;';
+  iframe.style.cssText = 'width:100%;border:none;flex:1;min-height:0;border-bottom-left-radius:48px;border-bottom-right-radius:48px;';
   iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups');
-  // Disable iframe pointer events during drag to prevent mouseup swallowing
-  iframe.addEventListener('mousedown', function() {
-    iframe.style.pointerEvents = 'none';
-    function restore() { iframe.style.pointerEvents = 'auto'; document.removeEventListener('mouseup', restore); }
-    document.addEventListener('mouseup', restore);
-  });
 
   return createCardDOM({
     id: cardId,
@@ -1356,12 +1354,39 @@ function addBrowserCard(url) {
   shadowObj.rotation.x = -Math.PI / 2;
   shadowGroup.add(shadowObj);
 
+  // Create thumbnail for browser card
+  const thumb = document.createElement('div');
+  thumb.className = 'thumbnail-item';
+  thumb.dataset.session = cardId;
+  const thumbLabel = document.createElement('div');
+  thumbLabel.className = 'thumb-label';
+  thumbLabel.textContent = url.length > 30 ? url.substring(0, 27) + '...' : url;
+  thumb.appendChild(thumbLabel);
+  const thumbMinBtn = document.createElement('div');
+  thumbMinBtn.className = 'thumb-minimize';
+  thumbMinBtn.textContent = '⌊';
+  thumbMinBtn.title = 'Remove from focus group';
+  thumbMinBtn.style.display = 'none';
+  thumbMinBtn.addEventListener('click', function(ev) {
+    ev.stopPropagation();
+    removeFromFocus(cardId);
+  });
+  thumb.appendChild(thumbMinBtn);
+  thumb.addEventListener('click', function(ev) {
+    if (ev.ctrlKey || ctrlHeld) {
+      addToFocus(cardId);
+    } else {
+      focusTerminal(cardId);
+    }
+  });
+  document.getElementById('sidebar').appendChild(thumb);
+
   terminals.set(cardId, {
     css3dObject: css3dObj,
     shadowObject: shadowObj,
     shadowDiv: shadowDiv,
     dom: dom,
-    thumbnail: null, // browser cards don't have thumbnails (yet)
+    thumbnail: thumb,
     baseCardW: cardW,
     baseCardH: cardH,
     currentPos: { x: 0, y: 0, z: -500 },
@@ -1383,8 +1408,8 @@ function addBrowserCard(url) {
   sessionOrder.push(cardId);
   assignRings();
 
-  // Auto-focus the new browser card
-  focusTerminal(cardId);
+  // Add browser card to the current focus group (don't replace existing focus)
+  addToFocus(cardId);
 
   return cardId;
 }
@@ -1394,6 +1419,7 @@ function removeBrowserCard(cardId) {
   if (!t) return;
   terminalGroup.remove(t.css3dObject);
   shadowGroup.remove(t.shadowObject);
+  if (t.thumbnail) t.thumbnail.remove();
   terminals.delete(cardId);
   const idx = sessionOrder.indexOf(cardId);
   if (idx >= 0) sessionOrder.splice(idx, 1);
@@ -1817,10 +1843,10 @@ function setActiveInput(sessionName) {
 function updateFocusStyles() {
   for (const [name, term] of terminals) {
     term.dom.classList.remove('faded', 'focused', 'input-active');
-    term.thumbnail.classList.remove('active');
+    if (term.thumbnail) term.thumbnail.classList.remove('active');
 
     // Show/hide minimize button on thumbnail
-    const minBtn = term.thumbnail.querySelector('.thumb-minimize');
+    const minBtn = term.thumbnail ? term.thumbnail.querySelector('.thumb-minimize') : null;
     if (minBtn) minBtn.style.display = (focusedSessions.has(name) && focusedSessions.size > 1) ? 'block' : 'none';
 
     // Show/hide header controls
@@ -1830,7 +1856,7 @@ function updateFocusStyles() {
     if (focusedSessions.size > 0) {
       if (focusedSessions.has(name)) {
         term.dom.classList.add('focused');
-        term.thumbnail.classList.add('active');
+        if (term.thumbnail) term.thumbnail.classList.add('active');
         if (name === activeInputSession) {
           term.dom.classList.add('input-active');
         }
