@@ -1827,12 +1827,12 @@ function setActiveInput(sessionName) {
     if (t._savedZ === undefined) {
       t._savedZ = t.targetPos.z;
       t.targetPos.z += READING_Z_OFFSET;
+      // Only start morph if we actually changed the target
+      t.morphFrom = { ...t.currentPos };
+      t.morphStart = clock.getElapsedTime();
     }
-    t.morphFrom = { ...t.currentPos };
-    t.morphStart = clock.getElapsedTime();
-    // Capture current rotation so the slerp starts from where it IS,
-    // not from the original ring angle. This makes the tilt subtle.
-
+    // If already slid forward (_savedZ exists), do nothing — clicking the
+    // already-active terminal should not restart the morph animation.
   }
 }
 
