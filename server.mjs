@@ -373,11 +373,16 @@ async function handleTerminalWs(ws, session, pane) {
         } else if (msg.specialKey && isAllowedKey(msg.specialKey)) {
           // Any keystroke snaps back to live view
           setScrollOffset(session, pane, 0);
-          // Support repeat count for cursor movement (click-to-position)
-          // Uses tmux send-keys -N count for atomic repeat — no dropped keys
+          // Support repeat count for cursor movement (click-to-position).
+          // Fires all send-keys in parallel (Promise.all) for speed — individual
+          // awaits were too slow and caused dropped keystrokes.
           const repeat = Math.min(Math.max(1, parseInt(msg.repeat) || 1), 200);
           if (repeat > 1) {
-            await tmuxAsync('send-keys', '-t', target, '-N', String(repeat), msg.specialKey);
+            const promises = [];
+            for (let i = 0; i < repeat; i++) {
+              promises.push(tmuxAsync('send-keys', '-t', target, msg.specialKey));
+            }
+            await Promise.all(promises);
           } else {
             await tmuxAsync('send-keys', '-t', target, msg.specialKey);
           }
