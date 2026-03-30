@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "better-sqlite3": "^12.8.0",
+    "openid-client": "^6.8.2",
     "puppeteer": "^24.40.0"
   }
 }
