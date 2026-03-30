@@ -1606,15 +1606,17 @@ function addTerminal(sessionName, cols, rows) {
     screenCols: cols,
     screenRows: rows,
     sendInput: function(msg) {
-      if (this.inputWs && this.inputWs.readyState === WebSocket.OPEN) {
-        this.inputWs.send(JSON.stringify(msg));
-      } else {
-        fetch('/api/input', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session: sessionName, pane: '0', ...msg })
-        }).catch(function() {});
+      // Route through SVG's single WebSocket via contentWindow
+      var obj = this.dom ? this.dom.querySelector('object') : null;
+      if (obj && obj.contentWindow && typeof obj.contentWindow.sendToWs === 'function') {
+        if (obj.contentWindow.sendToWs(msg)) return;
       }
+      // Fallback: HTTP POST (SVG not loaded, WS disconnected, reconnecting)
+      fetch('/api/input', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: sessionName, pane: '0', ...msg })
+      }).catch(function() {});
     },
     // Unified scroll — one offset, one method. Used by mouse wheel, PgUp/PgDn, etc.
     scrollBy: function(lines) {
@@ -1629,6 +1631,35 @@ function addTerminal(sessionName, cols, rows) {
   fetchTitle(sessionName).then(function(title) {
     if (title) updateTerminalTitle(sessionName, title);
   });
+
+  // Register screen data callback on SVG <object> once it loads.
+  // This replaces what inputWs.onmessage used to do: populate screenLines
+  // and call updateCardForNewSize when terminal dimensions change.
+  var termObj = dom.querySelector('object');
+  if (termObj) {
+    termObj.addEventListener('load', function() {
+      try {
+        termObj.contentWindow._screenCallback = function(msg) {
+          var t = terminals.get(sessionName);
+          if (!t) return;
+          if (msg.type === 'screen' && msg.lines) {
+            t.screenLines = msg.lines.map(function(l) {
+              return { text: l.spans.map(function(s) { return s.text; }).join(''), spans: l.spans };
+            });
+            updateCardForNewSize(t, msg.width || 80, msg.height || 24);
+            if (msg.cursor) t._lastCursor = msg.cursor;
+          } else if (msg.type === 'delta' && msg.changed) {
+            for (var idx in msg.changed) {
+              var lineData = msg.changed[idx];
+              var spans = lineData.spans || lineData;
+              t.screenLines[parseInt(idx)] = { text: spans.map(function(s) { return s.text; }).join(''), spans: spans };
+            }
+            if (msg.cursor) t._lastCursor = msg.cursor;
+          }
+        };
+      } catch (e) {}
+    });
+  }
 }
 
 function removeTerminal(sessionName) {
