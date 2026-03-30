@@ -38,19 +38,14 @@
 //    previous camera position (e.g., HOME_POS), and starting an orbit from a
 //    focused view snaps the camera to the wrong position. This was a hard bug.
 //
-// 6. FOCUS QUATERNION: focusQuatFrom captures the card's current rotation when
-//    focus starts. Without it, the focused card snaps flat instantly instead of
-//    slerping from its 3D angle to face-camera over the fly-in animation.
-//    The snap was visually jarring — card would rotate to 0 on Z axis THEN fly in.
-//
-// 7. RANDOM INITIAL ROTATION: Cards spawn with random 3D angles (rotation.set
-//    in addTerminal). This creates the 3D fly-in effect where cards rotate toward
-//    camera as they arrive. Without it, cards start face-on and the fly-in looks flat.
-//
-// 8. BILLBOARD ARRIVAL: billboardArrival tracks when a card finishes morphing to
-//    its ring position. During fly-in, billboard slerp ramps from near-zero to full.
-//    After arrival, normal billboard behavior takes over. This separation prevents
-//    cards from snapping face-on before they've finished moving.
+// 6-8. FLY-IN ROTATION EFFECTS (REMOVED):
+//    Previously: cards spawned at random 3D angles, focusQuatFrom captured rotation
+//    on focus for slerp animation, billboardArrival tracked morph completion for
+//    ramped billboard slerp. All removed because they caused unpredictable bouncing
+//    and overshooting when focusing terminals — terminals would fly too far back or
+//    off-screen. The effect was visually appealing but too hard to control. Can be
+//    re-added later with careful tuning of slerp parameters and morph timing.
+//    For now: cards face camera from spawn, focus = instant face-camera.
 //
 // 9. CAMERA-ONLY FOCUS: Cards are ALWAYS at their base DOM size. "Focus" means
 //    the camera moves close enough to fill the viewport. No DOM changes on focus.
@@ -478,7 +473,7 @@ function calculateFocusedLayout() {
     t._layoutZ = cardZ; // save layout Z for active-card slide
     t.targetPos = { x: wx, y: wy, z: cardZ };
     t.morphStart = now;
-    t.focusQuatFrom = t.css3dObject.quaternion.clone();
+
   }
 
   // Camera looks at the midpoint of focused cards
@@ -1506,13 +1501,11 @@ function addTerminal(sessionName, cols, rows) {
   // CSS3DObject scale 0.25 forces Chrome to rasterize at 4x resolution.
   // DO NOT change to 1.0 with smaller DOM — text will be blurry. See note 1.
   css3dObj.scale.setScalar(0.25);
-  // Start tilted so the fly-in shows 3D angle. Without this, CSS3DObjects default to
-  // facing -Z (toward camera), so the fly-in looks flat. See note 7 in header.
-  css3dObj.rotation.set(
-    (40 + Math.random() * 30) * DEG2RAD,
-    (-30 + Math.random() * 60) * DEG2RAD,
-    (-20 + Math.random() * 40) * DEG2RAD
-  );
+  // NOTE: Previously cards spawned with random 3D angles for a fly-in rotation effect.
+  // Removed because it caused unpredictable bouncing/overshooting when focusing terminals.
+  // The effect was visually nice but too hard to control — terminals would fly too far back
+  // or off-screen. Can be re-added later with more careful tuning of the slerp parameters.
+  // For now, cards face the camera from the start.
   terminalGroup.add(css3dObj);
 
   dom.style.pointerEvents = 'auto';
@@ -1750,7 +1743,7 @@ function setActiveInput(sessionName) {
       prevT.targetPos.z = prevT._savedZ;
       prevT.morphFrom = { ...prevT.currentPos };
       prevT.morphStart = clock.getElapsedTime();
-      // Don't reset focusQuatFrom — keep current rotation, just slide Z
+      // Keep current position, just slide Z
       delete prevT._savedZ;
     }
   }
@@ -1766,7 +1759,7 @@ function setActiveInput(sessionName) {
     t.morphStart = clock.getElapsedTime();
     // Capture current rotation so the slerp starts from where it IS,
     // not from the original ring angle. This makes the tilt subtle.
-    t.focusQuatFrom = t.css3dObject.quaternion.clone();
+
   }
 }
 
@@ -2007,23 +2000,15 @@ function animate() {
     );
 
     // === Orientation ===
+    // NOTE: Previously had complex fly-in rotation (focusQuatFrom slerp, billboardArrival
+    // tracking, ramped slerp during morph). Removed because it caused unpredictable
+    // bouncing when focusing terminals. Simplified to: focused = face camera,
+    // unfocused = gentle billboard with drift. Can be re-added with careful tuning.
     if (focusedSessions.has(name)) {
-      // Focused terminal: slerp from captured rotation to face-camera over the fly-in
-      const morphElapsed = time - t.morphStart;
-      const morphT = Math.min(1, morphElapsed / MORPH_DURATION);
-      const eased = easeInOutCubic(morphT);
-      if (t.focusQuatFrom) {
-        _targetQuat.copy(camera.quaternion);
-        t.css3dObject.quaternion.copy(t.focusQuatFrom).slerp(_targetQuat, eased);
-      } else {
-        t.css3dObject.quaternion.copy(camera.quaternion);
-      }
+      // Focused: face camera directly
+      t.css3dObject.quaternion.copy(camera.quaternion);
     } else {
-      // Billboard toward camera, but only ease in after morph completes
-      const morphElapsed = time - t.morphStart;
-      const morphDone = morphElapsed >= MORPH_DURATION;
-
-      // Target: face camera
+      // Unfocused: billboard toward camera with gentle drift
       t.css3dObject.getWorldPosition(_worldPos);
       _lookAtMat.lookAt(camera.position, _worldPos, _up);
       _targetQuat.setFromRotationMatrix(_lookAtMat);
@@ -2046,25 +2031,7 @@ function animate() {
       _driftQuat.setFromEuler(_driftEuler);
       _targetQuat.multiply(_driftQuat);
 
-      // Track when terminal arrives at its ring position
-      if (morphDone && t.billboardArrival === null) {
-        t.billboardArrival = time;
-      }
-      if (!morphDone) {
-        t.billboardArrival = null; // reset if morphing again
-      }
-
-      if (t.billboardArrival === null) {
-        // Flying in: rotate toward camera while moving (smooth concurrent motion)
-        const morphProgress = Math.min(1, morphElapsed / MORPH_DURATION);
-        const easedProgress = easeInOutCubic(morphProgress);
-        // Slerp ramps from 0.01 to BILLBOARD_SLERP over the fly-in
-        const flySlerp = 0.01 + easedProgress * (BILLBOARD_SLERP - 0.01);
-        t.css3dObject.quaternion.slerp(_targetQuat, flySlerp);
-      } else {
-        // At rest: normal billboard slerp
-        t.css3dObject.quaternion.slerp(_targetQuat, BILLBOARD_SLERP);
-      }
+      t.css3dObject.quaternion.slerp(_targetQuat, BILLBOARD_SLERP);
     }
 
     // === Shadow ===
@@ -2252,18 +2219,31 @@ let selStart = null;  // { row, col }
 let selEnd = null;
 let selOverlay = null; // DOM element for selection highlight
 
-function getSelOverlay() {
-  if (!selOverlay) {
-    selOverlay = document.createElement('div');
-    selOverlay.id = 'sel-overlay';
-    selOverlay.style.cssText = 'position:fixed;top:0;left:0;z-index:50;pointer-events:none;';
-    document.body.appendChild(selOverlay);
+function getSelOverlay(t) {
+  // Selection overlay lives INSIDE the SVG document as a <g> layer.
+  // This ensures zero subpixel drift — the overlay rects use the exact same
+  // coordinate space as the text elements. Previous approaches (position:fixed
+  // on document.body, position:absolute on .terminal-inner) both drifted
+  // because CSS pixel rounding differs from SVG's internal rendering pipeline.
+  if (!t || !t.dom) return null;
+  const obj = t.dom.querySelector('object');
+  if (!obj || !obj.contentDocument) return null;
+  const svgDoc = obj.contentDocument;
+  let layer = svgDoc.getElementById('sel-layer');
+  if (!layer) {
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    layer = svgDoc.createElementNS(SVG_NS, 'g');
+    layer.setAttribute('id', 'sel-layer');
+    const svgRoot = svgDoc.getElementById('root');
+    if (svgRoot) svgRoot.appendChild(layer);
   }
-  return selOverlay;
+  return layer;
 }
 
 function getTermRenderInfo(t) {
-  // Calculate the rendered SVG area dimensions for a terminal
+  // Calculate the rendered SVG area dimensions for a terminal.
+  // Returns both screen-space coords (for mouse mapping) and card-local coords
+  // (for positioning elements inside .terminal-inner).
   const obj = t.dom.querySelector('object');
   if (!obj) return null;
   const rect = obj.getBoundingClientRect();
@@ -2310,20 +2290,90 @@ function getTermRenderInfo(t) {
     offsetY = (rect.height - renderH) / 2;
   }
 
+  // Card-local coordinates: object's position within .terminal-inner
+  // The SVG uses integer y positions (row * floor(CELL_H)). To avoid cumulative
+  // subpixel drift, store the scale factor so callers can compute positions as
+  // floor(row * svgCellH) * scale — matching the SVG's actual rounding.
+  const header = t.dom.querySelector('header');
+  const headerH = header ? header.offsetHeight : 0;
+  const svgScale = obj.offsetWidth / svgW;
+
+  // Read the SVG's actual cell height from row spacing (integer, e.g. 17)
+  let svgCellH = svgH / rows;
+  let svgCellW = svgW / cols;
+  try {
+    const svgDoc = obj.contentDocument;
+    if (svgDoc) {
+      const r0 = svgDoc.getElementById('r0');
+      const r1 = svgDoc.getElementById('r1');
+      if (r0 && r1) {
+        svgCellH = parseFloat(r1.getAttribute('y')) - parseFloat(r0.getAttribute('y'));
+      }
+    }
+  } catch (err) {}
+
   return {
+    // Screen-space (for mouse event mapping)
     left: rect.left + offsetX,
     top: rect.top + offsetY,
     cellW: renderW / cols,
     cellH: renderH / rows,
-    cols, rows
+    cols, rows,
+    // Card-local (for position:absolute inside .terminal-inner)
+    localLeft: 0,
+    localTop: headerH,
+    localCellW: svgCellW * svgScale,
+    localCellH: svgCellH * svgScale,
+    svgCellH,
+    svgCellW,
+    svgScale
   };
 }
 
 function screenToCell(e, t) {
-  // Map screen pixel coordinates to terminal character row/col
+  // Map screen coordinates to terminal row/col.
+  // The SVG is inside an <object> with pointer-events:none, so we can't use
+  // SVG's native coordinate transforms directly. Instead use the object's
+  // bounding rect (screen-space) to get relative position, then the SVG's
+  // getScreenCTM to map to viewBox coordinates. This accounts for CSS3D
+  // transforms since getBoundingClientRect reflects the final rendered position.
+  const obj = t.dom ? t.dom.querySelector('object') : null;
+  if (obj && obj.contentDocument) {
+    try {
+      const svgDoc = obj.contentDocument;
+      const svgRoot = svgDoc.getElementById('root');
+      const r0 = svgDoc.getElementById('r0');
+      const r1 = svgDoc.getElementById('r1');
+      if (svgRoot && r0 && r1) {
+        const objRect = obj.getBoundingClientRect();
+        if (objRect.width > 10) {
+          // Proportional mapping: screen position → 0-1 fraction → SVG viewBox
+          const fracX = (e.clientX - objRect.left) / objRect.width;
+          const fracY = (e.clientY - objRect.top) / objRect.height;
+          const vb = svgRoot.getAttribute('viewBox').split(/\s+/);
+          const vbW = parseFloat(vb[2]);
+          const vbH = parseFloat(vb[3]);
+          const svgX = fracX * vbW;
+          const svgY = fracY * vbH;
+          const cellH = parseFloat(r1.getAttribute('y')) - parseFloat(r0.getAttribute('y'));
+          const cols = t.screenCols || Math.round(vbW / 8.6);
+          const cellW = vbW / cols;
+          const rows = Math.round(vbH / cellH);
+          const row = Math.floor(svgY / cellH);
+          const col = Math.floor(svgX / cellW);
+          return {
+            row: Math.max(0, Math.min(row, rows - 1)),
+            col: Math.max(0, Math.min(col, cols - 1)),
+            _render: { cols, rows }
+          };
+        }
+      }
+    } catch (err) {}
+  }
+
+  // Fallback: bounding rect approach
   const r = getTermRenderInfo(t);
   if (!r) return null;
-
   const col = Math.floor((e.clientX - r.left) / r.cellW);
   const row = Math.floor((e.clientY - r.top) / r.cellH);
   return {
@@ -2334,13 +2384,27 @@ function screenToCell(e, t) {
 }
 
 function drawSelHighlight(t) {
-  const overlay = getSelOverlay();
-  overlay.innerHTML = '';
+  const layer = getSelOverlay(t);
+  if (!layer) return;
+  while (layer.firstChild) layer.removeChild(layer.firstChild);
   if (!selStart || !selEnd || !t) return;
 
-  // Use render info from the most recent screenToCell call
-  const r = selEnd._render || selStart._render;
-  if (!r) return;
+  const obj = t.dom.querySelector('object');
+  if (!obj || !obj.contentDocument) return;
+  const svgDoc = obj.contentDocument;
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  // Read cell dimensions directly from SVG text elements — same coordinates
+  const r0 = svgDoc.getElementById('r0');
+  const r1 = svgDoc.getElementById('r1');
+  if (!r0 || !r1) return;
+  const cellH = parseFloat(r1.getAttribute('y')) - parseFloat(r0.getAttribute('y'));
+
+  const svgRoot = svgDoc.getElementById('root');
+  const vb = svgRoot.getAttribute('viewBox').split(/\s+/);
+  const vbW = parseFloat(vb[2]);
+  const cols = t.screenCols || Math.round(vbW / 8.6);
+  const cellW = vbW / cols;
 
   // Normalize direction
   let s = selStart, en = selEnd;
@@ -2350,14 +2414,14 @@ function drawSelHighlight(t) {
 
   for (let row = s.row; row <= en.row; row++) {
     const c1 = (row === s.row) ? s.col : 0;
-    const c2 = (row === en.row) ? en.col : r.cols - 1;
-    const div = document.createElement('div');
-    div.style.cssText = 'position:fixed;background:rgba(92,92,255,0.3);pointer-events:none;';
-    div.style.left = (r.left + c1 * r.cellW) + 'px';
-    div.style.top = (r.top + row * r.cellH) + 'px';
-    div.style.width = ((c2 - c1 + 1) * r.cellW) + 'px';
-    div.style.height = r.cellH + 'px';
-    overlay.appendChild(div);
+    const c2 = (row === en.row) ? en.col : cols - 1;
+    const rect = svgDoc.createElementNS(SVG_NS, 'rect');
+    rect.setAttribute('x', (c1 * cellW).toFixed(2));
+    rect.setAttribute('y', row * cellH);
+    rect.setAttribute('width', ((c2 - c1 + 1) * cellW).toFixed(2));
+    rect.setAttribute('height', cellH);
+    rect.setAttribute('fill', 'rgba(92,92,255,0.3)');
+    layer.appendChild(rect);
   }
 }
 
