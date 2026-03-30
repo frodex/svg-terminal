@@ -429,14 +429,42 @@ function handleProxy(req, res, params) {
     }
 
     // Copy headers, stripping frame-blocking ones
+    const contentType = (proxyRes.headers['content-type'] || '').toLowerCase();
     for (const [key, value] of Object.entries(proxyRes.headers)) {
       if (!PROXY_BLOCKED_HEADERS.has(key.toLowerCase())) {
+        // Strip content-length for HTML since we inject a <base> tag
+        if (key.toLowerCase() === 'content-length' && contentType.includes('text/html')) continue;
         res.setHeader(key, value);
       }
     }
     setCors(res);
     res.writeHead(proxyRes.statusCode);
-    proxyRes.pipe(res);
+
+    // For HTML responses, inject <base href> so relative URLs resolve to the
+    // original site, not our proxy server. Without this, form submissions and
+    // relative links hit localhost:3200 instead of the target domain.
+    if (contentType.includes('text/html')) {
+      const baseTag = '<base href="' + targetUrl.replace(/"/g, '&quot;') + '">';
+      let injected = false;
+      proxyRes.on('data', (chunk) => {
+        if (!injected) {
+          const str = chunk.toString();
+          const headIdx = str.indexOf('<head');
+          if (headIdx >= 0) {
+            const closeIdx = str.indexOf('>', headIdx);
+            if (closeIdx >= 0) {
+              res.write(str.slice(0, closeIdx + 1) + baseTag + str.slice(closeIdx + 1));
+              injected = true;
+              return;
+            }
+          }
+        }
+        res.write(chunk);
+      });
+      proxyRes.on('end', () => res.end());
+    } else {
+      proxyRes.pipe(res);
+    }
   });
 
   proxyReq.on('error', (err) => {
