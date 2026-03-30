@@ -3,6 +3,7 @@
 // Zero npm dependencies — uses Node built-ins only
 
 import http from 'node:http';
+import https from 'node:https';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execFile as execFileCb } from 'node:child_process';
 import { parseLine } from './sgr-parser.mjs';
@@ -391,6 +392,64 @@ async function handleTerminalWs(ws, session, pane) {
 }
 
 // ---------------------------------------------------------------------------
+// Proxy handler — fetches external URL, strips X-Frame-Options/CSP headers
+// ---------------------------------------------------------------------------
+
+const PROXY_BLOCKED_HEADERS = new Set([
+  'x-frame-options',
+  'content-security-policy',
+  'content-security-policy-report-only',
+]);
+
+function handleProxy(req, res, params) {
+  const targetUrl = params.get('url');
+  if (!targetUrl) return sendError(res, 400, 'Missing url parameter');
+
+  let parsed;
+  try {
+    parsed = new URL(targetUrl);
+  } catch {
+    return sendError(res, 400, 'Invalid URL');
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return sendError(res, 400, 'Only http/https URLs supported');
+  }
+
+  const client = parsed.protocol === 'https:' ? https : http;
+  const opts = { timeout: 10000 };
+  if (parsed.protocol === 'https:') opts.rejectUnauthorized = false;
+  const proxyReq = client.get(targetUrl, opts, (proxyRes) => {
+    // Follow redirects (up to 5)
+    if (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400 && proxyRes.headers.location) {
+      const redirectUrl = new URL(proxyRes.headers.location, targetUrl).href;
+      const redirectParams = new URLSearchParams();
+      redirectParams.set('url', redirectUrl);
+      return handleProxy(req, res, redirectParams);
+    }
+
+    // Copy headers, stripping frame-blocking ones
+    for (const [key, value] of Object.entries(proxyRes.headers)) {
+      if (!PROXY_BLOCKED_HEADERS.has(key.toLowerCase())) {
+        res.setHeader(key, value);
+      }
+    }
+    setCors(res);
+    res.writeHead(proxyRes.statusCode);
+    proxyRes.pipe(res);
+  });
+
+  proxyReq.on('error', (err) => {
+    sendError(res, 502, 'Proxy error: ' + err.message);
+  });
+
+  proxyReq.on('timeout', () => {
+    proxyReq.destroy();
+    sendError(res, 504, 'Proxy timeout');
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Request router
 // ---------------------------------------------------------------------------
 
@@ -459,6 +518,10 @@ function router(req, res) {
     }
     if (pathname === '/api/sessions') {
       handleSessions(req, res).catch(err => sendError(res, 500, err.message));
+      return;
+    }
+    if (pathname === '/api/proxy') {
+      handleProxy(req, res, url.searchParams);
       return;
     }
     if (pathname === '/font-test.html') {

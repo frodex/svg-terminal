@@ -1258,12 +1258,12 @@ function createTerminalDOM(sessionName) {
   });
 }
 
-// Browser card — iframe with URL
+// Browser card — iframe with URL, proxied to strip X-Frame-Options
 function createBrowserDOM(cardId, url) {
   const iframe = document.createElement('iframe');
-  iframe.src = url;
+  // Proxy through our server to strip X-Frame-Options/CSP headers
+  iframe.src = '/api/proxy?url=' + encodeURIComponent(url);
   iframe.style.cssText = 'width:100%;border:none;flex:1;min-height:0;border-bottom-left-radius:48px;border-bottom-right-radius:48px;';
-  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups');
 
   return createCardDOM({
     id: cardId,
