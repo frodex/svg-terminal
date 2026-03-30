@@ -195,8 +195,21 @@ const ALLOWED_SPECIAL_KEYS = new Set([
   'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
 ]);
 
+// Translate claude-proxy key names to tmux send-keys names for local sessions
+const CP_TO_TMUX_KEYS = {
+  'Backspace': 'BSpace',
+  'Delete': 'DC',
+  'PageUp': 'PgUp',
+  'PageDown': 'PgDn',
+  'Insert': 'IC',
+};
+
+function translateKeyForTmux(key) {
+  return CP_TO_TMUX_KEYS[key] || key;
+}
+
 function isAllowedKey(key) {
-  return ALLOWED_SPECIAL_KEYS.has(key) || /^C-[a-z]$/.test(key);
+  return ALLOWED_SPECIAL_KEYS.has(key) || Object.keys(CP_TO_TMUX_KEYS).includes(key) || /^C-[a-z]$/.test(key);
 }
 
 async function handleInput(req, res) {
@@ -414,15 +427,20 @@ async function handleTerminalWs(ws, session, pane) {
           if (repeat > 1) {
             const promises = [];
             for (let i = 0; i < repeat; i++) {
-              promises.push(tmuxAsync('send-keys', '-t', target, msg.specialKey));
+              promises.push(tmuxAsync('send-keys', '-t', target, translateKeyForTmux(msg.specialKey)));
             }
             await Promise.all(promises);
           } else {
-            await tmuxAsync('send-keys', '-t', target, msg.specialKey);
+            await tmuxAsync('send-keys', '-t', target, translateKeyForTmux(msg.specialKey));
           }
         } else if (msg.keys != null) {
           setScrollOffset(session, pane, 0);
-          await tmuxAsync('send-keys', '-t', target, '-l', String(msg.keys));
+          if (msg.ctrl && msg.keys.length === 1) {
+            // Ctrl combo: { keys: "c", ctrl: true } → tmux "C-c"
+            await tmuxAsync('send-keys', '-t', target, 'C-' + msg.keys);
+          } else {
+            await tmuxAsync('send-keys', '-t', target, '-l', String(msg.keys));
+          }
         }
         setTimeout(captureAndPush, 5);
       }
