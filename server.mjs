@@ -188,7 +188,7 @@ async function handlePane(req, res, params) {
 }
 
 const ALLOWED_SPECIAL_KEYS = new Set([
-  'Enter', 'Tab', 'Escape', 'BSpace', 'DC', 'IC', 'Space',
+  'Enter', 'Tab', 'Escape', 'BSpace', 'DC', 'IC',
   'Up', 'Down', 'Left', 'Right',
   'Home', 'End', 'PgUp', 'PgDn',
   'F1', 'F2', 'F3', 'F4', 'F5', 'F6',
