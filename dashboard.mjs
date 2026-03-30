@@ -2547,39 +2547,32 @@ function getSelectedTextFromSvg(t) {
   }
 }
 
-// Move the terminal cursor to a target position by sending arrow key presses.
-// Moves vertically first (Up/Down), then horizontally (Left/Right).
-// Works in shell prompts and most editors. May behave unexpectedly in programs
-// that interpret Up/Down as something other than cursor movement (e.g., shell
-// history scrolling). Sends keys with small delays to avoid dropping.
+// Move the terminal cursor to a clicked position using Left/Right arrow keys.
+// In shell prompts (bash/readline), the cursor is a linear position in the input
+// buffer. Left/Right wraps across visual line boundaries. So to move from one
+// visual row to another, we just count the total Left or Right presses needed:
+//   total offset = (cursorRow - targetRow) * cols + (cursorCol - targetCol)
+// Positive = go Left, negative = go Right.
+// Sends keys with small delays to avoid dropped keystrokes.
 function moveCursorTo(t, cursorPos, targetPos) {
-  const dy = targetPos.row - cursorPos.y;
-  const dx = targetPos.col - cursorPos.x;
-  if (dx === 0 && dy === 0) return;
+  // Get terminal cols for line-width calculation
+  const cols = t.screenCols || 80;
 
-  const keys = [];
+  // Linear offset: how many characters between cursor and target
+  // treating the screen as wrapped text
+  const cursorLinear = cursorPos.y * cols + cursorPos.x;
+  const targetLinear = targetPos.row * cols + targetPos.col;
+  const delta = cursorLinear - targetLinear;
 
-  // Vertical movement first
-  if (dy !== 0) {
-    const vKey = dy > 0 ? 'Down' : 'Up';
-    for (let i = 0; i < Math.min(Math.abs(dy), 50); i++) {
-      keys.push(vKey);
-    }
-  }
+  if (delta === 0) return;
 
-  // Then horizontal
-  if (dx !== 0) {
-    const hKey = dx > 0 ? 'Right' : 'Left';
-    for (let i = 0; i < Math.min(Math.abs(dx), 120); i++) {
-      keys.push(hKey);
-    }
-  }
+  const key = delta > 0 ? 'Left' : 'Right';
+  const steps = Math.min(Math.abs(delta), 200); // cap to avoid flooding
 
-  // Send with small delays to avoid dropped keystrokes
   let i = 0;
   function sendNext() {
-    if (i >= keys.length) return;
-    t.sendInput({ type: 'input', specialKey: keys[i] });
+    if (i >= steps) return;
+    t.sendInput({ type: 'input', specialKey: key });
     i++;
     setTimeout(sendNext, 5);
   }
