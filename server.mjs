@@ -239,7 +239,7 @@ async function handleInput(req, res) {
         return sendError(res, 400, `Invalid specialKey: ${specialKey}`);
       }
       try {
-        await tmuxAsync('send-keys', '-t', target, specialKey);
+        await tmuxAsync('send-keys', '-t', target, translateKeyForTmux(specialKey));
         return sendJson(res, 200, { ok: true });
       } catch (err) {
         return sendError(res, 500, `tmux error: ${err.message}`);
