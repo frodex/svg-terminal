@@ -386,6 +386,131 @@ async function run() {
 
     await screenshot('09-final');
 
+    // =============================================
+    // TEST GROUP 10: URL Hotlinks
+    // =============================================
+    console.log('\n--- URL Hotlinks ---');
+
+    // Test 1: OSC 8 hyperlink
+    try {
+      execSync('tmux new-session -d -s url-e2e -x 80 -y 24');
+      execSync("tmux send-keys -t url-e2e \"printf '\\\\e]8;;http://example.com\\\\e\\\\\\\\Click Here\\\\e]8;;\\\\e\\\\\\\\\\\\n'\" Enter");
+      await sleep(1000);
+      try {
+        const res = await fetch(`http://localhost:3200/api/pane?session=url-e2e&pane=0`);
+        const data = await res.json();
+        let foundUrl = false;
+        for (const line of data.lines) {
+          for (const s of line.spans) {
+            if (s.url === 'http://example.com' && s.text === 'Click Here') {
+              foundUrl = true;
+            }
+          }
+        }
+        if (foundUrl) pass('URL hotlink — OSC 8 span.url in API response');
+        else fail('URL hotlink — OSC 8 span.url in API response', 'OSC 8 URL not found in API response');
+      } finally {
+        execSync('tmux kill-session -t url-e2e 2>/dev/null || true');
+      }
+    } catch (e) {
+      fail('URL hotlink — OSC 8 span.url in API response', e.message);
+      execSync('tmux kill-session -t url-e2e 2>/dev/null || true');
+    }
+
+    // Test 2: Plain-text URL detection
+    try {
+      execSync('tmux new-session -d -s url-plain -x 80 -y 24');
+      execSync("tmux send-keys -t url-plain 'echo http://plain.example.com/test' Enter");
+      await sleep(1000);
+      try {
+        const res = await fetch(`http://localhost:3200/api/pane?session=url-plain&pane=0`);
+        const data = await res.json();
+        let foundUrl = false;
+        for (const line of data.lines) {
+          for (const s of line.spans) {
+            if (s.url === 'http://plain.example.com/test') {
+              foundUrl = true;
+            }
+          }
+        }
+        if (foundUrl) pass('URL hotlink — plain-text URL tagged in API response');
+        else fail('URL hotlink — plain-text URL tagged in API response', 'plain-text URL not found in API response');
+      } finally {
+        execSync('tmux kill-session -t url-plain 2>/dev/null || true');
+      }
+    } catch (e) {
+      fail('URL hotlink — plain-text URL tagged in API response', e.message);
+      execSync('tmux kill-session -t url-plain 2>/dev/null || true');
+    }
+
+    // =============================================
+    // TEST GROUP 11: Checkerboard Selection Overlay
+    // =============================================
+    console.log('\n--- Checkerboard Selection Overlay ---');
+
+    try {
+      execSync('tmux new-session -d -s checker-test -x 80 -y 24');
+      execSync("tmux send-keys -t checker-test \"python3 -c \\\"for r in range(23):\\n    line=''\\n    for c in range(80):\\n        if (r+c)%2==0: line+=chr(0x2588)\\n        else: line+=chr(0x2500)\\n    print(line)\\\"\" Enter");
+      await sleep(1500);
+
+      const checkerBrowser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
+      const checkerPage = await checkerBrowser.newPage();
+      await checkerPage.setViewport({ width: 1280, height: 800 });
+      await checkerPage.goto(`http://localhost:3200/`, { waitUntil: 'networkidle0' });
+      await sleep(4000);
+
+      // Focus checker-test terminal
+      await checkerPage.evaluate(() => {
+        for (const t of document.querySelectorAll('.thumbnail-item'))
+          if (t.dataset.session === 'checker-test') { t.click(); return; }
+      });
+      await sleep(2000);
+
+      // Drag select across several rows
+      const objR = await checkerPage.evaluate(() => {
+        const card = document.querySelector('.terminal-3d[data-session="checker-test"]');
+        if (!card) return null;
+        const obj = card.querySelector('object');
+        return obj ? obj.getBoundingClientRect().toJSON() : null;
+      });
+
+      if (objR) {
+        const cellH = objR.height / 24;
+        await checkerPage.mouse.move(objR.left + 20, objR.top + 5.5 * cellH);
+        await checkerPage.mouse.down();
+        await checkerPage.mouse.move(objR.left + objR.width * 0.8, objR.top + 15.5 * cellH, { steps: 10 });
+        await sleep(500);
+
+        // Verify sel-layer exists inside SVG with rects
+        const selInfo = await checkerPage.evaluate(() => {
+          const card = document.querySelector('.terminal-3d[data-session="checker-test"]');
+          const obj = card.querySelector('object');
+          if (!obj || !obj.contentDocument) return { error: 'no contentDocument' };
+          const selLayer = obj.contentDocument.getElementById('sel-layer');
+          if (!selLayer) return { error: 'no sel-layer' };
+          return { rectCount: selLayer.querySelectorAll('rect').length };
+        });
+
+        if (selInfo.error) {
+          fail('Selection overlay aligns with checkerboard pattern', selInfo.error);
+        } else if (selInfo.rectCount >= 10) {
+          pass('Selection overlay aligns with checkerboard pattern', `sel-layer created ${selInfo.rectCount} rects`);
+        } else {
+          fail('Selection overlay aligns with checkerboard pattern', `selection created ${selInfo.rectCount || 0} rects (expected ~11)`);
+        }
+
+        await checkerPage.mouse.up();
+      } else {
+        fail('Selection overlay aligns with checkerboard pattern', 'checker-test card or object element not found');
+      }
+
+      await checkerBrowser.close();
+    } catch (e) {
+      fail('Selection overlay aligns with checkerboard pattern', e.message);
+    } finally {
+      execSync('tmux kill-session -t checker-test 2>/dev/null || true');
+    }
+
   } catch (e) {
     fail('Unexpected error', e.message);
   } finally {
