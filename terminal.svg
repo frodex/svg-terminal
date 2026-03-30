@@ -284,6 +284,7 @@
 
         ws.onopen = function() {
           useWebSocket = true;
+          window._wsReady = true;
           if (pollTimer !== null) {
             clearTimeout(pollTimer);
             pollTimer = null;
@@ -309,6 +310,7 @@
               cursorEl.setAttribute('y', msg.cursor.y * CELL_H);
             }
             hideError();
+            try { if (window._screenCallback) window._screenCallback(msg); } catch(e) {}
 
           } else if (msg.type === 'delta') {
             var keys = Object.keys(msg.changed);
@@ -325,6 +327,7 @@
               cursorEl.setAttribute('x', (msg.cursor.x * CELL_W).toFixed(2));
               cursorEl.setAttribute('y', msg.cursor.y * CELL_H);
             }
+            try { if (window._screenCallback) window._screenCallback(msg); } catch(e) {}
 
           } else if (msg.type === 'error') {
             showError();
@@ -333,6 +336,7 @@
 
         ws.onclose = function() {
           useWebSocket = false;
+          window._wsReady = false;
           ws = null;
           if (pollTimer === null) schedulePoll(pollInterval);
           wsReconnectTimer = setTimeout(connectWebSocket, 2000);
@@ -583,6 +587,17 @@
       // Clear selection when new content arrives (screen is changing)
       // This prevents stale highlights from lingering
       var selClearOnUpdate = false;
+
+      // --- Parent integration (single-WebSocket architecture) ---
+      // Dashboard routes input/scroll through this WebSocket via contentWindow.sendToWs()
+      // instead of opening a second WebSocket connection. Returns true if sent, false if WS unavailable.
+      window.sendToWs = function(msg) {
+        if (ws && ws.readyState === 1) {
+          ws.send(JSON.stringify(msg));
+          return true;
+        }
+        return false;
+      };
 
       // -----------------------------------------------------------------------
       // Start
