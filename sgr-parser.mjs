@@ -18,6 +18,11 @@ function defaultStyle() {
     underline: false,
     dim: false,
     strikethrough: false,
+    reverse: false,
+    hidden: false,
+    overline: false,
+    underlineColor: null,
+    url: null,
   };
 }
 
@@ -31,7 +36,12 @@ function stylesEqual(a, b) {
     a.italic === b.italic &&
     a.underline === b.underline &&
     a.dim === b.dim &&
-    a.strikethrough === b.strikethrough
+    a.strikethrough === b.strikethrough &&
+    a.reverse === b.reverse &&
+    a.hidden === b.hidden &&
+    a.overline === b.overline &&
+    a.underlineColor === b.underlineColor &&
+    a.url === b.url
   );
 }
 
@@ -51,6 +61,14 @@ function applyParams(params, style) {
       next.italic = true;
     } else if (code === 4) {
       next.underline = true;
+    } else if (code === 5 && params[i + 1] === 3) {
+      // tmux colon sub-parameter: 5:3 → overline (SGR 53)
+      next.overline = true;
+      i++;
+    } else if (code === 7) {
+      next.reverse = true;
+    } else if (code === 8) {
+      next.hidden = true;
     } else if (code === 9) {
       next.strikethrough = true;
     } else if (code === 22) {
@@ -60,8 +78,16 @@ function applyParams(params, style) {
       next.italic = false;
     } else if (code === 24) {
       next.underline = false;
+    } else if (code === 27) {
+      next.reverse = false;
+    } else if (code === 28) {
+      next.hidden = false;
     } else if (code === 29) {
       next.strikethrough = false;
+    } else if (code === 53) {
+      next.overline = true;
+    } else if (code === 55) {
+      next.overline = false;
     } else if (code >= 30 && code <= 37) {
       next.cls = fgClass[code - 30];
       next.fg = null;
@@ -126,6 +152,27 @@ function applyParams(params, style) {
     } else if (code === 49) {
       next.bgCls = null;
       next.bg = null;
+    } else if (code === 58) {
+      const sub = params[i + 1];
+      if (sub === 5) {
+        // 256-color underline color
+        const n = params[i + 2];
+        if (n !== undefined && n >= 0 && n <= 255) {
+          next.underlineColor = table[n];
+          i += 2;
+        }
+      } else if (sub === 2) {
+        // Truecolor underline color
+        const r = params[i + 2];
+        const g = params[i + 3];
+        const b = params[i + 4];
+        if (r !== undefined && g !== undefined && b !== undefined) {
+          next.underlineColor = '#' + toHex2(r) + toHex2(g) + toHex2(b);
+          i += 4;
+        }
+      }
+    } else if (code === 59) {
+      next.underlineColor = null;
     } else if (code >= 90 && code <= 97) {
       next.cls = fgClass[8 + (code - 90)];
       next.fg = null;
@@ -158,7 +205,7 @@ export function parseLine(line) {
       if (finalByte === 'm') {
         // SGR sequence
         // Parse params
-        const rawParams = paramStr === '' ? ['0'] : paramStr.split(';');
+        const rawParams = paramStr === '' ? ['0'] : paramStr.split(/[;:]/);
         const params = rawParams.map(p => parseInt(p, 10));
 
         // Compute new style

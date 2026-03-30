@@ -15,6 +15,11 @@ function span(overrides) {
     underline: false,
     dim: false,
     strikethrough: false,
+    reverse: false,
+    hidden: false,
+    overline: false,
+    underlineColor: null,
+    url: null,
     ...overrides,
   };
 }
@@ -191,4 +196,51 @@ test('handles 38;5 with missing index gracefully', () => {
   assert.equal(spans[0].text, 'text');
   assert.equal(spans[0].fg, null);
   assert.equal(spans[0].cls, null);
+});
+
+test('SGR 7 reverse video', () => {
+  const result = parseLine('\x1b[7mREVERSE\x1b[27m normal');
+  assert.deepEqual(result, [
+    span({ text: 'REVERSE', reverse: true }),
+    span({ text: ' normal' }),
+  ]);
+});
+
+test('SGR 8 hidden text', () => {
+  const result = parseLine('\x1b[8mHIDDEN\x1b[28m visible');
+  assert.deepEqual(result, [
+    span({ text: 'HIDDEN', hidden: true }),
+    span({ text: ' visible' }),
+  ]);
+});
+
+test('SGR 53 overline', () => {
+  const result = parseLine('\x1b[53mOVER\x1b[55m normal');
+  assert.deepEqual(result, [
+    span({ text: 'OVER', overline: true }),
+    span({ text: ' normal' }),
+  ]);
+});
+
+test('SGR 58;5;N underline color 256', () => {
+  const result = parseLine('\x1b[4;58;5;196mCOLORED\x1b[59;24m normal');
+  assert.deepEqual(result, [
+    span({ text: 'COLORED', underline: true, underlineColor: '#ff0000' }),
+    span({ text: ' normal' }),
+  ]);
+});
+
+test('SGR 58;2;R;G;B underline color truecolor', () => {
+  const result = parseLine('\x1b[4;58;2;255;128;0mTC\x1b[59;24m normal');
+  assert.deepEqual(result, [
+    span({ text: 'TC', underline: true, underlineColor: '#ff8000' }),
+    span({ text: ' normal' }),
+  ]);
+});
+
+test('tmux colon sub-parameter for overline (5:3)', () => {
+  const result = parseLine('\x1b[5:3mOVER\x1b[0m');
+  assert.deepEqual(result, [
+    span({ text: 'OVER', overline: true }),
+  ]);
 });
