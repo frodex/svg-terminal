@@ -1694,7 +1694,8 @@ function focusTerminal(sessionName) {
         updateCardForNewSize(t, msg.width || 80, msg.height || 24);
         if (msg.cursor) t._lastCursor = msg.cursor;
       } else if (msg.type === 'delta' && msg.changed) {
-        for (const [idx, spans] of Object.entries(msg.changed)) {
+        for (const [idx, lineData] of Object.entries(msg.changed)) {
+          const spans = lineData.spans || lineData;
           t.screenLines[parseInt(idx)] = { text: spans.map(function(s) { return s.text; }).join(''), spans: spans };
         }
         if (msg.cursor) t._lastCursor = msg.cursor;
@@ -1778,7 +1779,8 @@ function addToFocus(sessionName) {
         updateCardForNewSize(t, msg.width || 80, msg.height || 24);
         if (msg.cursor) t._lastCursor = msg.cursor;
       } else if (msg.type === 'delta' && msg.changed) {
-        for (const [idx, spans] of Object.entries(msg.changed)) {
+        for (const [idx, lineData] of Object.entries(msg.changed)) {
+          const spans = lineData.spans || lineData;
           t.screenLines[parseInt(idx)] = { text: spans.map(function(s) { return s.text; }).join(''), spans: spans };
         }
         if (msg.cursor) t._lastCursor = msg.cursor;
