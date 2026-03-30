@@ -1711,27 +1711,8 @@ function focusTerminal(sessionName) {
   focusedSessions.add(sessionName);
   activeInputSession = sessionName;
 
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  t.inputWs = new WebSocket(proto + '//' + location.host + '/ws/terminal?session=' + encodeURIComponent(sessionName) + '&pane=0');
-  // Capture screen text from the WebSocket for copy/paste support
-  t.inputWs.onmessage = function(e) {
-    try {
-      const msg = JSON.parse(e.data);
-      if (msg.type === 'screen' && msg.lines) {
-        t.screenLines = msg.lines.map(function(l) {
-          return { text: l.spans.map(function(s) { return s.text; }).join(''), spans: l.spans };
-        });
-        updateCardForNewSize(t, msg.width || 80, msg.height || 24);
-        if (msg.cursor) t._lastCursor = msg.cursor;
-      } else if (msg.type === 'delta' && msg.changed) {
-        for (const [idx, lineData] of Object.entries(msg.changed)) {
-          const spans = lineData.spans || lineData;
-          t.screenLines[parseInt(idx)] = { text: spans.map(function(s) { return s.text; }).join(''), spans: spans };
-        }
-        if (msg.cursor) t._lastCursor = msg.cursor;
-      }
-    } catch (err) {}
-  };
+  // Input routed via contentWindow.sendToWs, screen data via _screenCallback
+  // (single-WebSocket architecture — no second connection needed)
 
   updateFocusStyles();
 
@@ -1797,26 +1778,8 @@ function addToFocus(sessionName) {
   focusedSessions.add(sessionName);
   activeInputSession = sessionName;
 
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  t.inputWs = new WebSocket(proto + '//' + location.host + '/ws/terminal?session=' + encodeURIComponent(sessionName) + '&pane=0');
-  t.inputWs.onmessage = function(e) {
-    try {
-      const msg = JSON.parse(e.data);
-      if (msg.type === 'screen' && msg.lines) {
-        t.screenLines = msg.lines.map(function(l) {
-          return { text: l.spans.map(function(s) { return s.text; }).join(''), spans: l.spans };
-        });
-        updateCardForNewSize(t, msg.width || 80, msg.height || 24);
-        if (msg.cursor) t._lastCursor = msg.cursor;
-      } else if (msg.type === 'delta' && msg.changed) {
-        for (const [idx, lineData] of Object.entries(msg.changed)) {
-          const spans = lineData.spans || lineData;
-          t.screenLines[parseInt(idx)] = { text: spans.map(function(s) { return s.text; }).join(''), spans: spans };
-        }
-        if (msg.cursor) t._lastCursor = msg.cursor;
-      }
-    } catch (err) {}
-  };
+  // Input routed via contentWindow.sendToWs, screen data via _screenCallback
+  // (single-WebSocket architecture — no second connection needed)
 
   updateFocusStyles();
   calculateFocusedLayout();
@@ -1902,10 +1865,6 @@ function updateFocusStyles() {
 function restoreFocusedTerminal(name) {
   const term = terminals.get(name);
   if (!term) return;
-  if (term.inputWs) {
-    term.inputWs.close();
-    term.inputWs = null;
-  }
   const now = clock.getElapsedTime();
   term.dom.classList.remove('faded', 'focused', 'input-active');
   term._userPositioned = false;
@@ -1982,14 +1941,6 @@ function deselectTerminals() {
     term.dom.classList.remove('faded'); // show ring cards normally
     const hdrCtrl = term.dom.querySelector('.header-controls');
     if (hdrCtrl) hdrCtrl.style.display = 'none';
-  }
-  // Close WebSocket connections (no longer receiving input)
-  for (const fname of focusedSessions) {
-    const ft = terminals.get(fname);
-    if (ft && ft.inputWs) {
-      ft.inputWs.close();
-      ft.inputWs = null;
-    }
   }
   hideTermControls();
   document.getElementById('input-bar').classList.remove('visible');
@@ -2685,7 +2636,7 @@ document.addEventListener('mouseup', function(e) {
   if (!isRealSelection) {
     // Just a click, not a drag — try to move cursor to clicked position.
     // Fetch current cursor from server (more reliable than _lastCursor which
-    // depends on inputWs having received a screen/delta event).
+    // depends on _screenCallback having received a screen/delta event).
     if (selStart && activeInputSession) {
       const t = terminals.get(activeInputSession);
       if (t) {
