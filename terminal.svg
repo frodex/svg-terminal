@@ -109,8 +109,6 @@
       var cursorEl     = document.getElementById('cursor');
       var errorOverlay = document.getElementById('error-overlay');
 
-      // URL regex for detecting links in terminal output
-      var URL_RE = /https?:\/\/[^\s<>"')\]]+/g;
 
       // -----------------------------------------------------------------------
       // State
@@ -215,61 +213,28 @@
         }
       }
 
-      // Detect URLs in terminal lines and create clickable link overlays
+      // Render blue underlines for spans that have url property (set by parser).
+      // No regex — URLs are already tagged by the server-side parser.
+      // Click handling is done by the dashboard layer, not here.
       function rebuildLinkLayer(lines) {
         while (linkLayer.firstChild) linkLayer.removeChild(linkLayer.firstChild);
         for (var row = 0; row < lines.length; row++) {
-          // Concatenate all spans to get full line text
-          var lineText = '';
           var spans = lines[row].spans;
-          for (var s = 0; s < spans.length; s++) lineText += spans[s].text;
-
-          var match;
-          URL_RE.lastIndex = 0;
-          while ((match = URL_RE.exec(lineText)) !== null) {
-            var url = match[0];
-            var col = match.index;
-            var len = url.length;
-
-            // Underline the URL
-            var underline = document.createElementNS(SVG_NS, 'line');
-            underline.setAttribute('x1', (col * CELL_W).toFixed(2));
-            underline.setAttribute('y1', ((row + 1) * CELL_H - 1).toFixed(2));
-            underline.setAttribute('x2', ((col + len) * CELL_W).toFixed(2));
-            underline.setAttribute('y2', ((row + 1) * CELL_H - 1).toFixed(2));
-            underline.setAttribute('stroke', '#5c8fff');
-            underline.setAttribute('stroke-width', '1');
-            underline.setAttribute('opacity', '0.6');
-            linkLayer.appendChild(underline);
-
-            // Invisible clickable rect over the URL
-            var rect = document.createElementNS(SVG_NS, 'rect');
-            rect.setAttribute('x', (col * CELL_W).toFixed(2));
-            rect.setAttribute('y', (row * CELL_H).toFixed(2));
-            rect.setAttribute('width', (len * CELL_W).toFixed(2));
-            rect.setAttribute('height', CELL_H.toFixed(2));
-            rect.setAttribute('fill', 'transparent');
-            rect.setAttribute('cursor', 'pointer');
-            rect.dataset.url = url;
-            rect.style.pointerEvents = 'all';
-            rect.addEventListener('click', (function(u) {
-              return function(evt) {
-                if (evt.altKey) {
-                  // Alt+click: open in a browser card in the 3D scene
-                  evt.preventDefault();
-                  evt.stopPropagation();
-                  if (window.parent && window.parent._addBrowserCard) {
-                    window.parent._addBrowserCard(u);
-                  }
-                } else {
-                  // Regular click: open in new tab
-                  evt.preventDefault();
-                  evt.stopPropagation();
-                  window.open(u, '_blank');
-                }
-              };
-            })(url));
-            linkLayer.appendChild(rect);
+          var colOffset = 0;
+          for (var s = 0; s < spans.length; s++) {
+            var span = spans[s];
+            if (span.url) {
+              var underline = document.createElementNS(SVG_NS, 'line');
+              underline.setAttribute('x1', (colOffset * CELL_W).toFixed(2));
+              underline.setAttribute('y1', ((row + 1) * CELL_H - 1).toFixed(2));
+              underline.setAttribute('x2', ((colOffset + span.text.length) * CELL_W).toFixed(2));
+              underline.setAttribute('y2', ((row + 1) * CELL_H - 1).toFixed(2));
+              underline.setAttribute('stroke', '#5c8fff');
+              underline.setAttribute('stroke-width', '1');
+              underline.setAttribute('opacity', '0.6');
+              linkLayer.appendChild(underline);
+            }
+            colOffset += span.text.length;
           }
         }
       }
