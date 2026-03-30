@@ -314,7 +314,8 @@
             var keys = Object.keys(msg.changed);
             for (var k = 0; k < keys.length; k++) {
               var idx = parseInt(keys[k]);
-              var spans = msg.changed[keys[k]];
+              var lineData = msg.changed[keys[k]];
+              var spans = lineData.spans || lineData;
               updateLine(idx, spans);
               allLines[idx] = { spans: spans };
               prevState[idx] = JSON.stringify(spans);
