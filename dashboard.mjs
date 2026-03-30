@@ -1453,7 +1453,7 @@ async function refreshSessions() {
       }
     }
     for (const name of existingNames) {
-      if (!currentNames.has(name)) {
+      if (!currentNames.has(name) && !name.startsWith('browser-')) {
         removeTerminal(name);
         changed = true;
       }
