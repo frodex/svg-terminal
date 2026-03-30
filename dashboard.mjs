@@ -984,13 +984,29 @@ function zoomToFocusedTerminal(sessionName) {
   };
 }
 
+// Find URL at a specific row/col by walking the span list
+function getUrlAtCell(t, row, col) {
+  if (!t.screenLines || !t.screenLines[row]) return null;
+  const lineObj = t.screenLines[row];
+  if (!lineObj.spans) return null;
+  let offset = 0;
+  for (let i = 0; i < lineObj.spans.length; i++) {
+    const s = lineObj.spans[i];
+    if (col >= offset && col < offset + s.text.length) {
+      return s.url || null;
+    }
+    offset += s.text.length;
+  }
+  return null;
+}
+
 function onSceneClick(e) {
   // IMPORTANT: Ctrl+click is handled ENTIRELY in onMouseUp → handleCtrlClick.
   // DO NOT add ctrl+click handling here — it causes double-fire because both
   // onMouseUp and onSceneClick find different terminals via overlapping bounding
   // rects in the 3D scene. This was the root cause of the "ctrl+click adds 2
   // terminals" bug. See note 3 in header.
-  if (suppressNextClick || ctrlHeld || e.ctrlKey || altHeld || e.altKey) {
+  if (suppressNextClick || ctrlHeld || e.ctrlKey) {
     suppressNextClick = false;
     _lastDragWasReal = false;
     return;
@@ -1026,10 +1042,24 @@ function onSceneClick(e) {
 
   if (clicked) {
     if (focusedSessions.has(clicked)) {
-      // Click on an already-focused terminal: switch input to it
+      // Check for URL click on focused terminal
+      const t = terminals.get(clicked);
+      if (t) {
+        const cell = screenToCell(e, t);
+        if (cell) {
+          const url = getUrlAtCell(t, cell.row, cell.col);
+          if (url) {
+            if (e.altKey || altHeld) {
+              addBrowserCard(url);
+            } else {
+              window.open(url, '_blank');
+            }
+            return;
+          }
+        }
+      }
       setActiveInput(clicked);
     } else {
-      // Regular click: focus single terminal (replaces all)
       focusTerminal(clicked);
     }
   }
@@ -1616,13 +1646,13 @@ function focusTerminal(sessionName) {
       const msg = JSON.parse(e.data);
       if (msg.type === 'screen' && msg.lines) {
         t.screenLines = msg.lines.map(function(l) {
-          return l.spans.map(function(s) { return s.text; }).join('');
+          return { text: l.spans.map(function(s) { return s.text; }).join(''), spans: l.spans };
         });
         updateCardForNewSize(t, msg.width || 80, msg.height || 24);
         if (msg.cursor) t._lastCursor = msg.cursor;
       } else if (msg.type === 'delta' && msg.changed) {
         for (const [idx, spans] of Object.entries(msg.changed)) {
-          t.screenLines[parseInt(idx)] = spans.map(function(s) { return s.text; }).join('');
+          t.screenLines[parseInt(idx)] = { text: spans.map(function(s) { return s.text; }).join(''), spans: spans };
         }
         if (msg.cursor) t._lastCursor = msg.cursor;
       }
@@ -1700,13 +1730,13 @@ function addToFocus(sessionName) {
       const msg = JSON.parse(e.data);
       if (msg.type === 'screen' && msg.lines) {
         t.screenLines = msg.lines.map(function(l) {
-          return l.spans.map(function(s) { return s.text; }).join('');
+          return { text: l.spans.map(function(s) { return s.text; }).join(''), spans: l.spans };
         });
         updateCardForNewSize(t, msg.width || 80, msg.height || 24);
         if (msg.cursor) t._lastCursor = msg.cursor;
       } else if (msg.type === 'delta' && msg.changed) {
         for (const [idx, spans] of Object.entries(msg.changed)) {
-          t.screenLines[parseInt(idx)] = spans.map(function(s) { return s.text; }).join('');
+          t.screenLines[parseInt(idx)] = { text: spans.map(function(s) { return s.text; }).join(''), spans: spans };
         }
         if (msg.cursor) t._lastCursor = msg.cursor;
       }
@@ -2433,7 +2463,8 @@ function getSelectedText(t) {
   }
   const lines = [];
   for (let row = s.row; row <= en.row; row++) {
-    const line = t.screenLines[row] || '';
+    const lineObj = t.screenLines[row];
+    const line = (typeof lineObj === 'string') ? lineObj : (lineObj ? lineObj.text : '');
     const c1 = (row === s.row) ? s.col : 0;
     const c2 = (row === en.row) ? en.col + 1 : line.length;
     lines.push(line.substring(c1, c2).replace(/\s+$/, ''));
