@@ -1050,9 +1050,9 @@ function onSceneClick(e) {
           const url = getUrlAtCell(t, cell.row, cell.col);
           if (url) {
             if (e.altKey || altHeld) {
-              addBrowserCard(url);
-            } else {
               window.open(url, '_blank');
+            } else {
+              addBrowserCard(url);
             }
             return;
           }
@@ -1258,8 +1258,14 @@ function createTerminalDOM(sessionName) {
 function createBrowserDOM(cardId, url) {
   const iframe = document.createElement('iframe');
   iframe.src = url;
-  iframe.style.cssText = 'width:100%;border:none;flex:1;min-height:0;border-bottom-left-radius:48px;border-bottom-right-radius:48px;';
+  iframe.style.cssText = 'width:100%;border:none;flex:1;min-height:0;border-bottom-left-radius:48px;border-bottom-right-radius:48px;pointer-events:auto;';
   iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups');
+  // Disable iframe pointer events during drag to prevent mouseup swallowing
+  iframe.addEventListener('mousedown', function() {
+    iframe.style.pointerEvents = 'none';
+    function restore() { iframe.style.pointerEvents = 'auto'; document.removeEventListener('mouseup', restore); }
+    document.addEventListener('mouseup', restore);
+  });
 
   return createCardDOM({
     id: cardId,
@@ -1267,7 +1273,8 @@ function createBrowserDOM(cardId, url) {
     type: 'browser',
     controls: [
       { label: '↻', title: 'Reload', fn: function() { iframe.src = iframe.src; }},
-      { label: '↗', title: 'Open in new tab', fn: function() { window.open(url, '_blank'); }}
+      { label: '↗', title: 'Open in new tab', fn: function() { window.open(url, '_blank'); }},
+      { label: '✕', title: 'Close', fn: function() { removeBrowserCard(cardId); }}
     ],
     contentEl: iframe
   });
@@ -1341,11 +1348,7 @@ function addBrowserCard(url) {
   const shadowDiv = createShadowDOM();
   const css3dObj = new CSS3DObject(dom);
   css3dObj.scale.setScalar(0.25);
-  css3dObj.rotation.set(
-    (40 + Math.random() * 30) * DEG2RAD,
-    (-30 + Math.random() * 60) * DEG2RAD,
-    (-20 + Math.random() * 40) * DEG2RAD
-  );
+  // No random rotation — face camera from spawn (consistent with terminal cards)
   terminalGroup.add(css3dObj);
   dom.style.pointerEvents = 'auto';
 
@@ -1384,6 +1387,20 @@ function addBrowserCard(url) {
   focusTerminal(cardId);
 
   return cardId;
+}
+
+function removeBrowserCard(cardId) {
+  const t = terminals.get(cardId);
+  if (!t) return;
+  terminalGroup.remove(t.css3dObject);
+  shadowGroup.remove(t.shadowObject);
+  terminals.delete(cardId);
+  const idx = sessionOrder.indexOf(cardId);
+  if (idx >= 0) sessionOrder.splice(idx, 1);
+  focusedSessions.delete(cardId);
+  if (activeInputSession === cardId) activeInputSession = null;
+  if (focusedSessions.size === 0) unfocusTerminal();
+  assignRings();
 }
 
 // Expose globally so terminal.svg alt+click can call it
