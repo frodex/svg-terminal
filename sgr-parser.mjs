@@ -221,6 +221,34 @@ export function parseLine(line) {
       }
       // Skip the whole escape sequence (both SGR and non-SGR)
       i = j + 1;
+    } else if (line[i] === '\x1b' && i + 1 < line.length && line[i + 1] === ']') {
+      // OSC sequence: ESC ] ... terminated by BEL (\x07) or ST (ESC \)
+      let j = i + 2;
+      while (j < line.length) {
+        if (line[j] === '\x07') { j++; break; }
+        if (line[j] === '\x1b' && j + 1 < line.length && line[j + 1] === '\\') { j += 2; break; }
+        j++;
+      }
+      // Extract OSC content (between ESC ] and terminator)
+      const oscContent = line.slice(i + 2, line[j - 1] === '\\' ? j - 2 : j - 1);
+      // OSC 8: hyperlink — format: 8;params;URL
+      if (oscContent.startsWith('8;')) {
+        const firstSemi = oscContent.indexOf(';');
+        const secondSemi = oscContent.indexOf(';', firstSemi + 1);
+        const url = secondSemi >= 0 ? oscContent.slice(secondSemi + 1) : '';
+        // Flush text before style change
+        if (text.length > 0) {
+          spans.push({ text, ...style });
+          text = '';
+        }
+        const newStyle = { ...style, url: url || null };
+        style = newStyle;
+      }
+      // All other OSC types: silently strip
+      i = j;
+    } else if (line[i] === '\x1b') {
+      // Other escape sequences (ESC D, ESC M, etc.): skip ESC + next char
+      i += 2;
     } else {
       text += line[i];
       i++;

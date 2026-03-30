@@ -244,3 +244,38 @@ test('tmux colon sub-parameter for overline (5:3)', () => {
     span({ text: 'OVER', overline: true }),
   ]);
 });
+
+test('OSC 8 hyperlink sets span.url', () => {
+  const result = parseLine('\x1b]8;;http://example.com\x1b\\Click Here\x1b]8;;\x1b\\');
+  assert.deepEqual(result, [
+    span({ text: 'Click Here', url: 'http://example.com' }),
+  ]);
+});
+
+test('OSC 8 with styled text preserves both', () => {
+  const result = parseLine('\x1b[1m\x1b]8;;http://test.com\x1b\\BOLD LINK\x1b]8;;\x1b\\\x1b[0m');
+  assert.deepEqual(result, [
+    span({ text: 'BOLD LINK', bold: true, url: 'http://test.com' }),
+  ]);
+});
+
+test('OSC 8 with params field (ignored)', () => {
+  const result = parseLine('\x1b]8;id=123;http://example.com\x1b\\Link\x1b]8;;\x1b\\');
+  assert.deepEqual(result, [
+    span({ text: 'Link', url: 'http://example.com' }),
+  ]);
+});
+
+test('unknown OSC stripped cleanly', () => {
+  const result = parseLine('before\x1b]99;some data\x07after');
+  assert.deepEqual(result, [
+    span({ text: 'beforeafter' }),
+  ]);
+});
+
+test('OSC terminated by BEL', () => {
+  const result = parseLine('\x1b]8;;http://bel.com\x07Link\x1b]8;;\x07');
+  assert.deepEqual(result, [
+    span({ text: 'Link', url: 'http://bel.com' }),
+  ]);
+});
