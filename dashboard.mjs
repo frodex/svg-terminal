@@ -96,17 +96,17 @@ const SPECIAL_KEY_MAP = {
   'Enter': 'Enter',
   'Tab': 'Tab',
   'Escape': 'Escape',
-  'Backspace': 'BSpace',
-  'Delete': 'DC',
+  'Backspace': 'Backspace',
+  'Delete': 'Delete',
   'ArrowUp': 'Up',
   'ArrowDown': 'Down',
   'ArrowLeft': 'Left',
   'ArrowRight': 'Right',
   'Home': 'Home',
   'End': 'End',
-  'PageUp': 'PgUp',
-  'PageDown': 'PgDn',
-  'Insert': 'IC',
+  'PageUp': 'PageUp',
+  'PageDown': 'PageDown',
+  'Insert': 'Insert',
   'F1': 'F1', 'F2': 'F2', 'F3': 'F3', 'F4': 'F4',
   'F5': 'F5', 'F6': 'F6', 'F7': 'F7', 'F8': 'F8',
   'F9': 'F9', 'F10': 'F10', 'F11': 'F11', 'F12': 'F12',
@@ -2255,7 +2255,7 @@ document.addEventListener('keydown', function(e) {
 
   // Ctrl combos (C-c only reaches here if no selection)
   if (e.ctrlKey && e.key.length === 1) {
-    t.sendInput({ type: 'input', specialKey: 'C-' + e.key.toLowerCase() });
+    t.sendInput({ type: 'input', keys: e.key.toLowerCase(), ctrl: true });
     return;
   }
 
