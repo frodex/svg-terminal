@@ -440,12 +440,14 @@ function handleProxy(req, res, params) {
   });
 
   proxyReq.on('error', (err) => {
-    sendError(res, 502, 'Proxy error: ' + err.message);
+    if (!res.headersSent) sendError(res, 502, 'Proxy error: ' + err.message);
+    else res.end();
   });
 
   proxyReq.on('timeout', () => {
     proxyReq.destroy();
-    sendError(res, 504, 'Proxy timeout');
+    if (!res.headersSent) sendError(res, 504, 'Proxy timeout');
+    else res.end();
   });
 }
 
