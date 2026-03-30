@@ -185,6 +185,50 @@ function applyParams(params, style) {
   return next;
 }
 
+function tagPlainUrls(spans) {
+  const result = [];
+  for (let i = 0; i < spans.length; i++) {
+    const s = spans[i];
+    // Skip spans that already have a URL (from OSC 8)
+    if (s.url) { result.push(s); continue; }
+    const text = s.text;
+    let lastEnd = 0;
+    let searchFrom = 0;
+    while (searchFrom < text.length) {
+      const httpIdx = text.indexOf('http://', searchFrom);
+      const httpsIdx = text.indexOf('https://', searchFrom);
+      let idx = -1;
+      if (httpIdx >= 0 && httpsIdx >= 0) idx = Math.min(httpIdx, httpsIdx);
+      else if (httpIdx >= 0) idx = httpIdx;
+      else if (httpsIdx >= 0) idx = httpsIdx;
+      if (idx < 0) break;
+      // Walk forward to find URL end (whitespace or URL-terminating chars)
+      let end = idx;
+      while (end < text.length && !/[\s<>"'\])]/.test(text[end])) end++;
+      // Strip trailing punctuation that's likely not part of the URL
+      while (end > idx && /[.,;:!?)}\]]/.test(text[end - 1])) end--;
+      const url = text.slice(idx, end);
+      if (url.length > 7) { // longer than just "http://"
+        // Text before the URL
+        if (idx > lastEnd) {
+          result.push({ ...s, text: text.slice(lastEnd, idx) });
+        }
+        // The URL span
+        result.push({ ...s, text: url, url: url });
+        lastEnd = end;
+      }
+      searchFrom = end;
+    }
+    // Remaining text after last URL
+    if (lastEnd === 0) {
+      result.push(s); // no URLs found, keep original
+    } else if (lastEnd < text.length) {
+      result.push({ ...s, text: text.slice(lastEnd) });
+    }
+  }
+  return result;
+}
+
 export function parseLine(line) {
   const spans = [];
   let style = defaultStyle();
@@ -260,5 +304,5 @@ export function parseLine(line) {
     spans.push({ text, ...style });
   }
 
-  return spans;
+  return tagPlainUrls(spans);
 }

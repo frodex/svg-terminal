@@ -279,3 +279,54 @@ test('OSC terminated by BEL', () => {
     span({ text: 'Link', url: 'http://bel.com' }),
   ]);
 });
+
+test('plain-text http URL tagged', () => {
+  const result = parseLine('Visit http://example.com/path for info');
+  assert.deepEqual(result, [
+    span({ text: 'Visit ' }),
+    span({ text: 'http://example.com/path', url: 'http://example.com/path' }),
+    span({ text: ' for info' }),
+  ]);
+});
+
+test('plain-text https URL tagged', () => {
+  const result = parseLine('See https://github.com/user/repo');
+  assert.deepEqual(result, [
+    span({ text: 'See ' }),
+    span({ text: 'https://github.com/user/repo', url: 'https://github.com/user/repo' }),
+  ]);
+});
+
+test('multiple plain-text URLs on one line', () => {
+  const result = parseLine('http://a.com and http://b.com');
+  assert.deepEqual(result, [
+    span({ text: 'http://a.com', url: 'http://a.com' }),
+    span({ text: ' and ' }),
+    span({ text: 'http://b.com', url: 'http://b.com' }),
+  ]);
+});
+
+test('URL with SGR styling preserved', () => {
+  const result = parseLine('\x1b[32mhttp://green.com\x1b[0m');
+  assert.deepEqual(result, [
+    span({ text: 'http://green.com', cls: 'c2', url: 'http://green.com' }),
+  ]);
+});
+
+test('OSC 8 URL not double-tagged by plain-text pass', () => {
+  const result = parseLine('\x1b]8;;http://osc.com\x1b\\Click\x1b]8;;\x1b\\');
+  assert.deepEqual(result, [
+    span({ text: 'Click', url: 'http://osc.com' }),
+  ]);
+});
+
+test('URL terminated by whitespace, quotes, angle brackets', () => {
+  const result = parseLine('"http://quoted.com" <http://angle.com>');
+  assert.deepEqual(result, [
+    span({ text: '"' }),
+    span({ text: 'http://quoted.com', url: 'http://quoted.com' }),
+    span({ text: '" <' }),
+    span({ text: 'http://angle.com', url: 'http://angle.com' }),
+    span({ text: '>' }),
+  ]);
+});
