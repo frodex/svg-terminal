@@ -2569,14 +2569,9 @@ function moveCursorTo(t, cursorPos, targetPos) {
   const key = delta > 0 ? 'Left' : 'Right';
   const steps = Math.min(Math.abs(delta), 200); // cap to avoid flooding
 
-  let i = 0;
-  function sendNext() {
-    if (i >= steps) return;
-    t.sendInput({ type: 'input', specialKey: key });
-    i++;
-    setTimeout(sendNext, 5);
-  }
-  sendNext();
+  // Send as a batch of special keys in one WebSocket message.
+  // Individual messages with 5ms delays were dropping keystrokes.
+  t.sendInput({ type: 'input', specialKey: key, repeat: steps });
 }
 
 function clearSel() {
