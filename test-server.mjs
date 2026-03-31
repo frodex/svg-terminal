@@ -320,3 +320,129 @@ test('resize lock prevents second browser from overwriting first resize', async 
     try { execSync('tmux kill-session -t resize-test 2>/dev/null'); } catch {}
   }
 });
+
+// ---------------------------------------------------------------------------
+// DashboardSocket tests
+// ---------------------------------------------------------------------------
+
+function parseWsMsg(e) {
+  return JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString());
+}
+
+test('Two /ws/dashboard clients both receive session-add and screen messages', async () => {
+  const url = 'ws://127.0.0.1:' + TEST_PORT + '/ws/dashboard';
+  const ws1 = new WebSocket(url);
+  const ws2 = new WebSocket(url);
+
+  // Collect messages until we see at least one session-add and one screen on each
+  function collectUntilReady(ws) {
+    return new Promise((resolve, reject) => {
+      const msgs = [];
+      let gotAdd = false, gotScreen = false;
+      ws.onmessage = (e) => {
+        const msg = parseWsMsg(e);
+        msgs.push(msg);
+        if (msg.type === 'session-add') gotAdd = true;
+        if (msg.type === 'screen') gotScreen = true;
+        if (gotAdd && gotScreen) resolve(msgs);
+      };
+      ws.onerror = () => reject(new Error('WebSocket error'));
+      setTimeout(() => {
+        // Resolve with whatever we have after timeout
+        if (gotAdd || gotScreen) resolve(msgs);
+        else reject(new Error('Timeout — no session-add or screen received'));
+      }, 5000);
+    });
+  }
+
+  const [msgs1, msgs2] = await Promise.all([collectUntilReady(ws1), collectUntilReady(ws2)]);
+
+  // Both should have session-add messages
+  const adds1 = msgs1.filter(m => m.type === 'session-add');
+  const adds2 = msgs2.filter(m => m.type === 'session-add');
+  assert.ok(adds1.length > 0, 'ws1 should receive at least one session-add');
+  assert.ok(adds2.length > 0, 'ws2 should receive at least one session-add');
+
+  // Both should have screen messages with session and pane fields
+  const screens1 = msgs1.filter(m => m.type === 'screen');
+  const screens2 = msgs2.filter(m => m.type === 'screen');
+  assert.ok(screens1.length > 0, 'ws1 should receive at least one screen');
+  assert.ok(screens2.length > 0, 'ws2 should receive at least one screen');
+
+  // Screen messages must have session and pane tags
+  assert.ok(screens1[0].session, 'screen should have session field');
+  assert.ok(screens1[0].pane, 'screen should have pane field');
+
+  ws1.close();
+  ws2.close();
+});
+
+test('/ws/dashboard input sends keys without error', async () => {
+  const sessRes = await get('/api/sessions');
+  const sessions = await sessRes.json();
+  const localSession = sessions.find(s => s.source === 'tmux');
+  if (!localSession) return; // skip if no local sessions
+
+  const ws = new WebSocket('ws://127.0.0.1:' + TEST_PORT + '/ws/dashboard');
+
+  // Wait for initial screen for our session
+  await new Promise((resolve, reject) => {
+    ws.onmessage = (e) => {
+      const msg = parseWsMsg(e);
+      if (msg.type === 'screen' && msg.session === localSession.name) resolve();
+    };
+    ws.onerror = () => reject(new Error('WebSocket error'));
+    setTimeout(() => reject(new Error('Timeout waiting for screen')), 5000);
+  });
+
+  // Send input — should not cause an error response
+  ws.send(JSON.stringify({ type: 'input', session: localSession.name, pane: '0', keys: ' ' }));
+
+  // Wait briefly and check we get screen/delta, not error
+  const response = await new Promise((resolve, reject) => {
+    ws.onmessage = (e) => {
+      const msg = parseWsMsg(e);
+      resolve(msg);
+    };
+    setTimeout(() => resolve(null), 2000);
+  });
+
+  if (response) {
+    assert.notEqual(response.type, 'error', 'Should not receive error after input: ' + JSON.stringify(response));
+  }
+
+  ws.close();
+});
+
+test('/ws/dashboard handles claude-proxy sessions gracefully', async () => {
+  // This test verifies the dashboard doesn't crash when claude-proxy sessions
+  // are discovered but not locally accessible. We just need to confirm the
+  // connection succeeds and session-add messages are sent.
+  const ws = new WebSocket('ws://127.0.0.1:' + TEST_PORT + '/ws/dashboard');
+
+  const msgs = await new Promise((resolve, reject) => {
+    const collected = [];
+    ws.onmessage = (e) => {
+      collected.push(parseWsMsg(e));
+    };
+    ws.onerror = () => reject(new Error('WebSocket error'));
+    // Collect for 2 seconds
+    setTimeout(() => resolve(collected), 2000);
+  });
+
+  // Should have at least one session-add (from local tmux)
+  const adds = msgs.filter(m => m.type === 'session-add');
+  assert.ok(adds.length > 0, 'Should receive session-add messages');
+
+  // All session-add messages should have required fields
+  for (const add of adds) {
+    assert.ok(add.session, 'session-add should have session field');
+    assert.ok(add.source, 'session-add should have source field');
+  }
+
+  // No errors should have been sent
+  const errors = msgs.filter(m => m.type === 'error');
+  assert.equal(errors.length, 0, 'Should not receive any errors: ' + JSON.stringify(errors));
+
+  ws.close();
+});
