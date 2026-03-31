@@ -1832,45 +1832,15 @@ function addToFocus(sessionName) {
 }
 
 // Set which focused terminal receives input
-// Standard "reading distance" Z — active card slides forward to this depth
-// relative to camera, so text is always the same readable size.
-// Z-CREEP BUG: Without deleting _savedZ on deselect, each select/deselect cycle adds
-// READING_Z_OFFSET to the card's Z. _savedZ must capture the pre-slide Z and be
-// deleted on deselect so the next select starts from the restored position. See PRD §7.4.
-const READING_Z_OFFSET = 25; // subtle forward slide — just enough to layer in front
-
+// Active terminal distinguished by gold header background only — no Z movement.
+// Z-slide removed: was sliding active card forward by 25 units in multi-focus,
+// caused Z-creep bugs and added complexity. Gold header (#4a4020) is sufficient.
 function setActiveInput(sessionName) {
   if (!focusedSessions.has(sessionName)) return;
-  const prevActive = activeInputSession;
   activeInputSession = sessionName;
   updateFocusStyles();
   document.getElementById('input-target').textContent = sessionName;
   showTermControls(sessionName);
-
-  // Slide previous active card back to where it was before the Z slide
-  if (prevActive && prevActive !== sessionName) {
-    const prevT = terminals.get(prevActive);
-    if (prevT && prevT._savedZ !== undefined) {
-      prevT.targetPos.z = prevT._savedZ;
-      prevT.morphFrom = { ...prevT.currentPos };
-      prevT.morphStart = clock.getElapsedTime();
-      // Keep current position, just slide Z
-      delete prevT._savedZ;
-    }
-  }
-
-  // Slide new active card forward — only in MULTI-FOCUS mode to distinguish
-  // the active input terminal from others. In single focus, the terminal is
-  // already centered — no Z slide needed.
-  const t = terminals.get(sessionName);
-  if (t && focusedSessions.size > 1) {
-    if (t._savedZ === undefined) {
-      t._savedZ = t.targetPos.z;
-      t.targetPos.z += READING_Z_OFFSET;
-      t.morphFrom = { ...t.currentPos };
-      t.morphStart = clock.getElapsedTime();
-    }
-  }
 }
 
 // Update CSS classes for all terminals based on focus state.
@@ -1960,20 +1930,6 @@ function restoreAllFocused() {
 //   camera back to HOME_POS. The old bug was calling focusedSessions.clear() inside
 //   deselectTerminals — cards immediately flew to the ring on every empty-space click.
 function deselectTerminals() {
-  // Slide active card back to its pre-slide Z, then clear saved state
-  if (activeInputSession) {
-    const t = terminals.get(activeInputSession);
-    if (t && t._savedZ !== undefined) {
-      t.targetPos.z = t._savedZ;
-      t.morphFrom = { ...t.currentPos };
-      t.morphStart = clock.getElapsedTime();
-      delete t._savedZ;
-    }
-  }
-  // Clear all _savedZ to prevent accumulation
-  for (const [name, term] of terminals) {
-    delete term._savedZ;
-  }
   activeInputSession = null;
   _zoomedSession = null;
   // Remove input/highlight indicators but keep focusedSessions intact.
