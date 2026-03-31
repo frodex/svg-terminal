@@ -669,8 +669,13 @@ function snapshotThumbnail(sessionName) {
 
 var _pendingSnapshots = new Set();
 var _snapshotIdleId = null;
+var _lastSnapshotTime = {};  // per-session throttle
+var SNAPSHOT_THROTTLE_MS = 2000;  // max one snapshot per session per 2s
 
 function scheduleSnapshot(sessionName) {
+  var now = Date.now();
+  if (_lastSnapshotTime[sessionName] && now - _lastSnapshotTime[sessionName] < SNAPSHOT_THROTTLE_MS) return;
+  _lastSnapshotTime[sessionName] = now;
   _pendingSnapshots.add(sessionName);
   if (_snapshotIdleId === null) {
     _snapshotIdleId = requestIdleCallback(flushSnapshots);
@@ -1484,7 +1489,7 @@ function createThumbnail(sessionName) {
   const img = document.createElement('img');
   img.style.width = '100%';
   img.style.height = '80px';
-  img.style.objectFit = 'cover';
+  img.style.objectFit = 'contain';
   img.style.display = 'none';  // hidden until first snapshot
   img.alt = sessionName;
   item.appendChild(img);
