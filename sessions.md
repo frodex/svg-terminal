@@ -120,8 +120,19 @@ Key requirement: terminals should be oriented in 3D (not flat/locked), with lazy
 - Task 1 complete: terminal.svg exports (sendToWs, _wsReady, _screenCallback)
 - Tasks 2-4 in progress
 
+**Part 4: Selection Rework**
+- Mouse selection: bounds check (no sidebar trigger), minimum drag distance (1.5 cells), auto-copy on mouseup + flash + 2s fade
+- Keyboard selection: Shift+Arrow extends, Shift release = auto-copy + flash + fade (same lifecycle as mouse)
+- Added selMode flag (mouse/keyboard/mouse-fading/keyboard-fading) to prevent race conditions
+- Journals: v0.1-v0.7 selection bugs, plan v3 + keyboard selection fix plan
+- User approved and verified working
+
+**Part 5: Z-slide removal + overlay fix**
+- Removed READING_Z_OFFSET Z-slide in multi-focus (gold header sufficient)
+- Fixed persistent "Connection lost" overlay: guarded poll showError with useWebSocket check, added hideError to delta handler
+- Root cause: poll fires after WS connects, showError overwrites hideError, delta handler never clears it
+
 **Still needed:**
-- Complete single-WS tasks 2-4 (sendInput routing, callback registration, remove inputWs)
 - Configure real OAuth credentials (env vars)
 - Test full OAuth flow end-to-end with a real provider
 - Test provisioning (useradd) with a real approval

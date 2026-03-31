@@ -328,6 +328,7 @@
               cursorEl.setAttribute('y', msg.cursor.y * CELL_H);
             }
             try { if (window._screenCallback) window._screenCallback(msg); } catch(e) {}
+            hideError();
 
           } else if (msg.type === 'error') {
             showError();
@@ -405,7 +406,7 @@
             schedulePoll(pollInterval);
           })
           .catch(function (err) {
-            showError();
+            if (!useWebSocket) showError();
             schedulePoll(RETRY_MS);
           });
       }
