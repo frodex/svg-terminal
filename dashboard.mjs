@@ -690,17 +690,27 @@ function escapeHtml(text) {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// Thumbnail sequencer — one card per tick, round-robin.
-// Spreads work evenly. No bursts, no idle callback dependency.
+// Thumbnail sequencer — round-robin, skips clean cards.
+// Faster tick since dirty check means most ticks are no-ops.
 var _thumbSequencerIndex = 0;
-var THUMB_TICK_MS = 200;  // one thumbnail every 200ms = full cycle in ~3.2s for 16 cards
+var THUMB_TICK_MS = 50;  // check every 50ms, but only snapshot dirty cards
 
 setInterval(function() {
   var keys = [...terminals.keys()];
   if (keys.length === 0) return;
-  _thumbSequencerIndex = _thumbSequencerIndex % keys.length;
-  snapshotThumbnail(keys[_thumbSequencerIndex]);
-  _thumbSequencerIndex++;
+  // Walk up to keys.length cards looking for a dirty one
+  for (var attempt = 0; attempt < keys.length; attempt++) {
+    _thumbSequencerIndex = _thumbSequencerIndex % keys.length;
+    var name = keys[_thumbSequencerIndex];
+    _thumbSequencerIndex++;
+    var t = terminals.get(name);
+    if (t && t._thumbDirty) {
+      t._thumbDirty = false;
+      snapshotThumbnail(name);
+      return;  // one per tick
+    }
+  }
+  // All clean — nothing to do
 }, THUMB_TICK_MS);
 
 // scheduleSnapshot kept as no-op for any remaining callers
@@ -1870,6 +1880,7 @@ function addTerminal(sessionName, cols, rows) {
               t.screenLines[parseInt(idx)] = { text: spans.map(function(s) { return s.text; }).join(''), spans: spans };
             }
             if (msg.cursor) t._lastCursor = msg.cursor;
+            t._thumbDirty = true;
           }
         };
         // Flush any messages that arrived before SVG loaded
@@ -1884,7 +1895,7 @@ function addTerminal(sessionName, cols, rows) {
           }
         }
         // Initial thumbnail snapshot once main SVG has content
-        scheduleSnapshot(sessionName);
+        t._thumbDirty = true;
       } catch (e) {}
     });
   }
