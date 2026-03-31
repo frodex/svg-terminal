@@ -170,7 +170,7 @@ Constants: `SVG_CELL_W = 8.65`, `SVG_CELL_H = 17`, `HEADER_H = 72`.
 
 ### 5.2 During Focus
 
-Card size does NOT change. +/− changes cols/rows inside the same card (font size change). Alt+drag changes card DOM directly. `updateCardForNewSize` skips DOM updates when focused — only updates `baseCardW/baseCardH` so unfocus restores correctly.
+Card DOM always reflects current terminal dimensions. +/− changes cols/rows, and the card reshapes to match. The camera-only model handles apparent size via camera distance. External resizes (other browsers, SSH clients) are immediately visible. Alt+drag changes card DOM directly. `updateCardForNewSize` skips DOM updates when focused — only updates `baseCardW/baseCardH` so unfocus restores correctly.
 
 ### 5.3 Optimize (Two Directions)
 
@@ -258,6 +258,7 @@ Card background is `#2e2e32` (lightened from `#1c1c1e`) to see card vs terminal 
 | Atomic tmux capture (`;` separator) | Race condition between cursor and content | Cursor offset | `[UNVERIFIED]` agent 1 |
 | `tmux resize-window` not `resize-pane` | resize-pane fails without attached client | Silent resize failure | `[UNVERIFIED]` agent 2 |
 | `cp-*` sessions don't accept resize | Managed by claude-proxy with SSH clients | Test only with standalone sessions | agent 3 (confirmed empirically) |
+| No outbound resize from incoming data | updateCardForNewSize and _screenCallback must never send a resize command. Only user gestures trigger outbound resizes. Violation creates cross-browser feedback loop. | agent 5 (2026-03-30) |
 
 ---
 
@@ -281,6 +282,7 @@ Each entry notes whether the change was due to **misunderstood intent** (agents 
 | Inline SVG (replace `<object>`) | Font metrics differ between inline SVG and `<object>` isolated document. getBBox() returns 9.13x21.66 inline vs 8.5x25.5 in `<object>` for same font at same size. Cursor drifts, backgrounds misaligned. | Keep `<object>` isolation, use contentWindow bridge for input | **Misunderstood constraint.** HTML and SVG rendering contexts produce different font measurements. The `<object>` isolation isn't just for font loading — it creates the rendering context that makes the font calibration work. agent 4 (2026-03-30) |
 | HTML text overlay on SVG `<object>` | HTML monospace character advance differs from SVG `<tspan>` explicit x-positioning. 0.248px/char drift, ~20px off by column 80. Red text flashing test proved misalignment. | Same as above — SVG is the sole renderer | **Misunderstood constraint.** Even with same font at same size, HTML `getBoundingClientRect()` and SVG `getBBox()` produce different results. Fundamental browser rendering engine difference, not a calibration problem. agent 4 (2026-03-30) |
 | Dual WebSocket per terminal (inputWs) | Scroll broken on proxied sessions, keystroke ordering under load, silent connection death | Single WebSocket via contentWindow.sendToWs bridge | **Leftover patch.** Dual WS was added when SVG cards were read-only with a text input bar. When direct keystroke capture replaced the input bar, the second WS should have been removed. Never was. agent 4 (2026-03-30) |
+| Focused-card guard blocking external resizes | Prevented external dimension changes from updating focused cards. Multi-browser resize invisible. | Guard removed — card DOM always updates | **Misunderstood constraint.** Guard was added to prevent fight with calculateFocusedLayout. The real fix is re-layout after dimension change, not blocking the update. agent 5 (2026-03-30) |
 
 ---
 
