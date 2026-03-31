@@ -74,6 +74,56 @@ Key requirement: terminals should be oriented in 3D (not flat/locked), with lazy
 
 ## Session History (most recent first)
 
+### Session 2026-03-31 — Crisis Recovery: Single WebSocket + Shared Capture Architecture
+
+**Context:** Server meltdown on 2026-03-30. 170 TCP connections, 55% CPU, connection cycling from stale clients. Server isolated to port 3201. Previous agent left unverified research proposing xterm/headless (wrong — loses scrollback).
+
+**Part 1: First-Principles Analysis**
+- Traced complete data lifecycle: tmux capture-pane → sgr-parser → diffState → WebSocket → terminal.svg SVG rendering
+- Identified real problem: per-connection polling duplication (N browsers × M sessions = N×M captures), not polling itself
+- Audited legacy code: mapped new-session-only path vs pre-WebSocket dead code
+- Rejected xterm/headless (loses scrollback, proven by claude-proxy commit 7aa1323)
+- Rejected tmux -C control mode (adds persistent process, throws away data, calls capture-pane anyway)
+- Rejected adaptive backoff (optimizes wrong dimension — captures not interval)
+- Benchmarked: 30 concurrent capture-pane = 13ms, 30 screens parsing = 2.6ms. Shared polling handles 30 sessions in 16ms.
+- Research trail: journals v0.1 through v0.5
+
+**Part 2: Architecture Decision**
+- Single multiplexed WebSocket per browser (`/ws/dashboard`)
+- Shared capture per session (SessionWatcher — one poll per session, broadcast to subscribers)
+- Per-user session filtering via getAuthUser (cookie from upgrade headers, UGO model)
+- SSE throttle for server load management
+- Tunable poll interval (default 100ms, env CAPTURE_INTERVAL)
+- PRD v0.5.0 written (stepped from v0.4.0)
+- Wire format spec: tagged JSON messages, no combining/demuxing
+
+**Part 3: Implementation (8 tasks, subagent-driven)**
+- SessionWatcher + DashboardSocket in server.mjs (shared capture, /ws/dashboard endpoint)
+- Dashboard single WebSocket (connectDashboardWs, routeDashboardMessage, sendDashboardMessage)
+- terminal.svg renderMessage() inbound API
+- Claude-proxy session bridging (event-driven relay with session tagging)
+- SSE throttle endpoint + dashboard listener
+- Deprecation comments on all legacy code paths
+- Integration test (23 tests passing)
+- Fix: cp-* input routing through upstream bridge (not local tmux)
+
+**Verified live:** User typed through shared WS → claude-proxy bridge → into active session. "I do think this is WAY better."
+
+**CPU note:** 53.5% during transition (both old per-card WS and new shared WS running). Expected to drop significantly when old paths removed.
+
+**Artifacts:**
+- PRD-v0.5.0.md (stepped from PRD.md v0.4.0)
+- docs/PRD-amendment-001.md, 002.md, 003.md (reasoning trail)
+- docs/research/2026-03-31-v0.1 through v0.5-event-driven-terminal-updates-journal.md
+- docs/superpowers/plans/2026-03-31-single-websocket-shared-capture.md
+- 10 commits on camera-only-test branch
+
+**Still pending:**
+- Remove deprecated code when old sessions terminated
+- Periodic session re-discovery on shared WS (currently one-shot on connect)
+- Extract shared discoverSessions() to deduplicate handleSessions + sendSessionDiscovery
+- Move SGR parsing from server to browser (future optimization)
+
 ### Session 2026-03-30 — Cross-Browser Resize Sync + Card Association Design + Crash Debugging
 **Part 1: Design & Planning**
 - Card association system designed (magnetic attachment, group title bars, recursive focus)
