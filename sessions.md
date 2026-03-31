@@ -74,6 +74,55 @@ Key requirement: terminals should be oriented in 3D (not flat/locked), with lazy
 
 ## Session History (most recent first)
 
+### Session 2026-03-30 — Cross-Browser Resize Sync + Card Association Design + Crash Debugging
+**Part 1: Design & Planning**
+- Card association system designed (magnetic attachment, group title bars, recursive focus)
+  - Spec: docs/superpowers/specs/2026-03-30-card-association-system-design.md
+- Cross-browser resize sync: 6-step design chain (design.01 → design.06)
+  - SSH resize token flow researched (RFC 4254 §6.7, fire-and-forget at every layer)
+  - Focused-card guard history traced through 3 git commits
+  - Design: fix single-browser first, multi-browser is free via 30ms poll
+  - Spec: docs/superpowers/specs/2026-03-30-cross-browser-resize-sync-design.06.md
+  - Plan: docs/superpowers/plans/2026-03-30-cross-browser-resize-sync.md
+
+**Part 2: Implementation**
+- Removed Z-slide bump in multi-focus (Task #4, commit 7c0ebfd)
+- Removed focused-card guard (commit de32874) — card DOM always updates
+- Added re-layout trigger for focused cards on dimension change (commit 5fb33be)
+- Server-side resize lock 500ms (TDD, commit 0a2d030, 19/19 tests)
+- PRD updated with no-outbound-resize constraint (commit 941e40e)
+- All 57 tests passing (19 server + 16 auth + 22 E2E)
+
+**Part 3: Connection Cycling Crash**
+- Dashboard cards started cycling "Connection lost" after implementation
+- Extended debugging session: message flood analysis, Chrome re-compositing theory, guard revert
+- Root cause: version mismatch — 2-3 stale browser clients (running 4-day-old code) against new server
+- Moved server to port 3201, isolated from stale clients — immediately stable
+- Journal: docs/research/2026-03-30-v0.1-connection-cycling-crash-journal.md
+
+**Part 4: Additional Design Work**
+- Card association system: magnetic edge attachment with commitment threshold (magnet icon)
+- Follow-along mode: parent/child browser action sync
+- Z-plane eclipsing: documented 3 approaches, deferred
+- Text aliasing: fractional pixel sizes under CSS3D, needs investigation
+
+**Tasks Created:**
+- #6: Card association system (magnetic attachment + groups)
+- #7: Cross-browser resize sync (implemented, needs manual verification)
+- #8: Follow-along mode
+- #9: Text aliasing from fractional sizes
+- #10: Z-plane eclipsing
+- #18: Server-pushed browser reload for deploys
+- #19: Fix /api/pane for claude-proxy sessions
+
+**Still needed:**
+- Reconcile guard state (committed: removed, local disk: restored)
+- Manual multi-browser verification (Task #15)
+- Server-pushed reload feature before sharing URL again
+- Fix /api/pane HTTP endpoint for proxy sessions
+- Move server back to port 3200 after stale clients cleared
+- Branch: camera-only-test, server on port 3201
+
 ### Session 2026-03-30 — Claude-Proxy Integration + Login/User Management
 **Part 1: WebSocket Integration**
 - Communicated directly with claude-proxy agent via WebSocket (protocol spec + sign-off)
