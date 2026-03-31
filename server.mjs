@@ -650,6 +650,21 @@ async function handleDashboardWs(ws, req) {
     try {
       const msg = JSON.parse(data);
 
+      // Subscribe to a new session discovered after initial connection
+      if (msg.type === 'subscribe') {
+        const session = msg.session;
+        if (session && validateParam(session)) {
+          if (msg.source === 'claude-proxy') {
+            bridgeClaudeProxySession(session);
+            const watcher = sessionWatchers.get(session + ':0');
+            if (watcher) watcher.subscribers.add(ws);
+          } else {
+            subscribeToSession(ws, session, '0');
+          }
+        }
+        return;
+      }
+
       // Focus message — adjust capture rates for all watchers
       if (msg.type === 'focus') {
         const focused = new Set(msg.sessions || []);

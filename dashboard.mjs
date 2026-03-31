@@ -1658,6 +1658,8 @@ async function refreshSessions() {
     for (const session of sessions) {
       if (!existingNames.has(session.name)) {
         addTerminal(session.name, session.cols, session.rows);
+        // Tell server to create a watcher for this session on the shared WS
+        sendDashboardMessage({ type: 'subscribe', session: session.name, source: session.source || 'tmux' });
         changed = true;
       } else {
         // Update card size if tmux dimensions changed (e.g. resized from another client)
