@@ -622,6 +622,8 @@ function routeDashboardMessage(msg) {
     var t = terminals.get(msg.session);
     if (!t) return; // no card for this session, ignore
     if (msg.type === 'screen' || msg.type === 'delta') {
+      // Update card title from message (claude-proxy sends rich titles)
+      if (msg.title) updateTerminalTitle(msg.session, msg.title);
       // Route to main card SVG
       var obj = t.dom ? t.dom.querySelector('object') : null;
       if (obj && obj.contentWindow && typeof obj.contentWindow.renderMessage === 'function') {
