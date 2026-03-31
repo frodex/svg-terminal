@@ -339,7 +339,8 @@
           useWebSocket = false;
           window._wsReady = false;
           ws = null;
-          if (pollTimer === null) schedulePoll(pollInterval);
+          // DISABLED: HTTP poll fallback removed — shared WS handles data (PRD v0.5.0)
+          // if (pollTimer === null) schedulePoll(pollInterval);
           wsReconnectTimer = setTimeout(connectWebSocket, 2000);
         };
 
@@ -441,17 +442,15 @@
       // -----------------------------------------------------------------------
       // IntersectionObserver — stop polling when offscreen, resume when visible
       // -----------------------------------------------------------------------
-      if (typeof IntersectionObserver !== 'undefined') {
-        var observer = new IntersectionObserver(function (entries) {
-          var entry = entries[0];
-          if (!entry.isIntersecting) {
-            stopPolling();
-          } else {
-            startPolling(measureTier());
-          }
-        });
-        observer.observe(document.documentElement);
-      }
+      // DISABLED: IntersectionObserver polling removed — shared WS handles data (PRD v0.5.0)
+      // if (typeof IntersectionObserver !== 'undefined') {
+      //   var observer = new IntersectionObserver(function (entries) {
+      //     var entry = entries[0];
+      //     if (!entry.isIntersecting) { stopPolling(); }
+      //     else { startPolling(measureTier()); }
+      //   });
+      //   observer.observe(document.documentElement);
+      // }
 
       // -----------------------------------------------------------------------
       // Resize listener — debounced, rechecks tier and updates pollInterval
