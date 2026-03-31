@@ -636,23 +636,50 @@ function routeDashboardMessage(msg) {
           t._pendingMessages.push(msg);
         }
       }
-      // Also route to sidebar thumbnail SVG (thumb=1 mode, no own WS)
+      // Schedule idle thumbnail snapshot
       if (t.thumbnail) {
-        var thumbObj = t.thumbnail.querySelector('object');
-        if (thumbObj && thumbObj.contentWindow && typeof thumbObj.contentWindow.renderMessage === 'function') {
-          thumbObj.contentWindow.renderMessage(msg);
-        } else {
-          // Thumbnail SVG not loaded yet — queue for flush on load
-          if (!t._thumbPendingMessages) t._thumbPendingMessages = [];
-          if (msg.type === 'screen') {
-            t._thumbPendingMessages = [msg];
-          } else {
-            t._thumbPendingMessages.push(msg);
-          }
-        }
+        scheduleSnapshot(msg.session);
       }
     }
   }
+}
+
+// Snapshot main card SVG into thumbnail <img> via serialization (PRD v0.5.0)
+// Called via requestIdleCallback — zero cost to interaction.
+var _snapshotSerializer = new XMLSerializer();
+
+function snapshotThumbnail(sessionName) {
+  var t = terminals.get(sessionName);
+  if (!t || !t.thumbnail) return;
+
+  // Find the main card's <object> element
+  var mainObj = t.dom ? t.dom.querySelector('object') : null;
+  if (!mainObj || !mainObj.contentDocument) return;
+
+  var svg = mainObj.contentDocument.documentElement;
+  var data = _snapshotSerializer.serializeToString(svg);
+  var dataUri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(data);
+
+  var img = t.thumbnail.querySelector('img');
+  if (img) img.src = dataUri;
+}
+
+var _pendingSnapshots = new Set();
+var _snapshotIdleId = null;
+
+function scheduleSnapshot(sessionName) {
+  _pendingSnapshots.add(sessionName);
+  if (_snapshotIdleId === null) {
+    _snapshotIdleId = requestIdleCallback(flushSnapshots);
+  }
+}
+
+function flushSnapshots() {
+  _snapshotIdleId = null;
+  for (var name of _pendingSnapshots) {
+    snapshotThumbnail(name);
+  }
+  _pendingSnapshots.clear();
 }
 
 function sendDashboardMessage(msg) {
@@ -1451,26 +1478,12 @@ function createThumbnail(sessionName) {
   });
   item.appendChild(minBtn);
 
-  const obj = document.createElement('object');
-  obj.type = 'image/svg+xml';
-  obj.data = '/terminal.svg?session=' + encodeURIComponent(sessionName) + '&thumb=1';
-  item.appendChild(obj);
-
-  // Flush pending thumbnail messages when SVG loads
-  obj.addEventListener('load', function() {
-    try {
-      var t = terminals.get(sessionName);
-      if (t && t._thumbPendingMessages && t._thumbPendingMessages.length > 0) {
-        var pending = t._thumbPendingMessages;
-        t._thumbPendingMessages = null;
-        for (var p = 0; p < pending.length; p++) {
-          if (typeof obj.contentWindow.renderMessage === 'function') {
-            obj.contentWindow.renderMessage(pending[p]);
-          }
-        }
-      }
-    } catch (e) {}
-  });
+  const img = document.createElement('img');
+  img.style.width = '100%';
+  img.style.height = 'auto';
+  img.style.display = 'block';
+  img.alt = sessionName;
+  item.appendChild(img);
 
   // Sidebar thumbnail click handler.
   // stopPropagation prevents this from also triggering onSceneClick on the renderer.
@@ -1848,6 +1861,8 @@ function addTerminal(sessionName, cols, rows) {
             }
           }
         }
+        // Initial thumbnail snapshot once main SVG has content
+        scheduleSnapshot(sessionName);
       } catch (e) {}
     });
   }
