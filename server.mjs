@@ -459,7 +459,11 @@ function unsubscribeFromAll(ws) {
     if (!watcher) continue;
     watcher.subscribers.delete(ws);
     if (watcher.subscribers.size === 0) {
-      clearInterval(watcher.timer);
+      if (watcher.timer) clearInterval(watcher.timer);
+      if (watcher._cpUpstream) {
+        try { watcher._cpUpstream.close(); } catch (e) {}
+        watcher._cpUpstream = null;
+      }
       sessionWatchers.delete(key);
     }
   }
@@ -473,6 +477,64 @@ function triggerCapture(session, pane) {
     watcher.lastState = null; // force full diff
     watcher._captureAndBroadcast();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Bridge claude-proxy sessions into the watcher system (event-driven)
+// ---------------------------------------------------------------------------
+
+function bridgeClaudeProxySession(session) {
+  const key = session + ':0';
+  if (sessionWatchers.has(key)) return sessionWatchers.get(key);
+
+  const watcher = {
+    session,
+    pane: '0',
+    lastState: null,
+    subscribers: new Set(),
+    timer: null,        // no polling for cp sessions — event-driven
+    _cpUpstream: null,  // upstream WebSocket reference for cleanup
+  };
+  sessionWatchers.set(key, watcher);
+
+  try {
+    const cpUrl = 'ws://127.0.0.1:3101/api/session/' + encodeURIComponent(session) + '/stream';
+    const upstream = new WebSocket(cpUrl);
+    watcher._cpUpstream = upstream;
+
+    upstream.onmessage = (evt) => {
+      try {
+        const raw = typeof evt.data === 'string' ? evt.data : evt.data.toString();
+        const msg = JSON.parse(raw);
+        // Tag with session and pane so dashboard clients can route
+        msg.session = session;
+        msg.pane = '0';
+        const json = JSON.stringify(msg);
+        for (const ws of watcher.subscribers) {
+          if (ws.readyState === 1) ws.send(json);
+        }
+      } catch (err) {
+        // malformed message — skip
+      }
+    };
+
+    upstream.onclose = () => {
+      watcher._cpUpstream = null;
+      sessionWatchers.delete(key);
+    };
+
+    upstream.onerror = () => {
+      try { upstream.close(); } catch (e) {}
+      watcher._cpUpstream = null;
+      sessionWatchers.delete(key);
+    };
+  } catch (err) {
+    // claude-proxy unreachable — clean up and skip
+    sessionWatchers.delete(key);
+    return null;
+  }
+
+  return watcher;
 }
 
 // ---------------------------------------------------------------------------
@@ -534,7 +596,7 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
       ws.send(JSON.stringify({ type: 'session-add', session: s.name, pane: '0', ...s }));
     }
 
-    // Subscribe to watcher for local tmux sessions only
+    // Subscribe to watcher
     if (s.source === 'tmux') {
       subscribeToSession(ws, s.name, '0');
       // Send immediate initial capture
@@ -549,6 +611,14 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
         }
       } catch (err) {
         // Session may have disappeared between list and capture
+      }
+    } else if (s.source === 'claude-proxy') {
+      const watcher = bridgeClaudeProxySession(s.name);
+      if (watcher) {
+        watcher.subscribers.add(ws);
+        // Track reverse mapping for cleanup on disconnect
+        if (!wsToWatcherKeys.has(ws)) wsToWatcherKeys.set(ws, new Set());
+        wsToWatcherKeys.get(ws).add(s.name + ':0');
       }
     }
   }
