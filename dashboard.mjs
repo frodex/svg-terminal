@@ -1551,6 +1551,8 @@ function removeBrowserCard(cardId) {
 window._addBrowserCard = addBrowserCard;
 
 // === Session Discovery ===
+// DEPRECATED (PRD v0.5.0 §3.7): Session discovery replaced by session-add/session-remove WebSocket events
+// Kept as fallback during transition for old sessions not yet on shared WebSocket
 async function refreshSessions() {
   try {
     const res = await fetch('/api/sessions');
@@ -1583,6 +1585,7 @@ async function refreshSessions() {
   } catch (e) {}
 }
 
+// DEPRECATED (PRD v0.5.0): Titles arrive via WebSocket screen/delta messages
 async function refreshTitles() {
   for (const name of terminals.keys()) {
     const title = await fetchTitle(name);
@@ -1591,6 +1594,7 @@ async function refreshTitles() {
 }
 
 // === Add/Remove ===
+// DEPRECATED (PRD v0.5.0): Titles arrive via WebSocket screen/delta messages
 async function fetchTitle(sessionName) {
   try {
     const res = await fetch('/api/pane?session=' + encodeURIComponent(sessionName) + '&pane=0');

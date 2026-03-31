@@ -349,7 +349,10 @@
       }
 
       // -----------------------------------------------------------------------
-      // Poll
+      // DEPRECATED (PRD v0.5.0): HTTP polling fallback
+      // Replaced by shared WebSocket via dashboard.mjs + renderMessage().
+      // Kept for old pre-WebSocket tmux sessions during transition.
+      // The safety-net schedulePoll on startup causes 404/500 errors on new sessions.
       // -----------------------------------------------------------------------
       function poll() {
         pollTimer = null;

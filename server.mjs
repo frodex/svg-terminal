@@ -199,6 +199,7 @@ async function capturePaneAt(session, pane, offset) {
            path, command, pid, historySize, dead, lines };
 }
 
+// DEPRECATED (PRD v0.5.0 §3.2): HTTP polling endpoint, replaced by WebSocket screen/delta via /ws/dashboard
 async function handlePane(req, res, params) {
   const session = params.get('session');
   const pane = params.get('pane') || '0';
@@ -238,6 +239,7 @@ function isAllowedKey(key) {
   return ALLOWED_SPECIAL_KEYS.has(key) || Object.keys(CP_TO_TMUX_KEYS).includes(key) || /^C-[a-z]$/.test(key);
 }
 
+// DEPRECATED (PRD v0.5.0 §3.3): HTTP input endpoint, replaced by WebSocket input via /ws/dashboard
 async function handleInput(req, res) {
   let body = '';
   req.on('data', (chunk) => { body += chunk; });
@@ -742,6 +744,8 @@ function handleSSE(req, res) {
 const resizeLocks = new Map();
 const RESIZE_LOCK_MS = 500;
 
+// DEPRECATED (PRD v0.5.0 §3.4): Per-connection polling, replaced by SessionWatcher + /ws/dashboard
+// Kept for old pre-WebSocket tmux sessions during transition. Remove when old sessions terminated.
 async function handleTerminalWs(ws, session, pane) {
   let lastState = null;
   let pollTimer = null;
@@ -1314,6 +1318,8 @@ server.on('upgrade', async (req, socket, head) => {
     return;
   }
   if (url.pathname === '/ws/terminal') {
+    // DEPRECATED (PRD v0.5.0 §3.4): Per-card WebSocket, replaced by /ws/dashboard
+    // Kept for old sessions during transition.
     const session = url.searchParams.get('session');
     const pane = url.searchParams.get('pane') || '0';
     if (!session || !validateParam(session) || !validateParam(pane)) {
