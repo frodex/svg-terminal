@@ -316,6 +316,26 @@ html, body {
   pointer-events: none;
 }
 
+.thumbnail-item pre {
+  position: relative;
+}
+
+.thumbnail-item pre::after {
+  content: '';
+  display: inline-block;
+  width: 3px;
+  height: 1em;
+  background: #ccc;
+  animation: thumb-blink 1s step-end infinite;
+  vertical-align: text-bottom;
+  margin-left: 1px;
+}
+
+@keyframes thumb-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
 /* === Input Bar === */
 .input-bar {
   position: fixed;
