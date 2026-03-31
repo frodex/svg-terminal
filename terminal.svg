@@ -654,7 +654,9 @@
       // -----------------------------------------------------------------------
       if (SESSION) {
         connectWebSocket();
-        schedulePoll(pollInterval);  // safety net — WebSocket onopen will stop it
+        // REMOVED: schedulePoll(pollInterval) safety net — caused 500 error flood on cp-* sessions
+        // that don't exist in local tmux. WebSocket (per-card or shared) handles data delivery.
+        // Old sessions without WebSocket won't get HTTP polling fallback anymore.
       } else {
         startPolling(150);
       }
