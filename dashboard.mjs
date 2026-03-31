@@ -1689,7 +1689,19 @@ function addTerminal(sessionName, cols, rows) {
             t.screenLines = msg.lines.map(function(l) {
               return { text: l.spans.map(function(s) { return s.text; }).join(''), spans: l.spans };
             });
+            // Track dimension changes for re-layout
+            var prevCols = t.screenCols;
+            var prevRows = t.screenRows;
             updateCardForNewSize(t, msg.width || 80, msg.height || 24);
+            // Re-layout if dimensions changed and card is in a focus group
+            if ((msg.width !== prevCols || msg.height !== prevRows) && focusedSessions.has(sessionName)) {
+              if (focusedSessions.size > 1) {
+                calculateFocusedLayout();
+              } else {
+                // Single focus — re-tween camera to re-center on reshaped card
+                focusTerminal(sessionName);
+              }
+            }
             if (msg.cursor) t._lastCursor = msg.cursor;
           } else if (msg.type === 'delta' && msg.changed) {
             for (var idx in msg.changed) {
