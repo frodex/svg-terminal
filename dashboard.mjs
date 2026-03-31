@@ -645,7 +645,8 @@ function routeDashboardMessage(msg) {
 // Colorized text thumbnails (PRD v0.5.0)
 // Uses screenLines spans data directly — no SVG, no canvas, no serialization.
 // Just tiny colored <span> elements in a <pre>. Zero GPU cost.
-// Updated via requestIdleCallback, throttled to max once per 2s per session.
+// Sequential round-robin: one thumbnail updated per tick (200ms).
+// 16 cards = full cycle in 3.2s. No bursts, no idle callback dependency.
 
 function snapshotThumbnail(sessionName) {
   var t = terminals.get(sessionName);
@@ -689,28 +690,21 @@ function escapeHtml(text) {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-var _pendingSnapshots = new Set();
-var _snapshotIdleId = null;
-var _lastSnapshotTime = {};  // per-session throttle
-var SNAPSHOT_THROTTLE_MS = 2000;  // max one snapshot per session per 2s
+// Thumbnail sequencer — one card per tick, round-robin.
+// Spreads work evenly. No bursts, no idle callback dependency.
+var _thumbSequencerIndex = 0;
+var THUMB_TICK_MS = 200;  // one thumbnail every 200ms = full cycle in ~3.2s for 16 cards
 
-function scheduleSnapshot(sessionName) {
-  var now = Date.now();
-  if (_lastSnapshotTime[sessionName] && now - _lastSnapshotTime[sessionName] < SNAPSHOT_THROTTLE_MS) return;
-  _lastSnapshotTime[sessionName] = now;
-  _pendingSnapshots.add(sessionName);
-  if (_snapshotIdleId === null) {
-    _snapshotIdleId = requestIdleCallback(flushSnapshots);
-  }
-}
+setInterval(function() {
+  var keys = [...terminals.keys()];
+  if (keys.length === 0) return;
+  _thumbSequencerIndex = _thumbSequencerIndex % keys.length;
+  snapshotThumbnail(keys[_thumbSequencerIndex]);
+  _thumbSequencerIndex++;
+}, THUMB_TICK_MS);
 
-function flushSnapshots() {
-  _snapshotIdleId = null;
-  for (var name of _pendingSnapshots) {
-    snapshotThumbnail(name);
-  }
-  _pendingSnapshots.clear();
-}
+// scheduleSnapshot kept as no-op for any remaining callers
+function scheduleSnapshot() {}
 
 function sendDashboardMessage(msg) {
   if (dashboardWs && dashboardWs.readyState === WebSocket.OPEN) {
