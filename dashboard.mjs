@@ -636,10 +636,8 @@ function routeDashboardMessage(msg) {
           t._pendingMessages.push(msg);
         }
       }
-      // Schedule idle thumbnail snapshot
-      if (t.thumbnail) {
-        scheduleSnapshot(msg.session);
-      }
+      // Thumbnail snapshot triggered from _screenCallback (after screenLines populated),
+      // not here — screenLines isn't ready yet when routeDashboardMessage fires.
     }
   }
 }
