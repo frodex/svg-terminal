@@ -648,6 +648,42 @@ function routeDashboardMessage(msg) {
 // Called via requestIdleCallback — zero cost to interaction.
 // Uses drawImage to a tiny canvas, not SVG serialization (which was 4x oversized and GPU-heavy).
 
+// Shared offscreen img + canvas for thumbnail rendering.
+// Reused across all thumbnails to avoid GC churn.
+var _thumbCanvas = document.createElement('canvas');
+var _thumbCtx = _thumbCanvas.getContext('2d');
+var _thumbImg = new Image();
+var _thumbQueue = [];
+var _thumbBusy = false;
+
+_thumbImg.onload = function() {
+  _thumbCtx.fillStyle = '#1c1c1e';
+  _thumbCtx.fillRect(0, 0, _thumbCanvas.width, _thumbCanvas.height);
+  _thumbCtx.drawImage(_thumbImg, 0, 0, _thumbCanvas.width, _thumbCanvas.height);
+  URL.revokeObjectURL(_thumbImg.src);
+
+  // Set the target thumbnail img
+  if (_thumbQueue.length > 0) {
+    var target = _thumbQueue.shift();
+    target.src = _thumbCanvas.toDataURL('image/png');
+    target.style.display = 'block';
+  }
+  _thumbBusy = false;
+
+  // Process next in queue if any
+  if (_thumbQueue.length > 0) processThumbQueue();
+};
+
+_thumbImg.onerror = function() {
+  URL.revokeObjectURL(_thumbImg.src);
+  _thumbBusy = false;
+  if (_thumbQueue.length > 0) processThumbQueue();
+};
+
+function processThumbQueue() {
+  // called by flushSnapshots, picks up next pending
+}
+
 function snapshotThumbnail(sessionName) {
   var t = terminals.get(sessionName);
   if (!t || !t.thumbnail) return;
@@ -655,29 +691,30 @@ function snapshotThumbnail(sessionName) {
   var mainObj = t.dom ? t.dom.querySelector('object') : null;
   if (!mainObj || !mainObj.contentDocument) return;
 
-  var img = t.thumbnail.querySelector('img');
-  if (!img) return;
+  var thumbTarget = t.thumbnail.querySelector('img');
+  if (!thumbTarget) return;
 
-  // Draw the SVG onto a tiny canvas instead of serializing the full 4x SVG.
-  // The main card SVG is oversized (4x scale trick). Drawing to a small canvas
-  // lets the browser rasterize at thumbnail size, not 4x size.
-  var canvas = document.createElement('canvas');
-  var thumbW = 140;
-  var aspect = mainObj.offsetHeight / (mainObj.offsetWidth || 1);
-  var thumbH = Math.round(thumbW * aspect) || 80;
-  canvas.width = thumbW;
-  canvas.height = thumbH;
-  var ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#1c1c1e';
-  ctx.fillRect(0, 0, thumbW, thumbH);
-  try {
-    ctx.drawImage(mainObj, 0, 0, thumbW, thumbH);
-  } catch (e) {
-    // cross-origin or security error — fall back to black thumbnail
-    return;
-  }
-  img.src = canvas.toDataURL('image/png');
-  img.style.display = 'block';
+  // Serialize the SVG and set a small size for thumbnail rendering.
+  // The main SVG is 4x oversized — we override width/height so the
+  // browser rasterizes at thumbnail size, not 4x.
+  var svg = mainObj.contentDocument.documentElement;
+  var serializer = new XMLSerializer();
+  var svgStr = serializer.serializeToString(svg);
+
+  // Inject width/height="140" on the root <svg> so rasterization is cheap
+  svgStr = svgStr.replace(/<svg([^>]*)>/, function(match, attrs) {
+    attrs = attrs.replace(/width="[^"]*"/, '').replace(/height="[^"]*"/, '');
+    return '<svg' + attrs + ' width="140" height="80">';
+  });
+
+  var blob = new Blob([svgStr], { type: 'image/svg+xml' });
+  var url = URL.createObjectURL(blob);
+
+  _thumbCanvas.width = 140;
+  _thumbCanvas.height = 80;
+  _thumbQueue.push(thumbTarget);
+  _thumbBusy = true;
+  _thumbImg.src = url;
 }
 
 var _pendingSnapshots = new Set();
