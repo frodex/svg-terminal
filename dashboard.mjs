@@ -1582,9 +1582,9 @@ function updateCardForNewSize(t, newCols, newRows) {
   const { cardW, cardH } = calcCardSize(newCols, newRows);
   t.baseCardW = cardW;
   t.baseCardH = cardH;
-  // When focused: don't reshape the card. +/- changes font size inside the same card.
-  // The card is the user's chosen window — only explicit actions (alt+drag, ⊞) change it.
-  if (t.dom.classList.contains('focused')) return;
+  // Guard removed: card DOM always updates to match terminal dimensions.
+  // External resizes (other browsers, SSH clients, tmux CLI) must be visible.
+  // The camera-only model handles apparent size via camera distance.
   t.dom.style.width = cardW + 'px';
   t.dom.style.height = cardH + 'px';
   const inner = t.dom.querySelector('.terminal-inner');
