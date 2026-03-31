@@ -244,6 +244,7 @@ const terminals = new Map();
 let sessionOrder = [];
 let focusedSessions = new Set();
 let activeInputSession = null;
+let dashboardWs = null; // shared WebSocket to /ws/dashboard
 const clock = new THREE.Clock();
 
 // Ring state
@@ -558,10 +559,85 @@ function init() {
     }
   }
 
+  connectDashboardWs();
+  // Keep refreshSessions as fallback for old sessions during transition
   refreshSessions();
   setInterval(refreshSessions, 5000);
-  setInterval(refreshTitles, 10000);
+  // DEPRECATED: titles arrive via WebSocket screen/delta messages
+  // setInterval(refreshTitles, 10000);
   animate();
+}
+
+// === Shared Dashboard WebSocket ===
+function connectDashboardWs() {
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  var url = proto + '//' + location.host + '/ws/dashboard';
+  var ws = new WebSocket(url);
+  ws.onopen = function() {
+    console.log('[Dashboard WS] connected');
+    dashboardWs = ws;
+  };
+  ws.onmessage = function(ev) {
+    try {
+      var msg = JSON.parse(ev.data);
+      routeDashboardMessage(msg);
+    } catch (e) {
+      console.warn('[Dashboard WS] bad message', e);
+    }
+  };
+  ws.onclose = function() {
+    console.log('[Dashboard WS] disconnected, reconnecting in 2s');
+    dashboardWs = null;
+    setTimeout(connectDashboardWs, 2000);
+  };
+  ws.onerror = function() {
+    // onclose will fire after this and handle reconnect
+  };
+}
+
+function routeDashboardMessage(msg) {
+  if (msg.type === 'session-add') {
+    if (!terminals.has(msg.session) && !msg.session.startsWith('browser-')) {
+      addTerminal(msg.session, msg.cols, msg.rows);
+      assignRings();
+    }
+    return;
+  }
+  if (msg.type === 'session-remove') {
+    if (terminals.has(msg.session)) {
+      removeTerminal(msg.session);
+      assignRings();
+    }
+    return;
+  }
+  if (msg.type === 'error' && !msg.session) {
+    console.warn('[Dashboard WS] server error:', msg.message || msg);
+    return;
+  }
+  if (msg.session) {
+    var t = terminals.get(msg.session);
+    if (!t) return; // no card for this session, ignore
+    if (msg.type === 'screen' || msg.type === 'delta') {
+      var obj = t.dom ? t.dom.querySelector('object') : null;
+      if (obj && obj.contentWindow) {
+        if (typeof obj.contentWindow.renderMessage === 'function') {
+          // New path: renderMessage handles rendering + calls _screenCallback
+          obj.contentWindow.renderMessage(msg);
+        } else if (typeof obj.contentWindow._screenCallback === 'function') {
+          // Fallback: renderMessage not yet available (Task 4), just update dashboard state
+          obj.contentWindow._screenCallback(msg);
+        }
+      }
+    }
+  }
+}
+
+function sendDashboardMessage(msg) {
+  if (dashboardWs && dashboardWs.readyState === WebSocket.OPEN) {
+    dashboardWs.send(JSON.stringify(msg));
+    return true;
+  }
+  return false;
 }
 
 function onResize() {
@@ -1650,12 +1726,14 @@ function addTerminal(sessionName, cols, rows) {
     screenCols: cols,
     screenRows: rows,
     sendInput: function(msg) {
-      // Route through SVG's single WebSocket via contentWindow
+      // Try shared dashboard WebSocket first (new path)
+      if (sendDashboardMessage({ session: sessionName, pane: '0', ...msg })) return;
+      // Fallback: route through SVG's own WebSocket (old sessions during transition)
       var obj = this.dom ? this.dom.querySelector('object') : null;
       if (obj && obj.contentWindow && typeof obj.contentWindow.sendToWs === 'function') {
         if (obj.contentWindow.sendToWs(msg)) return;
       }
-      // Fallback: HTTP POST (SVG not loaded, WS disconnected, reconnecting)
+      // Last resort: HTTP POST (deprecated)
       fetch('/api/input', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
