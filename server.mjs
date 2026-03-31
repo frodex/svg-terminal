@@ -763,17 +763,9 @@ const RESIZE_LOCK_MS = 500;
 // DEPRECATED (PRD v0.5.0 §3.4): Per-connection polling, replaced by SessionWatcher + /ws/dashboard
 // Kept for old pre-WebSocket tmux sessions during transition. Remove when old sessions terminated.
 async function handleTerminalWs(ws, session, pane) {
-  // If a shared watcher already exists for this session, skip the per-connection
-  // capture loop — the shared watcher handles it. This prevents dual-capture
-  // (30ms per-card + 100ms shared) that doubles CPU usage.
-  const watcherKey = session + ':' + pane;
-  if (sessionWatchers.has(watcherKey)) {
-    // Just keep the WS open for the old terminal.svg — rendering is already
-    // gated by _sharedWsActive flag. Close handler still needed for cleanup.
-    ws.on('close', () => {});
-    ws.on('error', () => {});
-    return;
-  }
+  // If a shared watcher exists, skip the capture loop but keep the message
+  // handler so input still works as fallback if shared WS isn't delivering.
+  const hasSharedWatcher = sessionWatchers.has(session + ':' + pane);
 
   let lastState = null;
   let pollTimer = null;
@@ -801,8 +793,12 @@ async function handleTerminalWs(ws, session, pane) {
     }
   }
 
-  await captureAndPush();
-  pollTimer = setInterval(captureAndPush, 30);
+  if (!hasSharedWatcher) {
+    // Only run per-card capture loop if no shared watcher exists.
+    // Shared watcher handles capture + broadcast for this session.
+    await captureAndPush();
+    pollTimer = setInterval(captureAndPush, 30);
+  }
 
   ws.on('message', async (data) => {
     try {
