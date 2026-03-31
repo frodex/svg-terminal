@@ -409,7 +409,8 @@ function getOrCreateWatcher(session, pane) {
   };
 
   async function captureAndBroadcast() {
-    if (watcher.subscribers.size === 0) return;
+    if (watcher.subscribers.size === 0 || watcher._capturing) return;
+    watcher._capturing = true;
     try {
       const offset = getScrollOffset(session, pane);
       let state;
@@ -431,6 +432,8 @@ function getOrCreateWatcher(session, pane) {
       }
     } catch (err) {
       // Session may have disappeared — don't crash
+    } finally {
+      watcher._capturing = false;
     }
   }
 
@@ -1210,7 +1213,10 @@ server.on('upgrade', async (req, socket, head) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/ws/dashboard') {
     wss.handleUpgrade(req, socket, head, (ws) => {
-      handleDashboardWs(ws, req);
+      handleDashboardWs(ws, req).catch(err => {
+        process.stderr.write('Dashboard WS error: ' + err.message + '\n');
+        try { ws.close(); } catch {}
+      });
     });
     return;
   }
