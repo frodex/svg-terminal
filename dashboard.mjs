@@ -619,13 +619,16 @@ function routeDashboardMessage(msg) {
     if (!t) return; // no card for this session, ignore
     if (msg.type === 'screen' || msg.type === 'delta') {
       var obj = t.dom ? t.dom.querySelector('object') : null;
-      if (obj && obj.contentWindow) {
-        if (typeof obj.contentWindow.renderMessage === 'function') {
-          // New path: renderMessage handles rendering + calls _screenCallback
-          obj.contentWindow.renderMessage(msg);
-        } else if (typeof obj.contentWindow._screenCallback === 'function') {
-          // Fallback: renderMessage not yet available (Task 4), just update dashboard state
-          obj.contentWindow._screenCallback(msg);
+      if (obj && obj.contentWindow && typeof obj.contentWindow.renderMessage === 'function') {
+        obj.contentWindow.renderMessage(msg);
+      } else {
+        // SVG not loaded yet — queue the message, flush when object loads
+        if (!t._pendingMessages) t._pendingMessages = [];
+        // Only keep the latest screen (replaces older), accumulate deltas
+        if (msg.type === 'screen') {
+          t._pendingMessages = [msg]; // screen replaces everything pending
+        } else {
+          t._pendingMessages.push(msg);
         }
       }
     }
@@ -1794,6 +1797,17 @@ function addTerminal(sessionName, cols, rows) {
             if (msg.cursor) t._lastCursor = msg.cursor;
           }
         };
+        // Flush any messages that arrived before SVG loaded
+        var t = terminals.get(sessionName);
+        if (t && t._pendingMessages && t._pendingMessages.length > 0) {
+          var pending = t._pendingMessages;
+          t._pendingMessages = null;
+          for (var p = 0; p < pending.length; p++) {
+            if (typeof termObj.contentWindow.renderMessage === 'function') {
+              termObj.contentWindow.renderMessage(pending[p]);
+            }
+          }
+        }
       } catch (e) {}
     });
   }
