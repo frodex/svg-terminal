@@ -576,6 +576,10 @@ function connectDashboardWs() {
   ws.onopen = function() {
     console.log('[Dashboard WS] connected');
     dashboardWs = ws;
+    // Send current focus state so server adjusts capture rates
+    if (focusedSessions.size > 0) {
+      sendFocusState();
+    }
   };
   ws.onmessage = function(ev) {
     try {
@@ -657,6 +661,10 @@ function sendDashboardMessage(msg) {
     return true;
   }
   return false;
+}
+
+function sendFocusState() {
+  sendDashboardMessage({ type: 'focus', sessions: [...focusedSessions] });
 }
 
 function onResize() {
@@ -1943,6 +1951,7 @@ function focusTerminal(sessionName) {
   document.getElementById('input-bar').classList.add('visible');
   document.getElementById('input-target').textContent = sessionName;
   showTermControls(sessionName);
+  sendFocusState();
 }
 
 // Add a terminal to the multi-focus set (ctrl+click)
@@ -1969,6 +1978,7 @@ function addToFocus(sessionName) {
 
   document.getElementById('input-bar').classList.add('visible');
   document.getElementById('input-target').textContent = activeInputSession;
+  sendFocusState();
 }
 
 // Set which focused terminal receives input
@@ -2052,6 +2062,7 @@ function removeFromFocus(sessionName) {
   updateFocusStyles();
   assignRings(); // reassign ring positions including the restored terminal
   calculateFocusedLayout();
+  sendFocusState();
 }
 
 // Restore all focused terminals
@@ -2117,6 +2128,7 @@ function unfocusTerminal() {
 
   document.getElementById('input-bar').classList.remove('visible');
   hideTermControls();
+  sendFocusState();
 }
 
 // === Animation Loop ===

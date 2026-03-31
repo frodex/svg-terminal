@@ -392,9 +392,10 @@ function diffState(prev, curr) {
 // SessionWatcher — shared capture per session, broadcast to subscribers
 // ---------------------------------------------------------------------------
 
-// 30ms matches old per-card polling. The win is shared capture (M not N×M), not slower interval.
-// Tune upward via env CAPTURE_INTERVAL or SSE throttle once stable.
-const CAPTURE_INTERVAL = Number(process.env.CAPTURE_INTERVAL) || 30;
+// Focused terminals get fast capture; unfocused ones slow down to save CPU.
+// Dashboard sends focus state over WS; new watchers start unfocused.
+const CAPTURE_INTERVAL_FOCUSED = Number(process.env.CAPTURE_INTERVAL_FOCUSED) || 20;
+const CAPTURE_INTERVAL_UNFOCUSED = Number(process.env.CAPTURE_INTERVAL_UNFOCUSED) || 500;
 const sessionWatchers = new Map(); // key = "session:pane", value = watcher
 const dashboardClients = new Set(); // all /ws/dashboard connections
 // Reverse index: ws → Set of watcher keys (for fast unsubscribe on close)
@@ -442,7 +443,7 @@ function getOrCreateWatcher(session, pane) {
   }
 
   watcher._captureAndBroadcast = captureAndBroadcast;
-  watcher.timer = setInterval(captureAndBroadcast, CAPTURE_INTERVAL);
+  watcher.timer = setInterval(captureAndBroadcast, CAPTURE_INTERVAL_UNFOCUSED);
   sessionWatchers.set(key, watcher);
   return watcher;
 }
@@ -648,6 +649,20 @@ async function handleDashboardWs(ws, req) {
   ws.on('message', async (data) => {
     try {
       const msg = JSON.parse(data);
+
+      // Focus message — adjust capture rates for all watchers
+      if (msg.type === 'focus') {
+        const focused = new Set(msg.sessions || []);
+        for (const [key, watcher] of sessionWatchers) {
+          if (!watcher.timer) continue; // cp bridges have no timer
+          const isFocused = focused.has(watcher.session);
+          const interval = isFocused ? CAPTURE_INTERVAL_FOCUSED : CAPTURE_INTERVAL_UNFOCUSED;
+          clearInterval(watcher.timer);
+          watcher.timer = setInterval(watcher._captureAndBroadcast, interval);
+        }
+        return;
+      }
+
       const session = msg.session;
       if (!session || !validateParam(session)) {
         if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'error', message: 'Invalid session' }));
