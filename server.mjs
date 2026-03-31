@@ -392,7 +392,9 @@ function diffState(prev, curr) {
 // SessionWatcher — shared capture per session, broadcast to subscribers
 // ---------------------------------------------------------------------------
 
-const CAPTURE_INTERVAL = Number(process.env.CAPTURE_INTERVAL) || 100;
+// 30ms matches old per-card polling. The win is shared capture (M not N×M), not slower interval.
+// Tune upward via env CAPTURE_INTERVAL or SSE throttle once stable.
+const CAPTURE_INTERVAL = Number(process.env.CAPTURE_INTERVAL) || 30;
 const sessionWatchers = new Map(); // key = "session:pane", value = watcher
 const dashboardClients = new Set(); // all /ws/dashboard connections
 // Reverse index: ws → Set of watcher keys (for fast unsubscribe on close)
