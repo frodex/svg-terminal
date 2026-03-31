@@ -644,77 +644,45 @@ function routeDashboardMessage(msg) {
   }
 }
 
-// Snapshot main card SVG into thumbnail <img> via canvas (PRD v0.5.0)
-// Called via requestIdleCallback — zero cost to interaction.
-// Uses drawImage to a tiny canvas, not SVG serialization (which was 4x oversized and GPU-heavy).
-
-// Shared offscreen img + canvas for thumbnail rendering.
-// Reused across all thumbnails to avoid GC churn.
-var _thumbCanvas = document.createElement('canvas');
-var _thumbCtx = _thumbCanvas.getContext('2d');
-var _thumbImg = new Image();
-var _thumbQueue = [];
-var _thumbBusy = false;
-
-_thumbImg.onload = function() {
-  _thumbCtx.fillStyle = '#1c1c1e';
-  _thumbCtx.fillRect(0, 0, _thumbCanvas.width, _thumbCanvas.height);
-  _thumbCtx.drawImage(_thumbImg, 0, 0, _thumbCanvas.width, _thumbCanvas.height);
-  URL.revokeObjectURL(_thumbImg.src);
-
-  // Set the target thumbnail img
-  if (_thumbQueue.length > 0) {
-    var target = _thumbQueue.shift();
-    target.src = _thumbCanvas.toDataURL('image/png');
-    target.style.display = 'block';
-  }
-  _thumbBusy = false;
-
-  // Process next in queue if any
-  if (_thumbQueue.length > 0) processThumbQueue();
-};
-
-_thumbImg.onerror = function() {
-  URL.revokeObjectURL(_thumbImg.src);
-  _thumbBusy = false;
-  if (_thumbQueue.length > 0) processThumbQueue();
-};
-
-function processThumbQueue() {
-  // called by flushSnapshots, picks up next pending
-}
+// Colorized text thumbnails (PRD v0.5.0)
+// Uses screenLines spans data directly — no SVG, no canvas, no serialization.
+// Just tiny colored <span> elements in a <pre>. Zero GPU cost.
+// Updated via requestIdleCallback, throttled to max once per 2s per session.
 
 function snapshotThumbnail(sessionName) {
   var t = terminals.get(sessionName);
-  if (!t || !t.thumbnail) return;
+  if (!t || !t.thumbnail || !t.screenLines || !t.screenLines.length) return;
 
-  var mainObj = t.dom ? t.dom.querySelector('object') : null;
-  if (!mainObj || !mainObj.contentDocument) return;
+  var pre = t.thumbnail.querySelector('pre');
+  if (!pre) return;
 
-  var thumbTarget = t.thumbnail.querySelector('img');
-  if (!thumbTarget) return;
+  // Build colorized HTML from spans
+  var html = '';
+  var lines = t.screenLines;
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    if (!line || !line.spans) { html += '\n'; continue; }
+    for (var j = 0; j < line.spans.length; j++) {
+      var span = line.spans[j];
+      var styles = '';
+      if (span.fg) styles += 'color:' + span.fg + ';';
+      if (span.bg) styles += 'background:' + span.bg + ';';
+      if (span.bold) styles += 'font-weight:bold;';
+      if (span.dim) styles += 'opacity:0.5;';
+      if (styles) {
+        html += '<span style="' + styles + '">' + escapeHtml(span.text) + '</span>';
+      } else {
+        html += escapeHtml(span.text);
+      }
+    }
+    if (i < lines.length - 1) html += '\n';
+  }
+  pre.innerHTML = html;
+  pre.style.display = 'block';
+}
 
-  // Serialize the SVG and set a small size for thumbnail rendering.
-  // The main SVG is 4x oversized — we override width/height so the
-  // browser rasterizes at thumbnail size, not 4x.
-  var svg = mainObj.contentDocument.documentElement;
-  var serializer = new XMLSerializer();
-  var svgStr = serializer.serializeToString(svg);
-
-  // Inject width/height="140" on the root <svg> so rasterization is cheap
-  svgStr = svgStr.replace(/<svg([^>]*)>/, function(match, attrs) {
-    attrs = attrs.replace(/width="[^"]*"/, '').replace(/height="[^"]*"/, '');
-    return '<svg' + attrs + ' width="140" height="80">';
-  });
-
-  var blob = new Blob([svgStr], { type: 'image/svg+xml' });
-  var url = URL.createObjectURL(blob);
-
-  _thumbCanvas.width = 140;
-  _thumbCanvas.height = 80;
-  _thumbQueue.push(thumbTarget);
-  _thumbBusy = true;
-  _thumbImg.src = url;
+function escapeHtml(text) {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 var _pendingSnapshots = new Set();
@@ -1536,13 +1504,10 @@ function createThumbnail(sessionName) {
   });
   item.appendChild(minBtn);
 
-  const img = document.createElement('img');
-  img.style.width = '100%';
-  img.style.height = '80px';
-  img.style.objectFit = 'contain';
-  img.style.display = 'none';  // hidden until first snapshot
-  img.alt = sessionName;
-  item.appendChild(img);
+  const pre = document.createElement('pre');
+  pre.style.cssText = 'margin:0;padding:2px;font-family:monospace;font-size:2px;line-height:1.2;' +
+    'overflow:hidden;height:80px;background:#1c1c1e;color:#ccc;white-space:pre;display:none;';
+  item.appendChild(pre);
 
   // Sidebar thumbnail click handler.
   // stopPropagation prevents this from also triggering onSceneClick on the renderer.
