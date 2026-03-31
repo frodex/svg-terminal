@@ -654,6 +654,12 @@ function snapshotThumbnail(sessionName) {
   var pre = t.thumbnail.querySelector('pre');
   if (!pre) return;
 
+  // Scale font to fit terminal rows within 80px thumbnail height
+  // lineHeight is 1.2, so fontSize = 80 / (rows * 1.2)
+  var rows = t.screenLines.length || 24;
+  var fontSize = Math.max(1, Math.min(3, 80 / (rows * 1.2)));
+  pre.style.fontSize = fontSize.toFixed(1) + 'px';
+
   // Build colorized HTML from spans
   var html = '';
   var lines = t.screenLines;
