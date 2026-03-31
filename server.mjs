@@ -791,6 +791,11 @@ async function handleTerminalWs(ws, session, pane) {
 
   // Capture pane at shared scroll offset and push to client
   async function captureAndPush() {
+    // Self-terminate if a shared watcher took over (race: per-card WS connects before shared WS)
+    if (sessionWatchers.has(session + ':' + pane)) {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      return;
+    }
     try {
       const offset = getScrollOffset(session, pane);
       let state;
