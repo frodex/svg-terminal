@@ -644,27 +644,40 @@ function routeDashboardMessage(msg) {
   }
 }
 
-// Snapshot main card SVG into thumbnail <img> via serialization (PRD v0.5.0)
+// Snapshot main card SVG into thumbnail <img> via canvas (PRD v0.5.0)
 // Called via requestIdleCallback — zero cost to interaction.
-var _snapshotSerializer = new XMLSerializer();
+// Uses drawImage to a tiny canvas, not SVG serialization (which was 4x oversized and GPU-heavy).
 
 function snapshotThumbnail(sessionName) {
   var t = terminals.get(sessionName);
   if (!t || !t.thumbnail) return;
 
-  // Find the main card's <object> element
   var mainObj = t.dom ? t.dom.querySelector('object') : null;
   if (!mainObj || !mainObj.contentDocument) return;
 
-  var svg = mainObj.contentDocument.documentElement;
-  var data = _snapshotSerializer.serializeToString(svg);
-  var dataUri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(data);
-
   var img = t.thumbnail.querySelector('img');
-  if (img) {
-    img.src = dataUri;
-    img.style.display = 'block';  // show on first snapshot
+  if (!img) return;
+
+  // Draw the SVG onto a tiny canvas instead of serializing the full 4x SVG.
+  // The main card SVG is oversized (4x scale trick). Drawing to a small canvas
+  // lets the browser rasterize at thumbnail size, not 4x size.
+  var canvas = document.createElement('canvas');
+  var thumbW = 140;
+  var aspect = mainObj.offsetHeight / (mainObj.offsetWidth || 1);
+  var thumbH = Math.round(thumbW * aspect) || 80;
+  canvas.width = thumbW;
+  canvas.height = thumbH;
+  var ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#1c1c1e';
+  ctx.fillRect(0, 0, thumbW, thumbH);
+  try {
+    ctx.drawImage(mainObj, 0, 0, thumbW, thumbH);
+  } catch (e) {
+    // cross-origin or security error — fall back to black thumbnail
+    return;
   }
+  img.src = canvas.toDataURL('image/png');
+  img.style.display = 'block';
 }
 
 var _pendingSnapshots = new Set();
