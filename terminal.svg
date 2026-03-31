@@ -601,6 +601,52 @@
       };
 
       // -----------------------------------------------------------------------
+      // Inbound API — dashboard pushes data via shared WebSocket (PRD v0.5.0)
+      // Same rendering as ws.onmessage but called externally by dashboard.mjs.
+      // Old ws.onmessage path kept for old sessions during transition.
+      // -----------------------------------------------------------------------
+      window.renderMessage = function(msg) {
+        if (msg.type === 'screen') {
+          if (!initialized || columns !== msg.width || rows !== msg.height) {
+            initLayout(msg.width, msg.height);
+          }
+          allLines = msg.lines;
+          for (var i = 0; i < msg.lines.length; i++) {
+            updateLine(i, msg.lines[i].spans);
+            prevState[i] = JSON.stringify(msg.lines[i].spans);
+          }
+          rebuildBgLayer(msg.lines); rebuildLinkLayer(msg.lines);
+          if (msg.cursor) {
+            cursorEl.setAttribute('x', (msg.cursor.x * CELL_W).toFixed(2));
+            cursorEl.setAttribute('y', msg.cursor.y * CELL_H);
+          }
+          hideError();
+          try { if (window._screenCallback) window._screenCallback(msg); } catch(e) {}
+
+        } else if (msg.type === 'delta') {
+          var keys = Object.keys(msg.changed);
+          for (var k = 0; k < keys.length; k++) {
+            var idx = parseInt(keys[k]);
+            var lineData = msg.changed[keys[k]];
+            var spans = lineData.spans || lineData;
+            updateLine(idx, spans);
+            allLines[idx] = { spans: spans };
+            prevState[idx] = JSON.stringify(spans);
+          }
+          if (keys.length > 0) { rebuildBgLayer(allLines); rebuildLinkLayer(allLines); }
+          if (msg.cursor) {
+            cursorEl.setAttribute('x', (msg.cursor.x * CELL_W).toFixed(2));
+            cursorEl.setAttribute('y', msg.cursor.y * CELL_H);
+          }
+          try { if (window._screenCallback) window._screenCallback(msg); } catch(e) {}
+          hideError();
+
+        } else if (msg.type === 'error') {
+          showError();
+        }
+      };
+
+      // -----------------------------------------------------------------------
       // Start
       // -----------------------------------------------------------------------
       if (SESSION) {
