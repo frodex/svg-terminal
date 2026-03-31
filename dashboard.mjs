@@ -2922,6 +2922,10 @@ init();
       if (el) el.innerHTML = data.html;
     } catch (err) {}
   });
+  eventSource.addEventListener('throttle', function(e) {
+    var data = JSON.parse(e.data);
+    console.log('[SSE] throttle interval:', data.interval, 'ms');
+  });
   eventSource.onopen = function() { console.log('[SSE] connected'); };
   eventSource.onerror = function() { console.log('[SSE] disconnected, auto-reconnecting...'); };
 })();

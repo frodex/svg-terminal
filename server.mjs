@@ -1080,6 +1080,29 @@ function router(req, res) {
   if (pathname === '/api/admin/clients') {
     return sendJson(res, 200, { count: sseClients.size });
   }
+  if (pathname === '/api/admin/throttle') {
+    setCors(res);
+    if (req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const { interval } = JSON.parse(body);
+          if (typeof interval === 'number' && interval >= 30 && interval <= 5000) {
+            broadcast('throttle', { interval });
+            sendJson(res, 200, { ok: true, interval });
+          } else {
+            sendError(res, 400, 'interval must be 30-5000');
+          }
+        } catch (err) {
+          sendError(res, 400, 'Invalid JSON');
+        }
+      });
+      return;
+    }
+    sendError(res, 405, 'POST only');
+    return;
+  }
 
   // Admin routes (protected)
   if (pathname === '/admin') { const u = requireAdmin(req, res); if (!u) return; return serveHtml(req, res, 'admin.html'); }
