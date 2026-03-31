@@ -2830,4 +2830,20 @@ init();
   }, 10000);
 
   console.log('Browser UID:', _uid, urlUid ? '(viewing profile: ' + urlUid + ')' : '');
+
+  // === SSE command channel ===
+  var eventSource = new EventSource('/api/events');
+  eventSource.addEventListener('reload', function() {
+    console.log('[SSE] reload command received');
+    location.reload();
+  });
+  eventSource.addEventListener('dom', function(e) {
+    try {
+      var data = JSON.parse(e.data);
+      var el = document.getElementById(data.id);
+      if (el) el.innerHTML = data.html;
+    } catch (err) {}
+  });
+  eventSource.onopen = function() { console.log('[SSE] connected'); };
+  eventSource.onerror = function() { console.log('[SSE] disconnected, auto-reconnecting...'); };
 })();

@@ -386,6 +386,28 @@ function diffState(prev, curr) {
   return { type: 'delta', cursor: curr.cursor, title: curr.title, changed };
 }
 
+// === Server-Sent Events (SSE) command channel ===
+const sseClients = new Set();
+
+function broadcast(event, data) {
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const client of sseClients) {
+    client.write(payload);
+  }
+}
+
+function handleSSE(req, res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+  });
+  res.write('retry: 3000\n\n');
+  sseClients.add(res);
+  req.on('close', () => sseClients.delete(res));
+}
+
 const resizeLocks = new Map();
 const RESIZE_LOCK_MS = 500;
 
@@ -716,6 +738,16 @@ function router(req, res) {
       }
     })();
     return;
+  }
+
+  // SSE command channel
+  if (pathname === '/api/events') return handleSSE(req, res);
+  if (req.method === 'POST' && pathname === '/api/admin/reload') {
+    broadcast('reload', {});
+    return sendJson(res, 200, { ok: true, clients: sseClients.size });
+  }
+  if (pathname === '/api/admin/clients') {
+    return sendJson(res, 200, { count: sseClients.size });
   }
 
   // Admin routes (protected)
