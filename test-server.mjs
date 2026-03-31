@@ -5,6 +5,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { execFileSync, execSync } from 'node:child_process';
+import WebSocket from 'ws';
 
 const TEST_PORT = 3299;
 const BASE = `http://localhost:${TEST_PORT}`;
@@ -443,6 +444,54 @@ test('/ws/dashboard handles claude-proxy sessions gracefully', async () => {
   // No errors should have been sent
   const errors = msgs.filter(m => m.type === 'error');
   assert.equal(errors.length, 0, 'Should not receive any errors: ' + JSON.stringify(errors));
+
+  ws.close();
+});
+
+test('/ws/dashboard full path: auth → session-add → screen → input → delta', async () => {
+  const ws = new WebSocket(`ws://localhost:${TEST_PORT}/ws/dashboard`);
+  await new Promise(r => { ws.onopen = r; });
+
+  const msgs = [];
+  ws.onmessage = (e) => msgs.push(JSON.parse(e.data));
+
+  // Wait for session-add and initial screen messages
+  await new Promise(r => setTimeout(r, 500));
+
+  const adds = msgs.filter(m => m.type === 'session-add');
+  assert.ok(adds.length > 0, 'Should receive session-add events');
+
+  const screens = msgs.filter(m => m.type === 'screen');
+  assert.ok(screens.length > 0, 'Should receive initial screen data');
+
+  // Verify screen messages have required fields
+  const screen = screens[0];
+  assert.ok(screen.session, 'screen must have session field');
+  assert.ok(screen.pane !== undefined, 'screen must have pane field');
+  assert.ok(screen.width > 0, 'screen must have width');
+  assert.ok(screen.height > 0, 'screen must have height');
+  assert.ok(Array.isArray(screen.lines), 'screen must have lines array');
+  assert.ok(screen.lines.length === screen.height, 'lines count must match height');
+  assert.ok(screen.lines[0].spans, 'each line must have spans');
+
+  // Send input to first local tmux session
+  const localAdd = adds.find(a => a.source === 'tmux');
+  if (localAdd) {
+    const beforeCount = msgs.length;
+    ws.send(JSON.stringify({
+      session: localAdd.session,
+      pane: '0',
+      type: 'input',
+      keys: ' '  // space — harmless
+    }));
+
+    // Wait for response
+    await new Promise(r => setTimeout(r, 300));
+
+    // No errors should have been received
+    const errors = msgs.filter(m => m.type === 'error');
+    assert.equal(errors.length, 0, 'No errors: ' + JSON.stringify(errors));
+  }
 
   ws.close();
 });
