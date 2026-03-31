@@ -655,6 +655,22 @@ async function handleDashboardWs(ws, req) {
         return;
       }
 
+      // Check if this session has a claude-proxy upstream bridge.
+      // cp-* sessions are NOT in local tmux — input/scroll/resize must go through
+      // the upstream WebSocket to claude-proxy, not through tmux send-keys.
+      const watcher = sessionWatchers.get(session + ':' + pane);
+      const cpUpstream = watcher && watcher._cpUpstream;
+
+      if (cpUpstream && cpUpstream.readyState === 1) {
+        // Forward to claude-proxy upstream — strip session/pane tags (cp doesn't expect them)
+        const fwd = { ...msg };
+        delete fwd.session;
+        delete fwd.pane;
+        cpUpstream.send(JSON.stringify(fwd));
+        return;
+      }
+
+      // Local tmux session — handle directly
       if (msg.type === 'resize') {
         const lock = resizeLocks.get(session);
         if (lock && lock.ws !== ws && Date.now() < lock.expires) return;
