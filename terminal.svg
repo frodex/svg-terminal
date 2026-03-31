@@ -293,6 +293,9 @@
         };
 
         ws.onmessage = function(e) {
+          // If shared WS (renderMessage) is active, skip per-card WS rendering
+          // to prevent two capture streams from fighting (PRD v0.5.0)
+          if (_sharedWsActive) return;
           var msg = JSON.parse(e.data);
 
           if (msg.type === 'screen') {
@@ -607,7 +610,9 @@
       // Same rendering as ws.onmessage but called externally by dashboard.mjs.
       // Old ws.onmessage path kept for old sessions during transition.
       // -----------------------------------------------------------------------
+      var _sharedWsActive = false;
       window.renderMessage = function(msg) {
+        _sharedWsActive = true;
         if (msg.type === 'screen') {
           if (!initialized || columns !== msg.width || rows !== msg.height) {
             initLayout(msg.width, msg.height);
