@@ -650,10 +650,15 @@ function routeDashboardMessage(msg) {
 
 function snapshotThumbnail(sessionName) {
   var t = terminals.get(sessionName);
-  if (!t || !t.thumbnail || !t.screenLines || !t.screenLines.length) return;
+  if (!t || !t.thumbnail) return;
 
   var pre = t.thumbnail.querySelector('pre');
   if (!pre) return;
+
+  if (!t.screenLines || !t.screenLines.length) {
+    pre.style.display = 'block';
+    return;  // show empty pre, will fill when data arrives
+  }
 
   // Scale font to fit terminal rows within 80px thumbnail height
   // lineHeight is 1.2, so fontSize = 80 / (rows * 1.2)
@@ -1815,6 +1820,7 @@ function addTerminal(sessionName, cols, rows) {
     inputWs: null,
     scrollOffset: 0,
     screenLines: [],  // text content from server for copy/paste
+    _thumbDirty: true,  // start dirty so sequencer attempts initial snapshot
     screenCols: cols,
     screenRows: rows,
     sendInput: function(msg) {
