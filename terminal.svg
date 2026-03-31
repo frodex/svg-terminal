@@ -98,6 +98,7 @@
       var SESSION = urlParams['session'] || '';
       var PANE    = urlParams['pane']    || '0';
       var SERVER  = (urlParams['server'] || '').replace(/\/$/, '');
+      var IS_THUMB = urlParams['thumb'] === '1'; // thumbnail mode — no WS connection
 
       // -----------------------------------------------------------------------
       // Element references
@@ -656,14 +657,16 @@
       // -----------------------------------------------------------------------
       // Start
       // -----------------------------------------------------------------------
-      if (SESSION) {
+      if (SESSION && !IS_THUMB) {
         connectWebSocket();
         // REMOVED: schedulePoll(pollInterval) safety net — caused 500 error flood on cp-* sessions
         // that don't exist in local tmux. WebSocket (per-card or shared) handles data delivery.
         // Old sessions without WebSocket won't get HTTP polling fallback anymore.
-      } else {
+      } else if (!SESSION) {
         startPolling(150);
       }
+      // Thumbnail mode (IS_THUMB): no WS, no polling. Content arrives via renderMessage()
+      // from the dashboard's shared WebSocket.
     })();
   ]]>
   </script>

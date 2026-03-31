@@ -618,6 +618,7 @@ function routeDashboardMessage(msg) {
     var t = terminals.get(msg.session);
     if (!t) return; // no card for this session, ignore
     if (msg.type === 'screen' || msg.type === 'delta') {
+      // Route to main card SVG
       var obj = t.dom ? t.dom.querySelector('object') : null;
       if (obj && obj.contentWindow && typeof obj.contentWindow.renderMessage === 'function') {
         obj.contentWindow.renderMessage(msg);
@@ -629,6 +630,21 @@ function routeDashboardMessage(msg) {
           t._pendingMessages = [msg]; // screen replaces everything pending
         } else {
           t._pendingMessages.push(msg);
+        }
+      }
+      // Also route to sidebar thumbnail SVG (thumb=1 mode, no own WS)
+      if (t.thumbnail) {
+        var thumbObj = t.thumbnail.querySelector('object');
+        if (thumbObj && thumbObj.contentWindow && typeof thumbObj.contentWindow.renderMessage === 'function') {
+          thumbObj.contentWindow.renderMessage(msg);
+        } else {
+          // Thumbnail SVG not loaded yet — queue for flush on load
+          if (!t._thumbPendingMessages) t._thumbPendingMessages = [];
+          if (msg.type === 'screen') {
+            t._thumbPendingMessages = [msg];
+          } else {
+            t._thumbPendingMessages.push(msg);
+          }
         }
       }
     }
@@ -1429,8 +1445,24 @@ function createThumbnail(sessionName) {
 
   const obj = document.createElement('object');
   obj.type = 'image/svg+xml';
-  obj.data = '/terminal.svg?session=' + encodeURIComponent(sessionName);
+  obj.data = '/terminal.svg?session=' + encodeURIComponent(sessionName) + '&thumb=1';
   item.appendChild(obj);
+
+  // Flush pending thumbnail messages when SVG loads
+  obj.addEventListener('load', function() {
+    try {
+      var t = terminals.get(sessionName);
+      if (t && t._thumbPendingMessages && t._thumbPendingMessages.length > 0) {
+        var pending = t._thumbPendingMessages;
+        t._thumbPendingMessages = null;
+        for (var p = 0; p < pending.length; p++) {
+          if (typeof obj.contentWindow.renderMessage === 'function') {
+            obj.contentWindow.renderMessage(pending[p]);
+          }
+        }
+      }
+    } catch (e) {}
+  });
 
   // Sidebar thumbnail click handler.
   // stopPropagation prevents this from also triggering onSceneClick on the renderer.
