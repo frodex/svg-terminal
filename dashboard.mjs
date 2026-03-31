@@ -661,7 +661,10 @@ function snapshotThumbnail(sessionName) {
   var dataUri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(data);
 
   var img = t.thumbnail.querySelector('img');
-  if (img) img.src = dataUri;
+  if (img) {
+    img.src = dataUri;
+    img.style.display = 'block';  // show on first snapshot
+  }
 }
 
 var _pendingSnapshots = new Set();
@@ -1480,8 +1483,9 @@ function createThumbnail(sessionName) {
 
   const img = document.createElement('img');
   img.style.width = '100%';
-  img.style.height = 'auto';
-  img.style.display = 'block';
+  img.style.height = '80px';
+  img.style.objectFit = 'cover';
+  img.style.display = 'none';  // hidden until first snapshot
   img.alt = sessionName;
   item.appendChild(img);
 
