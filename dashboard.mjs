@@ -1874,6 +1874,7 @@ function addTerminal(sessionName, cols, rows) {
               }
             }
             if (msg.cursor) t._lastCursor = msg.cursor;
+            t._thumbDirty = true;
           } else if (msg.type === 'delta' && msg.changed) {
             for (var idx in msg.changed) {
               var lineData = msg.changed[idx];
