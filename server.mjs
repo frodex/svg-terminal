@@ -386,6 +386,9 @@ function diffState(prev, curr) {
   return { type: 'delta', cursor: curr.cursor, title: curr.title, changed };
 }
 
+const resizeLocks = new Map();
+const RESIZE_LOCK_MS = 500;
+
 async function handleTerminalWs(ws, session, pane) {
   let lastState = null;
   let pollTimer = null;
@@ -420,6 +423,11 @@ async function handleTerminalWs(ws, session, pane) {
     try {
       const msg = JSON.parse(data);
       if (msg.type === 'resize') {
+        const lock = resizeLocks.get(session);
+        if (lock && lock.ws !== ws && Date.now() < lock.expires) {
+          return; // another browser holds the lock
+        }
+        resizeLocks.set(session, { ws, expires: Date.now() + RESIZE_LOCK_MS });
         const cols = Math.max(20, Math.min(500, parseInt(msg.cols) || 80));
         const rows = Math.max(5, Math.min(200, parseInt(msg.rows) || 24));
         try {

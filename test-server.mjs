@@ -4,7 +4,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 
 const TEST_PORT = 3299;
 const BASE = `http://localhost:${TEST_PORT}`;
@@ -269,4 +269,54 @@ test('WebSocket resize message is processed by server', async () => {
     'Expected screen or delta response after resize');
 
   ws.close();
+});
+
+test('resize lock prevents second browser from overwriting first resize', async () => {
+  // Create a dedicated tmux session for this test
+  try { execSync('tmux kill-session -t resize-test 2>/dev/null'); } catch {}
+  execSync('tmux new-session -d -s resize-test -x 80 -y 24');
+
+  try {
+    const wsUrl = 'ws://127.0.0.1:' + TEST_PORT + '/ws/terminal?session=resize-test&pane=0';
+
+    // Open two WebSocket connections to the same session
+    const ws1 = new WebSocket(wsUrl);
+    const ws2 = new WebSocket(wsUrl);
+
+    // Wait for both to receive initial screen
+    const waitForScreen = (ws) => new Promise((resolve, reject) => {
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString());
+        if (msg.type === 'screen') resolve(msg);
+      };
+      ws.onerror = () => reject(new Error('WebSocket error'));
+      setTimeout(() => reject(new Error('Timeout waiting for screen')), 5000);
+    });
+
+    await Promise.all([waitForScreen(ws1), waitForScreen(ws2)]);
+
+    // WS1 sends a resize
+    ws1.send(JSON.stringify({ type: 'resize', cols: 100, rows: 30 }));
+
+    // Wait for resize to take effect
+    await new Promise(r => setTimeout(r, 50));
+
+    // WS2 sends a different resize — should be rejected by lock
+    ws2.send(JSON.stringify({ type: 'resize', cols: 60, rows: 15 }));
+
+    // Wait for any processing
+    await new Promise(r => setTimeout(r, 100));
+
+    // Check tmux dimensions — should be 100x30 (WS1's resize), not 60x15
+    const output = execSync("tmux display-message -t resize-test -p '#{window_width} #{window_height}'").toString().trim();
+    const [width, height] = output.split(' ').map(Number);
+
+    assert.equal(width, 100, `Expected width 100 (WS1), got ${width} — lock did not prevent WS2 overwrite`);
+    assert.equal(height, 30, `Expected height 30 (WS1), got ${height} — lock did not prevent WS2 overwrite`);
+
+    ws1.close();
+    ws2.close();
+  } finally {
+    try { execSync('tmux kill-session -t resize-test 2>/dev/null'); } catch {}
+  }
 });
