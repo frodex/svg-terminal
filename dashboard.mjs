@@ -1581,12 +1581,11 @@ function updateCardForNewSize(t, newCols, newRows) {
   const { cardW, cardH } = calcCardSize(newCols, newRows);
   t.baseCardW = cardW;
   t.baseCardH = cardH;
-  // Focused-card guard: when focused, card is the user's window.
-  // +/- changes font size inside the fixed card shape.
-  // This guard is RESTORED because removing it caused CSS3D <object> reloads
-  // (Chrome re-composites the card on DOM size change, killing the WebSocket).
-  // TODO: find a way to update focused cards without triggering <object> reload.
-  if (t.dom.classList.contains('focused')) return;
+  // Guard removed: card DOM always updates to match terminal dimensions.
+  // External resizes (other browsers, SSH clients, tmux CLI) are visible.
+  // The camera-only model handles apparent size via camera distance.
+  // Previously restored during crash debugging — root cause was stale clients,
+  // not this guard. Re-removed 2026-03-30.
   t.dom.style.width = cardW + 'px';
   t.dom.style.height = cardH + 'px';
   const inner = t.dom.querySelector('.terminal-inner');
@@ -1691,7 +1690,18 @@ function addTerminal(sessionName, cols, rows) {
             t.screenLines = msg.lines.map(function(l) {
               return { text: l.spans.map(function(s) { return s.text; }).join(''), spans: l.spans };
             });
+            // Track dimension changes for re-layout
+            var prevCols = t.screenCols;
+            var prevRows = t.screenRows;
             updateCardForNewSize(t, msg.width || 80, msg.height || 24);
+            // Re-layout if dimensions actually changed (not first message) and card is focused
+            if (prevCols && prevRows && (msg.width !== prevCols || msg.height !== prevRows) && focusedSessions.has(sessionName)) {
+              if (focusedSessions.size > 1) {
+                calculateFocusedLayout();
+              } else {
+                focusTerminal(sessionName);
+              }
+            }
             if (msg.cursor) t._lastCursor = msg.cursor;
           } else if (msg.type === 'delta' && msg.changed) {
             for (var idx in msg.changed) {
