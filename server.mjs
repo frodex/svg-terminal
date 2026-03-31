@@ -763,6 +763,18 @@ const RESIZE_LOCK_MS = 500;
 // DEPRECATED (PRD v0.5.0 §3.4): Per-connection polling, replaced by SessionWatcher + /ws/dashboard
 // Kept for old pre-WebSocket tmux sessions during transition. Remove when old sessions terminated.
 async function handleTerminalWs(ws, session, pane) {
+  // If a shared watcher already exists for this session, skip the per-connection
+  // capture loop — the shared watcher handles it. This prevents dual-capture
+  // (30ms per-card + 100ms shared) that doubles CPU usage.
+  const watcherKey = session + ':' + pane;
+  if (sessionWatchers.has(watcherKey)) {
+    // Just keep the WS open for the old terminal.svg — rendering is already
+    // gated by _sharedWsActive flag. Close handler still needed for cleanup.
+    ws.on('close', () => {});
+    ws.on('error', () => {});
+    return;
+  }
+
   let lastState = null;
   let pollTimer = null;
 
@@ -1020,6 +1032,10 @@ function serveJs(req, res, filename) {
 function router(req, res) {
   const url = new URL(req.url, `http://localhost:${port}`);
   const pathname = url.pathname;
+  const remoteIp = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  if (pathname !== '/api/events') {
+    process.stderr.write(`[HTTP] ${remoteIp} ${req.method} ${pathname}\n`);
+  }
 
   // Auth pages (public — no auth required)
   if (pathname === '/login') return serveHtml(req, res, 'login.html');
@@ -1324,6 +1340,8 @@ const wss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', async (req, socket, head) => {
   const url = new URL(req.url, 'http://localhost');
+  const remoteIp = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  process.stderr.write(`[WS] ${remoteIp} UPGRADE ${url.pathname}\n`);
   if (url.pathname === '/ws/dashboard') {
     wss.handleUpgrade(req, socket, head, (ws) => {
       handleDashboardWs(ws, req).catch(err => {
