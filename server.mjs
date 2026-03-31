@@ -476,7 +476,9 @@ function triggerCapture(session, pane) {
   const key = session + ':' + pane;
   const watcher = sessionWatchers.get(key);
   if (watcher) {
-    watcher.lastState = null; // force full diff
+    // Don't null lastState — delta is fine, full screen not needed.
+    // Nulling caused every keystroke to send a full screen dump instead of
+    // just the changed lines, which made the cursor visually lag during fast typing.
     watcher._captureAndBroadcast();
   }
 }
