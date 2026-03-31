@@ -1818,6 +1818,7 @@ function addTerminal(sessionName, cols, rows) {
     screenCols: cols,
     screenRows: rows,
     sendInput: function(msg) {
+      this._thumbDirty = true;  // input = activity, thumbnail should refresh
       // Try shared dashboard WebSocket first (new path)
       if (sendDashboardMessage({ session: sessionName, pane: '0', ...msg })) return;
       // Fallback: route through SVG's own WebSocket (old sessions during transition)
