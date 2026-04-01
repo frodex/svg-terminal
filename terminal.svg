@@ -213,9 +213,33 @@
         }
       }
 
-      // Render blue underlines for spans that have url property (set by parser).
-      // No regex — URLs are already tagged by the server-side parser.
-      // Click handling is done by the dashboard layer, not here.
+      // Render blue underlines for URLs in terminal text.
+      // Checks span.url (set by server-side sgr-parser) AND scans text for
+      // http:// / https:// patterns (for claude-proxy sessions where
+      // screen-renderer.ts doesn't tag URLs). Click handling by dashboard layer.
+      // Find URLs in span text — returns array of {start, end, url}
+      function findUrlsInText(text) {
+        var urls = [];
+        var searchFrom = 0;
+        while (searchFrom < text.length) {
+          var httpIdx = text.indexOf('http://', searchFrom);
+          var httpsIdx = text.indexOf('https://', searchFrom);
+          var idx = -1;
+          if (httpIdx >= 0 && httpsIdx >= 0) idx = Math.min(httpIdx, httpsIdx);
+          else if (httpIdx >= 0) idx = httpIdx;
+          else if (httpsIdx >= 0) idx = httpsIdx;
+          if (idx < 0) break;
+          var end = idx;
+          while (end < text.length && !/[\s<>"'\])]/.test(text[end])) end++;
+          while (end > idx && /[.,;:!?)}\]]/.test(text[end - 1])) end--;
+          if (end - idx > 7) {
+            urls.push({ start: idx, end: end, url: text.slice(idx, end) });
+          }
+          searchFrom = end;
+        }
+        return urls;
+      }
+
       function rebuildLinkLayer(lines) {
         while (linkLayer.firstChild) linkLayer.removeChild(linkLayer.firstChild);
         for (var row = 0; row < lines.length; row++) {
@@ -224,6 +248,7 @@
           for (var s = 0; s < spans.length; s++) {
             var span = spans[s];
             if (span.url) {
+              // Server already tagged this span as a URL
               var underline = document.createElementNS(SVG_NS, 'line');
               underline.setAttribute('x1', (colOffset * CELL_W).toFixed(2));
               underline.setAttribute('y1', ((row + 1) * CELL_H - 1).toFixed(2));
@@ -232,7 +257,24 @@
               underline.setAttribute('stroke', '#5c8fff');
               underline.setAttribute('stroke-width', '1');
               underline.setAttribute('opacity', '0.6');
+              underline.setAttribute('data-url', span.url);
               linkLayer.appendChild(underline);
+            } else {
+              // Client-side URL detection for spans not tagged by server
+              // (e.g., claude-proxy sessions using screen-renderer.ts without tagPlainUrls)
+              var found = findUrlsInText(span.text);
+              for (var u = 0; u < found.length; u++) {
+                var ul = document.createElementNS(SVG_NS, 'line');
+                ul.setAttribute('x1', ((colOffset + found[u].start) * CELL_W).toFixed(2));
+                ul.setAttribute('y1', ((row + 1) * CELL_H - 1).toFixed(2));
+                ul.setAttribute('x2', ((colOffset + found[u].end) * CELL_W).toFixed(2));
+                ul.setAttribute('y2', ((row + 1) * CELL_H - 1).toFixed(2));
+                ul.setAttribute('stroke', '#5c8fff');
+                ul.setAttribute('stroke-width', '1');
+                ul.setAttribute('opacity', '0.6');
+                ul.setAttribute('data-url', found[u].url);
+                linkLayer.appendChild(ul);
+              }
             }
             colOffset += span.text.length;
           }
