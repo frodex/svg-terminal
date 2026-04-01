@@ -1206,13 +1206,32 @@ function getUrlAtCell(t, row, col) {
   if (!t.screenLines || !t.screenLines[row]) return null;
   const lineObj = t.screenLines[row];
   if (!lineObj.spans) return null;
+
+  // First check server-tagged URLs
   let offset = 0;
   for (let i = 0; i < lineObj.spans.length; i++) {
     const s = lineObj.spans[i];
     if (col >= offset && col < offset + s.text.length) {
-      return s.url || null;
+      if (s.url) return s.url;
+      break;
     }
     offset += s.text.length;
+  }
+
+  // Fallback: client-side URL detection in the full line text.
+  // Needed for claude-proxy sessions where screen-renderer.ts doesn't tag URLs.
+  const fullLine = lineObj.spans.map(s => s.text).join('');
+  const urlRegex = /https?:\/\/[^\s<>"'\])]+/g;
+  let match;
+  while ((match = urlRegex.exec(fullLine)) !== null) {
+    let url = match[0];
+    // Strip trailing punctuation
+    while (/[.,;:!?)}\]]$/.test(url)) url = url.slice(0, -1);
+    const start = match.index;
+    const end = start + url.length;
+    if (col >= start && col < end) {
+      return url;
+    }
   }
   return null;
 }
