@@ -320,16 +320,10 @@ html, body {
   position: relative;
 }
 
-.thumbnail-item pre::after {
-  content: '';
-  display: inline-block;
-  width: 3px;
-  height: 1em;
-  background: #ccc;
-  animation: thumb-blink 1s step-end infinite;
-  vertical-align: text-bottom;
-  margin-left: 1px;
-}
+/* Fake CSS cursor removed — replaced by positioned .thumb-cursor element
+   that uses _lastCursor (x,y) from the actual terminal cursor position.
+   The old ::after pseudo-element was always at the end of the text content,
+   not at the real cursor location. */
 
 @keyframes thumb-blink {
   0%, 100% { opacity: 1; }

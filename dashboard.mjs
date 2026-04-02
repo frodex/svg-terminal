@@ -224,6 +224,8 @@ function optimizeTermToCard(t) {
   if (!obj) return;
   const cardW = parseInt(t.dom.style.width) || 1280;
   const cardH = (parseInt(t.dom.style.height) || 992) - HEADER_H;
+  const cols = t.screenCols || 80;
+  const rows = t.screenRows || 24;
   try {
     const svgDoc = obj.contentDocument;
     const measure = svgDoc && svgDoc.getElementById('measure');
@@ -232,15 +234,22 @@ function optimizeTermToCard(t) {
       if (bbox.width > 0) {
         const cellW = bbox.width / 10;
         const cellH = bbox.height;
-        // Compute cols and rows to fill both dimensions of the card independently.
-        // This eliminates letterbox — terminal content fills the card exactly.
-        const newCols = Math.max(20, Math.round(cardW / cellW));
-        const newRows = Math.max(5, Math.round(cardH / cellH));
+        // How much the SVG is currently scaled to fill the card.
+        // The viewBox is (cols * cellW) × (rows * cellH), stretched to cardW × cardH.
+        // scaleW/scaleH tell us the stretch factor in each dimension.
+        // fitScale = min of both = the scale at which content fits without clipping.
+        // We compute new cols/rows at this scale so text stays the same apparent size
+        // but fills the card completely.
+        const scaleW = cardW / (cols * cellW);
+        const scaleH = cardH / (rows * cellH);
+        const fitScale = Math.min(scaleW, scaleH);
+        const newCols = Math.max(20, Math.round(cardW / (cellW * fitScale)));
+        const newRows = Math.max(5, Math.round(cardH / (cellH * fitScale)));
         // Lock the card size so updateCardForNewSize doesn't recalculate it.
         // The user's card size is the authority — terminal adapts to it.
         t._lockCardSize = true;
         t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
-        // Also reset the original ratio so +/- preserves this new shape
+        // Reset the original ratio so +/- preserves this new shape
         t._origColRowRatio = newCols / newRows;
         return;
       }
@@ -742,6 +751,38 @@ function snapshotThumbnail(sessionName) {
   }
   pre.innerHTML = html;
   pre.style.display = 'block';
+
+  // Render cursor at _lastCursor position.
+  // The cursor is a small highlighted block positioned over the character at (x, y).
+  // Uses the same font metrics as the <pre> to calculate pixel position.
+  var cursorEl = t.thumbnail.querySelector('.thumb-cursor');
+  // Hide cursor when scrolled (cursor is off-screen) or when position is out of bounds.
+  // When scrollOffset > 0, the viewport shows scrollback and the cursor is below the visible area.
+  var cursorVisible = t._lastCursor && t._lastCursor.x != null && t._lastCursor.y != null
+    && t._lastCursor.x >= 0 && t._lastCursor.y >= 0
+    && t._lastCursor.x < (t.screenCols || 80) && t._lastCursor.y < rows
+    && (t.scrollOffset || 0) === 0;
+  if (cursorVisible) {
+    if (!cursorEl) {
+      cursorEl = document.createElement('div');
+      cursorEl.className = 'thumb-cursor';
+      cursorEl.style.cssText = 'position:absolute;background:#c5c5c5;pointer-events:none;animation:thumb-blink 1s step-end infinite;';
+      t.thumbnail.appendChild(cursorEl);
+    }
+    // Calculate cursor position from character coordinates.
+    // fontSize and lineHeight match the <pre> styling above.
+    // Character width ≈ fontSize * 0.6 for monospace at this tiny scale.
+    var charW = fontSize * 0.6;
+    var lineH = fontSize * 1.2;
+    var labelH = t.thumbnail.querySelector('.thumb-label') ? t.thumbnail.querySelector('.thumb-label').offsetHeight : 16;
+    cursorEl.style.left = (2 + t._lastCursor.x * charW) + 'px';  // 2px = pre padding
+    cursorEl.style.top = (labelH + 2 + t._lastCursor.y * lineH) + 'px';  // label + pre padding
+    cursorEl.style.width = Math.max(1, charW) + 'px';
+    cursorEl.style.height = Math.max(1, lineH) + 'px';
+    cursorEl.style.display = 'block';
+  } else if (cursorEl) {
+    cursorEl.style.display = 'none';
+  }
 }
 
 function escapeHtml(text) {
