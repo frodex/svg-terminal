@@ -739,6 +739,38 @@ function calculateSlotLayout(slots) {
   // Assign cards to slots
   var assignments = assignCardsToSlots(cards, slots);
 
+  // Underflow: fewer cards than slots — rescale used slots to fill available space.
+  // Compute bounding box of assigned slots, then normalize all to fill 0-100% range.
+  var usedAssignments = [];
+  for (var ui = 0; ui < assignments.length; ui++) {
+    if (assignments[ui].slot) usedAssignments.push(assignments[ui]);
+  }
+  if (usedAssignments.length > 0 && usedAssignments.length < slots.length) {
+    var minX = 100, minY = 100, maxX = 0, maxY = 0;
+    for (var ui = 0; ui < usedAssignments.length; ui++) {
+      var s = usedAssignments[ui].slot;
+      if (s.x < minX) minX = s.x;
+      if (s.y < minY) minY = s.y;
+      if (s.x + s.w > maxX) maxX = s.x + s.w;
+      if (s.y + s.h > maxY) maxY = s.y + s.h;
+    }
+    var bw = maxX - minX;
+    var bh = maxY - minY;
+    if (bw > 0 && bh > 0) {
+      for (var ui = 0; ui < usedAssignments.length; ui++) {
+        var s = usedAssignments[ui].slot;
+        usedAssignments[ui].slot = {
+          x: ((s.x - minX) / bw) * 100,
+          y: ((s.y - minY) / bh) * 100,
+          w: (s.w / bw) * 100,
+          h: (s.h / bh) * 100
+        };
+      }
+    }
+  }
+  // Use usedAssignments for the rest of the function instead of assignments
+  assignments = usedAssignments.length > 0 ? usedAssignments : assignments;
+
   // Frustum projection setup
   var vFov = camera.fov * DEG2RAD;
   var halfTan = Math.tan(vFov / 2);
