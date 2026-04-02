@@ -133,6 +133,88 @@ const RING = {
     cardTilt: { x: 0, y: 0, z: 0 },
   }
 };
+
+// === Layout Registry ===
+// Named slot maps for multi-focus card arrangement.
+// Each layout defines rectangular slots as percentages of usable space.
+// Cards are assigned to slots by cell count (largest → largest slot).
+// The 'auto' layout uses the existing masonry bin-packer.
+// See design spec: docs/superpowers/specs/2026-04-01-layout-system-design.04.md
+
+const LAYOUTS = {
+  'auto': {
+    name: 'Auto',
+    slots: null  // null = use masonry bin-packer (calculateFocusedLayout legacy path)
+  },
+  '2up-h': {
+    name: '2-Up Horizontal',
+    slots: [
+      { x: 0, y: 0, w: 50, h: 100 },
+      { x: 50, y: 0, w: 50, h: 100 }
+    ]
+  },
+  '2up-v': {
+    name: '2-Up Vertical',
+    slots: [
+      { x: 0, y: 0, w: 100, h: 50 },
+      { x: 0, y: 50, w: 100, h: 50 }
+    ]
+  },
+  '1main-2side': {
+    name: '1 Main + 2 Side',
+    slots: [
+      { x: 0, y: 0, w: 66, h: 100 },
+      { x: 66, y: 0, w: 34, h: 50 },
+      { x: 66, y: 50, w: 34, h: 50 }
+    ]
+  },
+  '3col': {
+    name: '3 Columns',
+    slots: [
+      { x: 0, y: 0, w: 33, h: 100 },
+      { x: 33, y: 0, w: 34, h: 100 },
+      { x: 67, y: 0, w: 33, h: 100 }
+    ]
+  },
+  '2x2': {
+    name: '2×2 Grid',
+    slots: [
+      { x: 0, y: 0, w: 50, h: 50 },
+      { x: 50, y: 0, w: 50, h: 50 },
+      { x: 0, y: 50, w: 50, h: 50 },
+      { x: 50, y: 50, w: 50, h: 50 }
+    ]
+  },
+  '2top-1bottom': {
+    name: '2 Top + 1 Bottom',
+    slots: [
+      { x: 0, y: 0, w: 50, h: 50 },
+      { x: 50, y: 0, w: 50, h: 50 },
+      { x: 0, y: 50, w: 100, h: 50 }
+    ]
+  },
+  '1main-4mini': {
+    name: '1 Main + 4 Mini',
+    slots: [
+      { x: 0, y: 0, w: 66, h: 100 },
+      { x: 66, y: 0, w: 17, h: 50 },
+      { x: 83, y: 0, w: 17, h: 50 },
+      { x: 66, y: 50, w: 17, h: 50 },
+      { x: 83, y: 50, w: 17, h: 50 }
+    ]
+  },
+  'n-stacked': {
+    name: 'Stacked Rows',
+    slots: null  // generated dynamically by generateNStacked(count)
+  }
+};
+
+// Layout order for cycling with layout button
+const LAYOUT_ORDER = ['auto', '2up-h', '2up-v', '1main-2side', '3col', '2x2', '2top-1bottom', '1main-4mini', 'n-stacked'];
+
+// Current active layout for the focus group
+let activeLayout = 'auto';
+
 // === Key Translation (browser KeyboardEvent → tmux send-keys) ===
 const SPECIAL_KEY_MAP = {
   'Enter': 'Enter',
