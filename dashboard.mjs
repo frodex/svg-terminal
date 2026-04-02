@@ -422,6 +422,45 @@ function optimizeCardToTerm(t) {
   }
 }
 
+// Maximize card→slot: resize card DOM to fill its assigned layout slot.
+// Card takes on the slot's aspect ratio. Terminal content letterboxes inside
+// (the SVG's preserveAspectRatio=meet handles this automatically).
+// Per-browser only — doesn't affect co-browsers or tmux.
+function maximizeCardToSlot(t) {
+  if (!t._layoutSlot) return;
+
+  var slot = t._layoutSlot;
+  var slotAspect = slot.w / slot.h;
+
+  // Compute card DOM dimensions that match the slot's aspect ratio.
+  // Use TARGET_WORLD_AREA for consistent visual weight.
+  var worldW = Math.sqrt(TARGET_WORLD_AREA * slotAspect);
+  var worldH = TARGET_WORLD_AREA / worldW;
+  var cardW = Math.round(worldW * 4);
+  var cardH = Math.round(worldH * 4) + HEADER_H;
+  cardW = Math.max(MIN_CARD_W, Math.min(MAX_CARD_W, cardW));
+  cardH = Math.max(MIN_CARD_H, Math.min(MAX_CARD_H, cardH));
+
+  // Apply new card size
+  t.baseCardW = cardW;
+  t.baseCardH = cardH;
+  t.dom.style.width = cardW + 'px';
+  t.dom.style.height = cardH + 'px';
+  var inner = t.dom.querySelector('.terminal-inner');
+  if (inner) {
+    inner.style.width = cardW + 'px';
+    inner.style.height = cardH + 'px';
+  }
+
+  // Reset +/- ratio to new card shape
+  var cols = t.screenCols || 80;
+  var rows = t.screenRows || 24;
+  t._origColRowRatio = cols / rows;
+
+  // Re-run layout to reposition at correct Z-depth for new world size
+  calculateFocusedLayout();
+}
+
 // === Constants ===
 const LIGHT_DIR = new THREE.Vector3(-0.7, 0.7, -0.3).normalize();
 const FLOOR_Y = -300;
@@ -846,6 +885,9 @@ function calculateSlotLayout(slots) {
     t._layoutZ = cardZ;
     t.targetPos = { x: wx, y: wy, z: cardZ };
     t.morphStart = now;
+    // Save slot dimensions for mutation operations (maximize card→slot).
+    t._layoutSlot = { x: slotPxX, y: slotPxY, w: slotPxW, h: slotPxH };
+    t._layoutFit = { w: fitW, h: fitH };
   }
 
   // Camera tween
@@ -1957,6 +1999,10 @@ function createTerminalDOM(sessionName) {
         const t = terminals.get(sessionName);
         if (t) optimizeCardToTerm(t);
       }},
+      { label: '⬜', title: 'Maximize card to layout slot', fn: function() {
+        var t = terminals.get(sessionName);
+        if (t) maximizeCardToSlot(t);
+      }},
       { label: '▦', title: 'Cycle layout (multi-focus)', fn: function() {
         if (focusedSessions.size > 0) cycleLayout();
       }}
@@ -2740,6 +2786,11 @@ function deselectTerminals() {
 // Full unfocus: return cards to ring, camera to home position.
 function unfocusTerminal() {
   activeLayout = 'auto';  // reset to default layout when focus group changes
+  // Clear layout slot assignments
+  for (var entry of terminals) {
+    entry[1]._layoutSlot = null;
+    entry[1]._layoutFit = null;
+  }
   restoreAllFocused();
   activeInputSession = null;
   _zoomedSession = null;
