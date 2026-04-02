@@ -226,6 +226,33 @@ function generateNStacked(n) {
   return slots;
 }
 
+// Cycle to the next layout in LAYOUT_ORDER.
+// Only works when terminals are focused. Triggers re-layout immediately.
+function cycleLayout() {
+  var idx = LAYOUT_ORDER.indexOf(activeLayout);
+  activeLayout = LAYOUT_ORDER[(idx + 1) % LAYOUT_ORDER.length];
+  calculateFocusedLayout();
+  showLayoutIndicator();
+}
+
+// Show a brief overlay indicating the current layout name.
+// Fades out after 1.5 seconds.
+function showLayoutIndicator() {
+  var indicator = document.getElementById('layout-indicator');
+  if (!indicator) {
+    indicator = document.createElement('div');
+    indicator.id = 'layout-indicator';
+    document.body.appendChild(indicator);
+  }
+  var layout = LAYOUTS[activeLayout];
+  indicator.textContent = layout ? layout.name : activeLayout;
+  indicator.style.opacity = '1';
+  clearTimeout(indicator._fadeTimer);
+  indicator._fadeTimer = setTimeout(function() {
+    indicator.style.opacity = '0';
+  }, 1500);
+}
+
 // Assign cards to slots: largest terminal (by cell count) → largest slot (by area).
 // Returns array of { name, slotIndex, slot } objects.
 // Cards with no available slot get slotIndex = -1 and slot = null (overflow).
@@ -517,6 +544,19 @@ function calculateFocusedLayout() {
   const now = clock.getElapsedTime();
   const count = focusedSessions.size;
   if (count === 0) return;
+
+  // Dispatch to named layout if one is active (not 'auto')
+  var layout = LAYOUTS[activeLayout];
+  if (layout && layout.slots) {
+    calculateSlotLayout(layout.slots);
+    return;
+  }
+  // Special case: n-stacked generates slots dynamically based on card count
+  if (activeLayout === 'n-stacked') {
+    calculateSlotLayout(generateNStacked(count));
+    return;
+  }
+  // 'auto' layout — fall through to masonry bin-packer below
 
   // Full viewport — sidebar and status bar are just overlays, not subtracted.
   // But we avoid placing cards under them.
@@ -1884,6 +1924,9 @@ function createTerminalDOM(sessionName) {
       { label: '⊞', title: 'Fit card to terminal', fn: function() {
         const t = terminals.get(sessionName);
         if (t) optimizeCardToTerm(t);
+      }},
+      { label: '▦', title: 'Cycle layout (multi-focus)', fn: function() {
+        if (focusedSessions.size > 0) cycleLayout();
       }}
     ],
     contentEl: obj
@@ -2520,6 +2563,7 @@ function focusTerminal(sessionName) {
 
 // Add a terminal to the multi-focus set (ctrl+click)
 function addToFocus(sessionName) {
+  activeLayout = 'auto';  // reset to default layout when focus group changes
   const t = terminals.get(sessionName);
   if (!t) return;
 
@@ -2606,6 +2650,7 @@ function restoreFocusedTerminal(name) {
 // If other terminals remain focused, recalculate layout.
 // If none remain, unfocus entirely.
 function removeFromFocus(sessionName) {
+  activeLayout = 'auto';  // reset to default layout when focus group changes
   if (!focusedSessions.has(sessionName)) return;
   restoreFocusedTerminal(sessionName);
   focusedSessions.delete(sessionName);
@@ -2662,6 +2707,7 @@ function deselectTerminals() {
 
 // Full unfocus: return cards to ring, camera to home position.
 function unfocusTerminal() {
+  activeLayout = 'auto';  // reset to default layout when focus group changes
   restoreAllFocused();
   activeInputSession = null;
   _zoomedSession = null;
