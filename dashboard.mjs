@@ -215,6 +215,36 @@ const LAYOUT_ORDER = ['auto', '2up-h', '2up-v', '1main-2side', '3col', '2x2', '2
 // Current active layout for the focus group
 let activeLayout = 'auto';
 
+// Generate n-stacked layout dynamically — N equal rows, full width.
+// Cards are centered within slot at comfortable aspect (not letterboxed to full width).
+function generateNStacked(n) {
+  var slots = [];
+  var h = 100 / n;
+  for (var i = 0; i < n; i++) {
+    slots.push({ x: 0, y: h * i, w: 100, h: h });
+  }
+  return slots;
+}
+
+// Assign cards to slots: largest terminal (by cell count) → largest slot (by area).
+// Returns array of { name, slotIndex, slot } objects.
+// Cards with no available slot get slotIndex = -1 and slot = null (overflow).
+function assignCardsToSlots(cards, slots) {
+  var sorted = cards.slice().sort(function(a, b) { return b.cells - a.cells; });
+  var slotOrder = slots.map(function(s, i) { return { index: i, area: s.w * s.h }; })
+    .sort(function(a, b) { return b.area - a.area; });
+
+  var assignments = [];
+  for (var i = 0; i < sorted.length; i++) {
+    if (i < slotOrder.length) {
+      assignments.push({ name: sorted[i].name, slotIndex: slotOrder[i].index, slot: slots[slotOrder[i].index] });
+    } else {
+      assignments.push({ name: sorted[i].name, slotIndex: -1, slot: null });
+    }
+  }
+  return assignments;
+}
+
 // === Key Translation (browser KeyboardEvent → tmux send-keys) ===
 const SPECIAL_KEY_MAP = {
   'Enter': 'Enter',
@@ -620,6 +650,139 @@ function calculateFocusedLayout() {
 
   // Camera looks at the midpoint of focused cards
   const avgZ = placements.reduce((s, p) => s + (camZ - p._depth), 0) / placements.length;
+  cameraTween = {
+    from: camera.position.clone(),
+    to: new THREE.Vector3(0, 0, camZ),
+    lookFrom: currentLookTarget.clone(),
+    lookTo: new THREE.Vector3(0, 0, avgZ),
+    start: now,
+    duration: 1.0
+  };
+}
+
+// Position cards into named layout slots using frustum projection.
+// Same projection math as calculateFocusedLayout but with predefined slot positions
+// instead of masonry bin-packing.
+//
+// Slot positions are percentages of usable space (availW × availH).
+// Each card is placed at the Z-depth where its world size fills its slot's screen rectangle.
+// Card aspect ratio is preserved — card is centered in slot if aspects don't match.
+function calculateSlotLayout(slots) {
+  var now = clock.getElapsedTime();
+  var count = focusedSessions.size;
+  if (count === 0) return;
+
+  var screenW = window.innerWidth;
+  var screenH = window.innerHeight;
+  var availW = screenW - SIDEBAR_WIDTH;
+  var availH = screenH - STATUS_BAR_H;
+
+  // Build card info — same structure as masonry path
+  var names = [...focusedSessions];
+  var cards = [];
+  for (var ci = 0; ci < names.length; ci++) {
+    var name = names[ci];
+    var t = terminals.get(name);
+    if (t && t._userPositioned) continue;
+    var cols = t ? t.screenCols || 80 : 80;
+    var rows = t ? t.screenRows || 24 : 24;
+    var cells = cols * rows;
+    var m = t ? getMeasuredCellSize(t) : null;
+    var aspect = (cols * (m ? m.cellW : SVG_CELL_W)) / (rows * (m ? m.cellH : SVG_CELL_H));
+    var worldW = (t ? t.baseCardW || 1280 : 1280) * 0.25;
+    var worldH = (t ? t.baseCardH || 992 : 992) * 0.25;
+    cards.push({ name: name, cols: cols, rows: rows, cells: cells, aspect: aspect, worldW: worldW, worldH: worldH });
+  }
+
+  if (cards.length === 0) return;
+
+  // Assign cards to slots
+  var assignments = assignCardsToSlots(cards, slots);
+
+  // Frustum projection setup
+  var vFov = camera.fov * DEG2RAD;
+  var halfTan = Math.tan(vFov / 2);
+
+  var placements = [];
+
+  for (var ai = 0; ai < assignments.length; ai++) {
+    var a = assignments[ai];
+    var t = terminals.get(a.name);
+    if (!t) continue;
+    var card = null;
+    for (var ci = 0; ci < cards.length; ci++) {
+      if (cards[ci].name === a.name) { card = cards[ci]; break; }
+    }
+    if (!card) continue;
+
+    if (!a.slot) {
+      // Overflow card — no slot assigned.
+      // TODO Phase 2: shrink layout and place overflow cards in freed space.
+      continue;
+    }
+
+    // Convert slot percentages to pixel positions within usable space
+    var slotPxX = (a.slot.x / 100) * availW;
+    var slotPxY = (a.slot.y / 100) * availH;
+    var slotPxW = (a.slot.w / 100) * availW;
+    var slotPxH = (a.slot.h / 100) * availH;
+
+    // Card must fit within slot while preserving its aspect ratio (letterbox).
+    var slotAspect = slotPxW / slotPxH;
+    var fitW, fitH;
+    if (card.aspect > slotAspect) {
+      // Card is wider than slot — constrained by width
+      fitW = slotPxW;
+      fitH = slotPxW / card.aspect;
+    } else {
+      // Card is taller than slot — constrained by height
+      fitH = slotPxH;
+      fitW = slotPxH * card.aspect;
+    }
+
+    // Center the card within its slot
+    var cx = slotPxX + slotPxW / 2;
+    var cy = slotPxY + slotPxH / 2;
+
+    // Screen fraction this card occupies (for frustum depth calc)
+    var fracH = fitH / screenH;
+    var depth = card.worldH / (fracH * 2 * halfTan);
+
+    placements.push({ name: a.name, cx: cx, cy: cy, fitW: fitW, fitH: fitH, depth: depth, worldW: card.worldW, worldH: card.worldH });
+  }
+
+  if (placements.length === 0) return;
+
+  // Camera Z: far enough back that all focused cards are in front of the ring
+  var maxDepth = Math.max.apply(null, placements.map(function(p) { return p.depth; }));
+  var minCardZ = 150;
+  var camZ = Math.max(FOCUS_DIST, maxDepth + minCardZ);
+
+  // Position each card in 3D
+  for (var pi = 0; pi < placements.length; pi++) {
+    var p = placements[pi];
+    var t = terminals.get(p.name);
+    if (!t) continue;
+
+    var cardZ = camZ - p.depth;
+    var visHAtDepth = 2 * p.depth * halfTan;
+    var px2w = visHAtDepth / screenH;
+    var wx = (p.cx - screenW / 2) * px2w;
+    var wy = -(p.cy - screenH / 2) * px2w;
+
+    t.morphFrom = { x: t.currentPos.x, y: t.currentPos.y, z: t.currentPos.z };
+    t._layoutZ = cardZ;
+    t.targetPos = { x: wx, y: wy, z: cardZ };
+    t.morphStart = now;
+  }
+
+  // Camera tween
+  var avgZ = 0;
+  for (var pi = 0; pi < placements.length; pi++) {
+    avgZ += (camZ - placements[pi].depth);
+  }
+  avgZ /= placements.length;
+
   cameraTween = {
     from: camera.position.clone(),
     to: new THREE.Vector3(0, 0, camZ),
