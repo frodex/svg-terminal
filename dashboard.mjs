@@ -63,6 +63,48 @@
 //     .terminal-3d. Borders/shadows on the root element under matrix3d cause Chrome to
 //     re-rasterize the entire card, producing visible text sharpness mutation. See PRD §7.3.
 //
+// 12. CARD SIZING USES MEASURED FONT METRICS (2026-04-01):
+//     Card DOM dimensions must match the SVG viewBox aspect ratio exactly, or the SVG
+//     letterboxes inside the card (visible gap) and text can blur. The SVG's viewBox is
+//     computed from runtime-measured font metrics (getBBox on a measure element). The card
+//     must be sized using those same measured values, NOT the hardcoded SVG_CELL_W/SVG_CELL_H
+//     constants. The constants remain as fallbacks for initial card creation (before the SVG
+//     <object> loads and measures its font). After load, the card is corrected to match.
+//
+//     Sizing flow:
+//     a) addTerminal: card sized with hardcoded constants (approximate), _needsMeasuredCorrection=true
+//     b) SVG <object> loads: 100ms delay, then card corrected using getMeasuredCellSize()
+//     c) First screen message: updateCardForNewSize runs, _needsMeasuredCorrection allows
+//        it through even if cols/rows haven't changed, applies measured correction
+//     d) Subsequent resizes: updateCardForNewSize always uses measured values when available
+//
+//     Flags on terminal object:
+//     - _needsMeasuredCorrection: set at creation, cleared after first measured resize
+//     - _lockCardSize: set by optimizeTermToCard (⊡), prevents updateCardForNewSize from
+//       recalculating — user's card size is the authority when fitting terminal to card
+//     - _suppressRelayout: set by +/- buttons, prevents re-layout after terminal resize
+//       so the header/buttons don't jump away from the cursor
+//     - _resizeAnchorFx/_resizeAnchorFy: fraction (0-1) of the card where the user clicked,
+//       used to pin that point during resize so the card grows/shrinks around the click
+//     - _origColRowRatio: cols/rows ratio set by drag resize or first +/- press, used to
+//       preserve aspect ratio during +/- operations (prevents cumulative rounding drift)
+//     - _resizeEdge: { left, right, top, bottom } booleans set on alt+drag mousedown,
+//       determines which edge/corner was grabbed for directional resize
+//
+//     See PRD-amendment-004.02.md for full investigation and root cause analysis.
+//
+// 13. DIRECTIONAL CARD RESIZE (2026-04-01):
+//     Alt+drag resize detects which edge/corner was grabbed (20% edge zone from each side).
+//     Only the grabbed edges move; the opposite edges stay anchored by shifting the card's
+//     3D position to compensate. The scale factor adapts to the card's apparent screen size
+//     (DOM width / bounding rect width) so mouse movement tracks 1:1 regardless of Z-depth.
+//
+// 14. +/- PRESERVES ASPECT RATIO (2026-04-01):
+//     The +/- buttons store the original cols/rows ratio (_origColRowRatio) on first press.
+//     Subsequent presses compute rows from this fixed ratio, preventing cumulative integer
+//     rounding drift that previously caused cards to letterbox over repeated +/- cycles.
+//     The ratio is reset by: alt+drag (user's new shape intent), fit-to-term (⊡), fit-to-card (⊞).
+//
 // ============================================================================
 
 import * as THREE from 'three';
@@ -182,8 +224,6 @@ function optimizeTermToCard(t) {
   if (!obj) return;
   const cardW = parseInt(t.dom.style.width) || 1280;
   const cardH = (parseInt(t.dom.style.height) || 992) - HEADER_H;
-  const cols = t.screenCols || 80;
-  const rows = t.screenRows || 24;
   try {
     const svgDoc = obj.contentDocument;
     const measure = svgDoc && svgDoc.getElementById('measure');
@@ -192,17 +232,22 @@ function optimizeTermToCard(t) {
       if (bbox.width > 0) {
         const cellW = bbox.width / 10;
         const cellH = bbox.height;
-        const scaleW = cardW / (cols * cellW);
-        const scaleH = cardH / (rows * cellH);
-        const fitScale = Math.min(scaleW, scaleH);
-        const newCols = Math.max(20, Math.round(cardW / (cellW * fitScale)));
-        const newRows = Math.max(5, Math.round(cardH / (cellH * fitScale)));
+        // Compute cols and rows to fill both dimensions of the card independently.
+        // This eliminates letterbox — terminal content fills the card exactly.
+        const newCols = Math.max(20, Math.round(cardW / cellW));
+        const newRows = Math.max(5, Math.round(cardH / cellH));
+        // Lock the card size so updateCardForNewSize doesn't recalculate it.
+        // The user's card size is the authority — terminal adapts to it.
+        t._lockCardSize = true;
         t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
+        // Also reset the original ratio so +/- preserves this new shape
+        t._origColRowRatio = newCols / newRows;
         return;
       }
     }
   } catch (e) {}
-  t.sendInput({ type: 'resize', cols: cols, rows: rows });
+  // Fallback: keep current size
+  t.sendInput({ type: 'resize', cols: t.screenCols || 80, rows: t.screenRows || 24 });
 }
 
 // Optimize card → terminal: resize the card to fit the current terminal.
@@ -211,7 +256,12 @@ function optimizeTermToCard(t) {
 function optimizeCardToTerm(t) {
   const cols = t.screenCols || 80;
   const rows = t.screenRows || 24;
-  const { cardW, cardH } = calcCardSize(cols, rows);
+  // Reset original ratio so +/- preserves this shape going forward
+  t._origColRowRatio = cols / rows;
+  var measured = getMeasuredCellSize(t);
+  const { cardW, cardH } = measured
+    ? calcCardSize(cols, rows, measured.cellW, measured.cellH)
+    : calcCardSize(cols, rows);
   t.baseCardW = cardW;
   t.baseCardH = cardH;
   t.dom.style.width = cardW + 'px';
@@ -365,7 +415,8 @@ function calculateFocusedLayout() {
     const cols = t ? t.screenCols || 80 : 80;
     const rows = t ? t.screenRows || 24 : 24;
     const cells = cols * rows;
-    const aspect = (cols * SVG_CELL_W) / (rows * SVG_CELL_H);
+    const m = t ? getMeasuredCellSize(t) : null;
+    const aspect = (cols * (m ? m.cellW : SVG_CELL_W)) / (rows * (m ? m.cellH : SVG_CELL_H));
     const worldW = (t ? t.baseCardW || 1280 : 1280) * 0.25;
     const worldH = (t ? t.baseCardH || 992 : 992) * 0.25;
     cards.push({ name, cols, rows, cells, aspect, worldW, worldH });
@@ -840,27 +891,55 @@ function onMouseMove(e) {
       camera.lookAt(currentLookTarget);
 
     } else if (dragMode === 'resize') {
-      // Alt+drag: resize the focused terminal card
+      // Alt+drag: resize the focused terminal card from the grabbed edge/corner.
+      // The opposite edge stays anchored — card resizes like a window.
       if (!activeInputSession) return;
       const t = terminals.get(activeInputSession);
-      if (!t) return;
-      // Scale the drag delta to 4x (since DOM is 4x)
-      const scaleF = 4;
+      if (!t || !t._resizeEdge) return;
+      // Scale mouse movement to DOM pixels. DOM is 4x, CSS3D renders at 0.25,
+      // but the card's apparent size depends on its Z-depth relative to camera.
+      // Use the ratio of card DOM width to its screen bounding rect width.
+      const rect = t.dom.getBoundingClientRect();
+      const edge = t._resizeEdge;
       const currentW = parseInt(t.dom.style.width) || 1280;
       const currentH = parseInt(t.dom.style.height) || 992;
-      const newW = Math.max(640, currentW + dx * scaleF);
-      const newH = Math.max(496, currentH + dy * scaleF);
+      const scaleF = rect.width > 10 ? currentW / rect.width : 4;
+      let newW = currentW;
+      let newH = currentH;
+
+      // Apply dx/dy only to the grabbed edges
+      if (edge.right) newW = Math.max(640, currentW + dx * scaleF);
+      if (edge.left)  newW = Math.max(640, currentW - dx * scaleF);
+      if (edge.bottom) newH = Math.max(496, currentH + dy * scaleF);
+      if (edge.top)    newH = Math.max(496, currentH - dy * scaleF);
+
       t.dom.style.width = newW + 'px';
       t.dom.style.height = newH + 'px';
-      // Inner matches card — no scale transform in camera-only architecture
       const inner = t.dom.querySelector('.terminal-inner');
       if (inner) {
         inner.style.width = newW + 'px';
         inner.style.height = newH + 'px';
       }
-      // Save as user's preferred size
+
+      // Anchor the opposite edge by shifting the 3D position.
+      // CSS3DObject origin is center, so changing width shifts both edges equally.
+      // To keep the opposite edge fixed, move the card by half the size change.
+      // World units = DOM pixels * 0.25 (CSS3DObject scale)
+      const dw = (newW - currentW) * 0.25;
+      const dh = (newH - currentH) * 0.25;
+      if (edge.right && !edge.left)  { t.currentPos.x += dw / 2; t.targetPos.x = t.currentPos.x; }
+      if (edge.left && !edge.right)  { t.currentPos.x -= dw / 2; t.targetPos.x = t.currentPos.x; }
+      if (edge.bottom && !edge.top)  { t.currentPos.y -= dh / 2; t.targetPos.y = t.currentPos.y; }
+      if (edge.top && !edge.bottom)  { t.currentPos.y += dh / 2; t.targetPos.y = t.currentPos.y; }
+      t.css3dObject.position.set(t.currentPos.x, t.currentPos.y, t.currentPos.z);
+
+      // Save as user's preferred size and set col/row ratio for +/- scaling.
       t.baseCardW = newW;
       t.baseCardH = newH;
+      var m = getMeasuredCellSize(t);
+      var cw = m ? m.cellW : SVG_CELL_W;
+      var ch = m ? m.cellH : SVG_CELL_H;
+      t._origColRowRatio = (newW / cw) / ((newH - HEADER_H) / ch);
       t._userPositioned = true; // prevent layout from overriding user's resize
     }
   }
@@ -935,6 +1014,25 @@ function onMouseDown(e) {
           rt._resizeStartH = (parseInt(rt.dom.style.height) || 992) - HEADER_H;
           rt._resizeStartCols = rt.screenCols || 80;
           rt._resizeStartRows = rt.screenRows || 24;
+          // Detect which edge/corner was grabbed based on cursor position within card.
+          // Edge zone = 20% of card dimension from each edge.
+          const rect = rt.dom.getBoundingClientRect();
+          const fx = (e.clientX - rect.left) / rect.width;  // 0=left, 1=right
+          const fy = (e.clientY - rect.top) / rect.height;  // 0=top, 1=bottom
+          const edgeZone = 0.2;
+          rt._resizeEdge = {
+            left:   fx < edgeZone,
+            right:  fx > (1 - edgeZone),
+            top:    fy < edgeZone,
+            bottom: fy > (1 - edgeZone)
+          };
+          // If grab is in the interior (no edge), default to bottom-right
+          if (!rt._resizeEdge.left && !rt._resizeEdge.right && !rt._resizeEdge.top && !rt._resizeEdge.bottom) {
+            rt._resizeEdge.right = true;
+            rt._resizeEdge.bottom = true;
+          }
+          // Save the card's current 3D position for anchoring
+          rt._resizeStartPos = rt.currentPos ? { ...rt.currentPos } : { x: 0, y: 0, z: 0 };
         }
       }
       e.preventDefault();
@@ -1425,7 +1523,7 @@ function createCardDOM(config) {
     const btn = document.createElement('button');
     btn.textContent = label;
     btn.title = title;
-    btn.addEventListener('click', function(ev) { ev.stopPropagation(); ev.preventDefault(); fn(); });
+    btn.addEventListener('click', function(ev) { ev.stopPropagation(); ev.preventDefault(); fn(ev); });
     return btn;
   };
   // Add custom controls from config
@@ -1461,19 +1559,35 @@ function createTerminalDOM(sessionName) {
     title: sessionName,
     type: 'terminal',
     controls: [
-      { label: '−', title: 'Smaller text (more cols)', fn: function() {
+      { label: '−', title: 'Smaller text (more cols)', fn: function(ev) {
         const t = terminals.get(sessionName);
         if (t) {
+          // Preserve original col/row ratio to prevent aspect drift over repeated presses.
+          if (!t._origColRowRatio) t._origColRowRatio = (t.screenCols || 80) / (t.screenRows || 24);
           const newCols = Math.min(300, (t.screenCols || 80) + 4);
-          const newRows = Math.min(100, (t.screenRows || 24) + 2);
+          const newRows = Math.max(5, Math.min(100, Math.round(newCols / t._origColRowRatio)));
+          // Pin the point under the click — card resizes around this anchor
+          if (ev) {
+            const rect = t.dom.getBoundingClientRect();
+            t._resizeAnchorFx = (ev.clientX - rect.left) / rect.width;
+            t._resizeAnchorFy = (ev.clientY - rect.top) / rect.height;
+          }
+          t._suppressRelayout = true;
           t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
         }
       }},
-      { label: '+', title: 'Bigger text (fewer cols)', fn: function() {
+      { label: '+', title: 'Bigger text (fewer cols)', fn: function(ev) {
         const t = terminals.get(sessionName);
         if (t) {
+          if (!t._origColRowRatio) t._origColRowRatio = (t.screenCols || 80) / (t.screenRows || 24);
           const newCols = Math.max(20, (t.screenCols || 80) - 4);
-          const newRows = Math.max(5, (t.screenRows || 24) - 2);
+          const newRows = Math.max(5, Math.min(100, Math.round(newCols / t._origColRowRatio)));
+          if (ev) {
+            const rect = t.dom.getBoundingClientRect();
+            t._resizeAnchorFx = (ev.clientX - rect.left) / rect.width;
+            t._resizeAnchorFy = (ev.clientY - rect.top) / rect.height;
+          }
+          t._suppressRelayout = true;
           t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
         }
       }},
@@ -1748,8 +1862,11 @@ const TARGET_WORLD_AREA = 320 * 248; // ~79,360 sq world units
 // Calculate card DOM dimensions from terminal cols×rows.
 // All cards have roughly the same visual weight (world-space area),
 // but each card's shape matches its terminal's aspect ratio.
-function calcCardSize(cols, rows) {
-  const termAspect = (cols * SVG_CELL_W) / (rows * SVG_CELL_H);
+// cellW/cellH: optional measured cell dimensions from the SVG renderer.
+// When provided, card aspect matches the SVG viewBox exactly (no letterbox gap).
+// When omitted, falls back to hardcoded SVG_CELL_W/H (approximate, pre-measurement).
+function calcCardSize(cols, rows, cellW, cellH) {
+  const termAspect = (cols * (cellW || SVG_CELL_W)) / (rows * (cellH || SVG_CELL_H));
   // Solve for world dimensions with target area and correct aspect:
   // worldW * worldH = TARGET_WORLD_AREA
   // worldW / worldH = termAspect
@@ -1765,23 +1882,77 @@ function calcCardSize(cols, rows) {
   return { cardW, cardH };
 }
 
+// Read measured cell dimensions from a terminal's SVG <object>.
+// Returns { cellW, cellH } or null if not available yet.
+function getMeasuredCellSize(t) {
+  var obj = t.dom ? t.dom.querySelector('object') : null;
+  if (!obj || !obj.contentDocument) return null;
+  try {
+    var measure = obj.contentDocument.getElementById('measure');
+    if (measure) {
+      var bbox = measure.getBBox();
+      if (bbox.width > 0) {
+        return { cellW: bbox.width / 10, cellH: bbox.height };
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+
 // Reactively update a terminal's card size when cols/rows change.
-// Called from WebSocket onmessage when screenCols/screenRows differ.
-// Update card base size when tmux dimensions change.
-// Always updates baseCardW/baseCardH (so unfocus restores correctly).
-// Only updates DOM if not focused (focus manages its own DOM sizing).
+// Called from _screenCallback when screenCols/screenRows differ from last known values.
+//
+// Three special flags modify behavior (see note 12 in header):
+// - _needsMeasuredCorrection: allows through even if dims unchanged (initial measured correction)
+// - _lockCardSize: skips card resize entirely (after ⊡ fit-terminal-to-card, user's card is authority)
+// - _suppressRelayout: skips re-layout in _screenCallback (after +/-, keeps header under cursor)
+//
+// Anchor behavior: if _resizeAnchorFx/_resizeAnchorFy are set (by +/- click), the card's
+// 3D position is adjusted so the clicked point stays fixed on screen during resize.
+// Default anchor is center (0.5, 0.5) — no position change.
 function updateCardForNewSize(t, newCols, newRows) {
-  if (newCols === t.screenCols && newRows === t.screenRows) return;
+  var dimsChanged = newCols !== t.screenCols || newRows !== t.screenRows;
+  if (!dimsChanged && !t._needsMeasuredCorrection) return;
   t.screenCols = newCols;
   t.screenRows = newRows;
-  const { cardW, cardH } = calcCardSize(newCols, newRows);
+  // If card size is locked (e.g., after fit-terminal-to-card), the user's card size
+  // is the authority — don't recalculate. Just update screenCols/screenRows and clear the lock.
+  if (t._lockCardSize) {
+    t._lockCardSize = false;
+    return;
+  }
+  // Use measured cell dimensions from SVG when available — card aspect matches SVG exactly.
+  var measured = getMeasuredCellSize(t);
+  if (measured) t._needsMeasuredCorrection = false; // correction applied
+  const { cardW, cardH } = measured
+    ? calcCardSize(newCols, newRows, measured.cellW, measured.cellH)
+    : calcCardSize(newCols, newRows);
+  // Compensate 3D position so the anchor point stays fixed when resizing.
+  // CSS3DObject origin is center — changing DOM size shifts all edges equally.
+  // The anchor point (fx, fy) is the fraction of the card where the user clicked.
+  // Default to center (0.5, 0.5) if no anchor set — no position change.
+  var oldW = parseInt(t.dom.style.width) || cardW;
+  var oldH = parseInt(t.dom.style.height) || cardH;
+  var dwWorld = (cardW - oldW) * 0.25;  // DOM to world: * CSS3DObject scale (0.25)
+  var dhWorld = (cardH - oldH) * 0.25;
+  if (t.currentPos && (dwWorld !== 0 || dhWorld !== 0)) {
+    // Anchor fraction: 0.5 = center (no shift), 0 = left/top edge, 1 = right/bottom edge
+    var fx = t._resizeAnchorFx != null ? t._resizeAnchorFx : 0.5;
+    var fy = t._resizeAnchorFy != null ? t._resizeAnchorFy : 0.5;
+    // To keep the anchor point fixed on screen: when the card grows, the anchor
+    // moves away from center. Shift the 3D center in the opposite direction to compensate.
+    // shift = -(fx - 0.5) * sizeChange. At center (0.5), shift=0.
+    t.currentPos.x -= dwWorld * (fx - 0.5);
+    t.currentPos.y += dhWorld * (fy - 0.5);  // Y inverted in 3D
+    t.targetPos.x = t.currentPos.x;
+    t.targetPos.y = t.currentPos.y;
+    t.css3dObject.position.set(t.currentPos.x, t.currentPos.y, t.currentPos.z);
+    // Clear anchor after use — next resize without explicit anchor stays centered
+    t._resizeAnchorFx = null;
+    t._resizeAnchorFy = null;
+  }
   t.baseCardW = cardW;
   t.baseCardH = cardH;
-  // Guard removed: card DOM always updates to match terminal dimensions.
-  // External resizes (other browsers, SSH clients, tmux CLI) are visible.
-  // The camera-only model handles apparent size via camera distance.
-  // Previously restored during crash debugging — root cause was stale clients,
-  // not this guard. Re-removed 2026-03-30.
   t.dom.style.width = cardW + 'px';
   t.dom.style.height = cardH + 'px';
   const inner = t.dom.querySelector('.terminal-inner');
@@ -1835,6 +2006,7 @@ function addTerminal(sessionName, cols, rows) {
     thumbnail: thumbnail,
     baseCardW: cardW,   // original calculated card size — restore on unfocus
     baseCardH: cardH,
+    _needsMeasuredCorrection: true,  // card sized with hardcoded constants, needs correction after SVG measures font
     currentPos: { x: 0, y: 0, z: -500 },
     targetPos: { x: 0, y: 0, z: -500 },
     morphStart: clock.getElapsedTime(),
@@ -1883,6 +2055,29 @@ function addTerminal(sessionName, cols, rows) {
   if (termObj) {
     termObj.addEventListener('load', function() {
       try {
+        // SVG loaded — correct card size using actual measured cell dimensions.
+        // Initial calcCardSize used hardcoded constants (approximate). Now that the
+        // SVG has measured its font, resize the card to match the SVG's actual viewBox
+        // aspect ratio. This eliminates the letterbox gap between SVG and card.
+        // Use setTimeout to ensure the SVG has rendered and measured its font.
+        setTimeout(function() {
+          var t = terminals.get(sessionName);
+          if (t) {
+            var measured = getMeasuredCellSize(t);
+            if (measured) {
+              var corrected = calcCardSize(t.screenCols, t.screenRows, measured.cellW, measured.cellH);
+              t.baseCardW = corrected.cardW;
+              t.baseCardH = corrected.cardH;
+              t.dom.style.width = corrected.cardW + 'px';
+              t.dom.style.height = corrected.cardH + 'px';
+              var inner = t.dom.querySelector('.terminal-inner');
+              if (inner) {
+                inner.style.width = corrected.cardW + 'px';
+                inner.style.height = corrected.cardH + 'px';
+              }
+            }
+          }
+        }, 100);
         termObj.contentWindow._screenCallback = function(msg) {
           var t = terminals.get(sessionName);
           if (!t) return;
@@ -1894,9 +2089,13 @@ function addTerminal(sessionName, cols, rows) {
             var prevCols = t.screenCols;
             var prevRows = t.screenRows;
             updateCardForNewSize(t, msg.width || 80, msg.height || 24);
-            // Re-layout if dimensions actually changed (not first message) and card is focused
+            // Re-layout if dimensions actually changed (not first message) and card is focused.
+            // Skip re-layout if the resize was triggered by +/- buttons — card stays in place
+            // so the header/buttons don't jump away from the cursor.
             if (prevCols && prevRows && (msg.width !== prevCols || msg.height !== prevRows) && focusedSessions.has(sessionName)) {
-              if (focusedSessions.size > 1) {
+              if (t._suppressRelayout) {
+                t._suppressRelayout = false;
+              } else if (focusedSessions.size > 1) {
                 calculateFocusedLayout();
               } else {
                 focusTerminal(sessionName);
