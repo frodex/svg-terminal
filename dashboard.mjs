@@ -662,10 +662,18 @@ function calculateFocusedLayout() {
 
     const fitW = rawW * scale;
     const fitH = rawH * scale;
-    const coverage = (fitW * fitH) / (availW * availH);
+    // Score = actual card area as fraction of available area.
+    // This directly measures how much of the viewport is used by cards vs wasted.
+    // Previous approach (bounding box coverage * balance) failed because:
+    // - 3 cards in a row: bounding box is wide but thin → low total card area
+    // - 2+1 layout: unbalanced columns penalized too hard despite better area usage
+    // Actual card area avoids both problems.
+    var totalCardArea = 0;
+    for (const p of placements) totalCardArea += p.sw * p.sh;
+    const score = totalCardArea * scale * scale / (availW * availH);
 
-    if (coverage > bestScore) {
-      bestScore = coverage;
+    if (score > bestScore) {
+      bestScore = score;
       bestLayout = { placements, colW, rawW, rawH, scale, numCols };
     }
   }
@@ -1649,6 +1657,10 @@ function onKeyDown(e) {
     const panel = document.getElementById('help-panel');
     if (panel.classList.contains('visible')) {
       panel.classList.remove('visible');
+    } else if (activeInputSession) {
+      // Terminal has input focus — send Escape to the terminal.
+      const t = terminals.get(activeInputSession);
+      if (t) t.sendInput({ specialKey: 'Escape' });
     } else if (_zoomedSession) {
       // Return from zoomed view to multi-focus layout
       _zoomedSession = null;
@@ -1664,9 +1676,15 @@ function onKeyDown(e) {
   if (e.key === 'Tab' && e.shiftKey && focusedSessions.size > 1) {
     e.preventDefault();
     const names = [...focusedSessions];
-    const currentIdx = _zoomedSession ? names.indexOf(_zoomedSession) : -1;
-    const nextIdx = (currentIdx + 1) % names.length;
-    _zoomedSession = names[nextIdx];
+    if (!_zoomedSession && activeInputSession && focusedSessions.has(activeInputSession)) {
+      // First Shift+Tab: zoom to the currently active card, not the next one
+      _zoomedSession = activeInputSession;
+    } else {
+      // Subsequent Shift+Tab: cycle to next card
+      const currentIdx = _zoomedSession ? names.indexOf(_zoomedSession) : -1;
+      const nextIdx = (currentIdx + 1) % names.length;
+      _zoomedSession = names[nextIdx];
+    }
     zoomToFocusedTerminal(_zoomedSession);
   }
 }
@@ -2771,8 +2789,6 @@ function deselectTerminals() {
   activeInputSession = null;
   _zoomedSession = null;
   // Remove input/highlight indicators but keep focusedSessions intact.
-  // Cards stay where they are — the animation loop keeps them at their targetPos
-  // because they're still in focusedSessions.
   for (const [name, term] of terminals) {
     term.dom.classList.remove('input-active');
     term.dom.classList.remove('faded'); // show ring cards normally
@@ -2781,6 +2797,13 @@ function deselectTerminals() {
   }
   hideTermControls();
   document.getElementById('input-bar').classList.remove('visible');
+  // Return to group grid layout when deselecting.
+  // If multiple cards are focused, re-run the layout so all cards are visible
+  // in the optimized grid. This is the path back from "zoomed into one card"
+  // to "seeing the whole group." Next Escape from this state unfocuses entirely.
+  if (focusedSessions.size > 1) {
+    calculateFocusedLayout();
+  }
 }
 
 // Full unfocus: return cards to ring, camera to home position.

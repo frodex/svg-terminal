@@ -74,6 +74,46 @@ Key requirement: terminals should be oriented in 3D (not flat/locked), with lazy
 
 ## Session History (most recent first)
 
+### Session 206fe1ef / 2026-04-01–2026-04-03 — Layout System Design + Card Sizing Fix + UI Improvements
+
+**Part 1: Layout System Design**
+- Designed composable layout system: slot maps + independent mutation operations
+- 8 standard layouts cataloged, POV-FONT-SIZE metric designed
+- 3 mutation levers confirmed: Z-depth (free), card resize (per-browser), terminal resize (global)
+- "Font-size mutation" explored and rejected — not a real lever
+- Mutation cost hierarchy, co-browser politeness, VT100 minimum, 16:9–9:16 aspect constraints
+- Design docs: specs/2026-04-01-layout-system-design (v1→v4 + user NOTES-01A)
+
+**Part 2: Card Sizing Root Cause + Fix**
+- Discovered: card DOM sized with hardcoded 8.65/17, SVG viewBox with runtime-measured ~8.61/~17.0
+- SVG letterboxes inside card due to aspect mismatch (preserveAspectRatio default)
+- Fixed: calcCardSize accepts measured values, getMeasuredCellSize reads from SVG, all paths prefer measured
+- Checkerboard alignment tests validated fix across 6 terminal sizes × 6 mutations
+- PRD amendment 004 (v1→v3) documents full investigation
+- Committed: aa78fd6
+
+**Part 3: UI Improvements**
+- Directional alt+drag resize (edge/corner detection, anchored opposite side, dynamic scale factor)
+- +/− preserves aspect ratio (_origColRowRatio), suppresses re-layout, pins click point
+- Fit-to-card (⊡) fix: restored fitScale approach, added _lockCardSize
+- Masonry scoring: actual card area instead of bounding box coverage (fixes 3-in-a-row for 4 cards)
+- Thumbnail cursors: positioned at _lastCursor.x/y with blink, hidden when scrolled
+- Escape sends to terminal when active input; deselect returns to group grid
+- Shift+Tab zooms to active card first
+
+**Part 4: Planning**
+- Performance detection plan (9 tasks): GPU detection, frame timing, 3 tiers, status indicator
+- PRD amendment 005: user identity flow svg-terminal → claude-proxy for title updates
+- Hover-to-activate resize handles designed (not yet implemented)
+
+**Artifacts:**
+- docs/superpowers/specs/2026-04-01-layout-system-design*.md (5 versions)
+- docs/PRD-amendment-004*.md (3 versions), PRD-amendment-005.md
+- docs/superpowers/plans/2026-04-03-performance-detection.md
+- docs/superpowers/specs/2026-04-03-performance-detection-plan.md
+- docs/research/2026-04-01-v0.1-layout-system-journal.md, 2026-04-02-v0.2-layout-system-journal.md
+- test-selection-alignment.mjs, alignment-tests/ screenshots
+
 ### Session 2026-03-31 — Crisis Recovery: Single WebSocket + Shared Capture Architecture
 
 **Context:** Server meltdown on 2026-03-30. 170 TCP connections, 55% CPU, connection cycling from stale clients. Server isolated to port 3201. Previous agent left unverified research proposing xterm/headless (wrong — loses scrollback).
