@@ -206,11 +206,46 @@ async function handlePane(req, res, params) {
   if (!session) return sendError(res, 400, 'Missing session parameter');
   if (!validateParam(session)) return sendError(res, 400, 'Invalid session name');
   if (!validateParam(pane)) return sendError(res, 400, 'Invalid pane identifier');
+
+  // Check if session is on local tmux (default server)
+  let isLocal = false;
   try {
-    const state = await capturePane(session, pane);
-    sendJson(res, 200, state);
-  } catch (err) {
-    sendError(res, 500, 'tmux error: ' + err.message);
+    await tmuxAsync('has-session', '-t', session);
+    isLocal = true;
+  } catch {}
+
+  if (isLocal) {
+    // Local tmux — direct capture
+    try {
+      const state = await capturePane(session, pane);
+      sendJson(res, 200, state);
+    } catch (err) {
+      sendError(res, 500, 'tmux error: ' + err.message);
+    }
+  } else {
+    // Claude-proxy session (socket-based) — proxy through CP API
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      const cpRes = await fetch(
+        CLAUDE_PROXY_API + '/api/session/' + encodeURIComponent(session) + '/screen',
+        { signal: controller.signal }
+      );
+      clearTimeout(timeout);
+      if (cpRes.ok) {
+        const state = await cpRes.json();
+        state.path = state.path || '';
+        state.command = state.command || '';
+        state.pid = state.pid || 0;
+        state.historySize = state.historySize || 0;
+        state.dead = false;
+        sendJson(res, 200, state);
+      } else {
+        sendError(res, 502, 'claude-proxy returned ' + cpRes.status);
+      }
+    } catch (err) {
+      sendError(res, 502, 'claude-proxy unreachable: ' + err.message);
+    }
   }
 }
 
