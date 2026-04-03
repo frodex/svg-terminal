@@ -1,0 +1,13 @@
+{
+  "folders": [
+    {
+      "name": "svg-terminal",
+      "path": "."
+    },
+    {
+      "name": "claude-proxy",
+      "path": "../claude-proxy"
+    }
+  ],
+  "settings": {}
+}

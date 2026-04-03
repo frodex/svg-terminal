@@ -19,7 +19,8 @@
 
 | Topic | Location |
 |-------|----------|
-| **OAuth + HTTP/WebSocket auth wiring (clande-proxy server)** | `/srv/claude-proxy/docs/superpowers/specs/2026-04-03-oauth-web-api-wiring-spec.md` |
+| **Single entry / dashboard (start here)** | **`docs/integration/UNIFIED-PROJECT.md`** — workspace + checklist for both repos |
+| **OAuth + HTTP/WebSocket auth wiring (claude-proxy server)** | `/srv/claude-proxy/docs/superpowers/specs/2026-04-03-oauth-web-api-wiring-spec.md` |
 | **Launch profiles / orchestration vs API (research)** | `/srv/claude-proxy/docs/research/add-terminal.v03.md` |
 | **WebSocket bridge (svg-terminal ↔ CP)** | `docs/superpowers/specs/2026-03-30-claude-proxy-websocket-integration-design.md` — **update when CP requires cookies on `/api/session/:id/stream`** |
 | **User identity + typing indicators (browser → CP)** | `docs/PRD-amendment-005.md` |
