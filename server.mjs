@@ -594,39 +594,70 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
     // claude-proxy not running — fine
   }
 
+  // Phase 1: Send session-add messages for all sessions (cards appear in browser)
   for (const s of sessions) {
     if (knownSessions.has(s.name)) continue;
     knownSessions.add(s.name);
-
-    // Send session-add message
     if (ws.readyState === 1) {
       ws.send(JSON.stringify({ type: 'session-add', session: s.name, pane: '0', ...s }));
     }
+  }
 
-    // Subscribe to watcher
-    if (s.source === 'tmux') {
-      subscribeToSession(ws, s.name, '0');
-      // Send immediate initial capture
+  // Phase 2: Fetch initial screens
+  // Local tmux: sequential (capturePane is fast, ~5ms each)
+  for (const s of sessions) {
+    if (s.source !== 'tmux') continue;
+    subscribeToSession(ws, s.name, '0');
+    try {
+      const state = await capturePane(s.name, '0');
+      if (ws.readyState === 1) {
+        const msg = { type: 'screen', session: s.name, pane: '0',
+          width: state.width, height: state.height,
+          cursor: state.cursor, title: state.title, lines: state.lines,
+          scrollOffset: 0 };
+        ws.send(JSON.stringify(msg));
+      }
+    } catch (err) {
+      // Session may have disappeared
+    }
+  }
+
+  // Claude-proxy: parallel fetch all at once (~50-200ms total)
+  const cpSessions = sessions.filter(s => s.source === 'claude-proxy');
+  if (cpSessions.length > 0) {
+    const screenPromises = cpSessions.map(async (s) => {
       try {
-        const state = await capturePane(s.name, '0');
-        if (ws.readyState === 1) {
-          const msg = { type: 'screen', session: s.name, pane: '0',
-            width: state.width, height: state.height,
-            cursor: state.cursor, title: state.title, lines: state.lines,
-            scrollOffset: 0 };
-          ws.send(JSON.stringify(msg));
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 1500);
+        const screenRes = await fetch(
+          CLAUDE_PROXY_API + '/api/session/' + encodeURIComponent(s.name) + '/screen',
+          { signal: controller.signal }
+        );
+        clearTimeout(timeout);
+        if (screenRes.ok) {
+          const state = await screenRes.json();
+          if (ws.readyState === 1) {
+            const msg = { type: 'screen', session: s.name, pane: '0',
+              width: state.width, height: state.height,
+              cursor: state.cursor, title: state.title, lines: state.lines,
+              scrollOffset: 0 };
+            ws.send(JSON.stringify(msg));
+          }
         }
       } catch (err) {
-        // Session may have disappeared between list and capture
+        // CP unreachable for this session — bridge will deliver eventually
       }
-    } else if (s.source === 'claude-proxy') {
-      const watcher = bridgeClaudeProxySession(s.name);
-      if (watcher) {
-        watcher.subscribers.add(ws);
-        // Track reverse mapping for cleanup on disconnect
-        if (!wsToWatcherKeys.has(ws)) wsToWatcherKeys.set(ws, new Set());
-        wsToWatcherKeys.get(ws).add(s.name + ':0');
-      }
+    });
+    await Promise.allSettled(screenPromises);
+  }
+
+  // Phase 3: Set up bridges for ongoing delta updates (after initial screens sent)
+  for (const s of cpSessions) {
+    const watcher = bridgeClaudeProxySession(s.name);
+    if (watcher) {
+      watcher.subscribers.add(ws);
+      if (!wsToWatcherKeys.has(ws)) wsToWatcherKeys.set(ws, new Set());
+      wsToWatcherKeys.get(ws).add(s.name + ':0');
     }
   }
 }
