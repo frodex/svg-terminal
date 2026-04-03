@@ -63,9 +63,12 @@ test('rejects invalid pane id with 400', async () => {
   assert.equal(res.status, 400);
 });
 
-test('returns 404 or 500 for nonexistent session', async () => {
+test('returns error for nonexistent session (or 502/503 if claude-proxy socket unavailable)', async () => {
   const res = await get('/api/pane?session=nonexistent_session_xyz&pane=0');
-  assert.ok(res.status === 404 || res.status === 500, `Expected 404 or 500, got ${res.status}`);
+  assert.ok(
+    [404, 500, 502, 503].includes(res.status),
+    `Expected 404/500/502/503, got ${res.status}`
+  );
 });
 
 test('returns CORS headers on /api/pane', async () => {

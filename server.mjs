@@ -4,6 +4,7 @@
 
 import http from 'node:http';
 import https from 'node:https';
+import { createConnection } from 'node:net';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execFile as execFileCb } from 'node:child_process';
 import { parseLine } from './sgr-parser.mjs';
@@ -77,6 +78,163 @@ const SAFE_PARAM = /^[a-zA-Z0-9_:%-]+$/;
 
 function validateParam(value) {
   return typeof value === 'string' && SAFE_PARAM.test(value);
+}
+
+// ---------------------------------------------------------------------------
+// Claude-proxy Unix socket (JSON-RPC) — replaces HTTP + WS to :3101 for local integration
+// ---------------------------------------------------------------------------
+
+const CP_SOCKET = process.env.CLAUDE_PROXY_SOCKET || '/run/claude-proxy/api.sock';
+const CP_DEFAULT_USER = process.env.CLAUDE_PROXY_USER || 'root';
+
+let cpSock = null;
+let cpBuf = '';
+let cpNextId = 0;
+const cpPending = new Map();
+const cpTerminalHandlers = new Map(); // sessionId → Set<handler>
+const cpSubscribeCounts = new Map(); // sessionId → { count, user }
+
+function cpOnDataChunk(chunk) {
+  cpBuf += chunk.toString();
+  const lines = cpBuf.split('\n');
+  cpBuf = lines.pop() || '';
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let msg;
+    try { msg = JSON.parse(line); } catch { continue; }
+    if (msg.id != null && cpPending.has(msg.id)) {
+      const p = cpPending.get(msg.id);
+      cpPending.delete(msg.id);
+      clearTimeout(p.timer);
+      if (msg.error) {
+        const err = new Error(msg.error.message || msg.error.code || 'claude-proxy error');
+        if (msg.error.code) err.code = msg.error.code;
+        p.reject(err);
+      } else {
+        p.resolve(msg.result);
+      }
+    } else if (msg.event && msg.sessionId) {
+      const set = cpTerminalHandlers.get(msg.sessionId);
+      if (set) {
+        for (const h of set) {
+          try { h(msg); } catch { /* ignore */ }
+        }
+      }
+    }
+  }
+}
+
+function ensureCpSocket() {
+  if (cpSock && !cpSock.destroyed) return cpSock;
+  cpSock = createConnection(CP_SOCKET);
+  cpBuf = '';
+  cpSock.on('data', cpOnDataChunk);
+  const onDead = () => {
+    cpSock = null;
+    for (const [, p] of cpPending) {
+      clearTimeout(p.timer);
+      p.reject(new Error('claude-proxy socket closed'));
+    }
+    cpPending.clear();
+  };
+  cpSock.on('close', onDead);
+  cpSock.on('error', onDead);
+  return cpSock;
+}
+
+function cpRequest(method, params = {}, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    const conn = ensureCpSocket();
+    const id = ++cpNextId;
+    const timer = setTimeout(() => {
+      cpPending.delete(id);
+      reject(new Error(`cpRequest ${method} timed out`));
+    }, timeoutMs);
+    cpPending.set(id, { resolve, reject, timer });
+    try {
+      conn.write(JSON.stringify({ id, method, params }) + '\n');
+    } catch (e) {
+      cpPending.delete(id);
+      clearTimeout(timer);
+      reject(e);
+    }
+  });
+}
+
+function cpRegisterTerminal(sessionId, handler) {
+  if (!cpTerminalHandlers.has(sessionId)) cpTerminalHandlers.set(sessionId, new Set());
+  cpTerminalHandlers.get(sessionId).add(handler);
+}
+
+function cpUnregisterTerminal(sessionId, handler) {
+  const set = cpTerminalHandlers.get(sessionId);
+  if (!set) return;
+  set.delete(handler);
+  if (set.size === 0) cpTerminalHandlers.delete(sessionId);
+}
+
+async function cpEnsureSubscribed(sessionId, user) {
+  let rec = cpSubscribeCounts.get(sessionId);
+  if (!rec) {
+    rec = { count: 0, user };
+    cpSubscribeCounts.set(sessionId, rec);
+  }
+  rec.count++;
+  if (rec.count === 1) {
+    await cpRequest('subscribe', { sessionId, user: rec.user }, 15000);
+  }
+}
+
+async function cpMaybeUnsub(sessionId) {
+  const rec = cpSubscribeCounts.get(sessionId);
+  if (!rec) return;
+  rec.count--;
+  if (rec.count <= 0) {
+    cpSubscribeCounts.delete(sessionId);
+    await cpRequest('unsubscribe', { sessionId }).catch(() => {});
+  }
+}
+
+/** Legacy /ws/terminal path: bridge browser WebSocket to claude-proxy via Unix socket */
+function attachCpToTerminalWs(clientWs, sessionId, linuxUser) {
+  const u = linuxUser || CP_DEFAULT_USER;
+  const handler = (cpMsg) => {
+    if (cpMsg.event !== 'terminal' || cpMsg.sessionId !== sessionId) return;
+    const inner = cpMsg.data;
+    if (inner == null) return;
+    const payload = typeof inner === 'object' && !Array.isArray(inner) ? { ...inner } : { value: inner };
+    if (clientWs.readyState === 1) clientWs.send(JSON.stringify(payload));
+  };
+  cpRegisterTerminal(sessionId, handler);
+  void cpEnsureSubscribed(sessionId, u).catch(() => {
+    try { clientWs.close(); } catch { /* ignore */ }
+  });
+  clientWs.on('message', async (data) => {
+    try {
+      const msg = JSON.parse(typeof data === 'string' ? data : data.toString());
+      if (msg.type === 'input') {
+        await cpRequest('input', {
+          sessionId,
+          user: u,
+          body: { keys: msg.keys, specialKey: msg.specialKey, ctrl: msg.ctrl, alt: msg.alt },
+        });
+      } else if (msg.type === 'resize') {
+        await cpRequest('resize', { sessionId, user: u, cols: msg.cols, rows: msg.rows });
+      } else if (msg.type === 'scroll') {
+        await cpRequest('scroll', { sessionId, user: u, offset: msg.offset });
+      }
+    } catch (e) {
+      if (clientWs.readyState === 1) {
+        clientWs.send(JSON.stringify({ type: 'error', message: e.message }));
+      }
+    }
+  });
+  const onDone = () => {
+    cpUnregisterTerminal(sessionId, handler);
+    void cpMaybeUnsub(sessionId);
+  };
+  clientWs.on('close', onDone);
+  clientWs.on('error', onDone);
 }
 
 // ---------------------------------------------------------------------------
@@ -223,28 +381,27 @@ async function handlePane(req, res, params) {
       sendError(res, 500, 'tmux error: ' + err.message);
     }
   } else {
-    // Claude-proxy session (socket-based) — proxy through CP API
+    // Claude-proxy session — screen via Unix socket JSON-RPC
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 3000);
-      const cpRes = await fetch(
-        CLAUDE_PROXY_API + '/api/session/' + encodeURIComponent(session) + '/screen',
-        { signal: controller.signal }
-      );
-      clearTimeout(timeout);
-      if (cpRes.ok) {
-        const state = await cpRes.json();
-        state.path = state.path || '';
-        state.command = state.command || '';
-        state.pid = state.pid || 0;
-        state.historySize = state.historySize || 0;
-        state.dead = false;
-        sendJson(res, 200, state);
-      } else {
-        sendError(res, 502, 'claude-proxy returned ' + cpRes.status);
-      }
+      const state = await cpRequest('getSessionScreen', {
+        sessionId: session,
+        user: CP_DEFAULT_USER,
+      }, 3000);
+      state.path = state.path || '';
+      state.command = state.command || '';
+      state.pid = state.pid || 0;
+      state.historySize = state.historySize || 0;
+      state.dead = false;
+      sendJson(res, 200, state);
     } catch (err) {
-      sendError(res, 502, 'claude-proxy unreachable: ' + err.message);
+      if (err.code === 'NOT_FOUND') {
+        return sendError(res, 404, err.message || 'Session not found');
+      }
+      const m = String(err.message || err);
+      if (/ECONNREFUSED|ENOENT|not connect|socket/i.test(m)) {
+        return sendError(res, 503, 'claude-proxy unavailable: ' + m);
+      }
+      sendError(res, 502, 'claude-proxy: ' + m);
     }
   }
 }
@@ -322,11 +479,6 @@ async function handleInput(req, res) {
   });
 }
 
-// Claude-proxy API URL for session discovery. Sessions on custom tmux sockets
-// (created by claude-proxy) are invisible to plain `tmux list-sessions`.
-// We merge both sources: local tmux + claude-proxy API.
-const CLAUDE_PROXY_API = 'http://127.0.0.1:3101';
-
 async function handleSessions(req, res) {
   const seen = new Set();
   const sessions = [];
@@ -350,27 +502,21 @@ async function handleSessions(req, res) {
     // tmux not running or no sessions — continue with claude-proxy source
   }
 
-  // Source 2: claude-proxy API (sessions on custom sockets)
+  // Source 2: claude-proxy (Unix socket)
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
-    const cpRes = await fetch(CLAUDE_PROXY_API + '/api/sessions', { signal: controller.signal });
-    clearTimeout(timeout);
-    if (cpRes.ok) {
-      const cpSessions = await cpRes.json();
-      for (const s of cpSessions) {
-        const name = s.id || s.name;
-        if (!seen.has(name)) {
-          sessions.push({
-            name,
-            windows: 1,
-            cols: s.cols || 80,
-            rows: s.rows || 24,
-            title: s.title || name,
-            source: 'claude-proxy'
-          });
-          seen.add(name);
-        }
+    const cpSessions = await cpRequest('listSessions', { user: CP_DEFAULT_USER }, 2000);
+    for (const s of cpSessions || []) {
+      const name = s.id || s.name;
+      if (!seen.has(name)) {
+        sessions.push({
+          name,
+          windows: 1,
+          cols: s.cols || 80,
+          rows: s.rows || 24,
+          title: s.title || name,
+          source: 'claude-proxy'
+        });
+        seen.add(name);
       }
     }
   } catch (err) {
@@ -500,9 +646,10 @@ function unsubscribeFromAll(ws) {
     watcher.subscribers.delete(ws);
     if (watcher.subscribers.size === 0) {
       if (watcher.timer) clearInterval(watcher.timer);
-      if (watcher._cpUpstream) {
-        try { watcher._cpUpstream.close(); } catch (e) {}
-        watcher._cpUpstream = null;
+      if (watcher._cpTerminalHandler) {
+        cpUnregisterTerminal(watcher.session, watcher._cpTerminalHandler);
+        watcher._cpTerminalHandler = null;
+        void cpMaybeUnsub(watcher.session);
       }
       sessionWatchers.delete(key);
     }
@@ -525,7 +672,8 @@ function triggerCapture(session, pane) {
 // Bridge claude-proxy sessions into the watcher system (event-driven)
 // ---------------------------------------------------------------------------
 
-function bridgeClaudeProxySession(session) {
+function bridgeClaudeProxySession(session, cpUser) {
+  const u = cpUser || CP_DEFAULT_USER;
   const key = session + ':0';
   if (sessionWatchers.has(key)) return sessionWatchers.get(key);
 
@@ -534,47 +682,30 @@ function bridgeClaudeProxySession(session) {
     pane: '0',
     lastState: null,
     subscribers: new Set(),
-    timer: null,        // no polling for cp sessions — event-driven
-    _cpUpstream: null,  // upstream WebSocket reference for cleanup
+    timer: null, // no polling for cp sessions — event-driven
+    _cpTerminalHandler: null,
   };
   sessionWatchers.set(key, watcher);
 
-  try {
-    const cpUrl = 'ws://127.0.0.1:3101/api/session/' + encodeURIComponent(session) + '/stream';
-    const upstream = new WebSocket(cpUrl);
-    watcher._cpUpstream = upstream;
+  const handler = (cpMsg) => {
+    if (cpMsg.event !== 'terminal' || cpMsg.sessionId !== session) return;
+    const inner = cpMsg.data;
+    if (inner == null) return;
+    const base = typeof inner === 'object' && !Array.isArray(inner) ? inner : {};
+    const msg = { ...base, session, pane: '0' };
+    const json = JSON.stringify(msg);
+    for (const ws of watcher.subscribers) {
+      if (ws.readyState === 1) ws.send(json);
+    }
+  };
+  watcher._cpTerminalHandler = handler;
+  cpRegisterTerminal(session, handler);
 
-    upstream.onmessage = (evt) => {
-      try {
-        const raw = typeof evt.data === 'string' ? evt.data : evt.data.toString();
-        const msg = JSON.parse(raw);
-        // Tag with session and pane so dashboard clients can route
-        msg.session = session;
-        msg.pane = '0';
-        const json = JSON.stringify(msg);
-        for (const ws of watcher.subscribers) {
-          if (ws.readyState === 1) ws.send(json);
-        }
-      } catch (err) {
-        // malformed message — skip
-      }
-    };
-
-    upstream.onclose = () => {
-      watcher._cpUpstream = null;
-      sessionWatchers.delete(key);
-    };
-
-    upstream.onerror = () => {
-      try { upstream.close(); } catch (e) {}
-      watcher._cpUpstream = null;
-      sessionWatchers.delete(key);
-    };
-  } catch (err) {
-    // claude-proxy unreachable — clean up and skip
+  void cpEnsureSubscribed(session, u).catch(() => {
+    cpUnregisterTerminal(session, handler);
+    watcher._cpTerminalHandler = null;
     sessionWatchers.delete(key);
-    return null;
-  }
+  });
 
   return watcher;
 }
@@ -584,6 +715,7 @@ function bridgeClaudeProxySession(session) {
 // ---------------------------------------------------------------------------
 
 async function sendSessionDiscovery(ws, knownSessions, user) {
+  const cpUser = user.linux_user || CP_DEFAULT_USER;
   const seen = new Set();
   const sessions = [];
 
@@ -606,23 +738,17 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
     // tmux not running or no sessions
   }
 
-  // Source 2: claude-proxy API
+  // Source 2: claude-proxy (Unix socket)
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
-    const cpRes = await fetch(CLAUDE_PROXY_API + '/api/sessions', { signal: controller.signal });
-    clearTimeout(timeout);
-    if (cpRes.ok) {
-      const cpSessions = await cpRes.json();
-      for (const s of cpSessions) {
-        const name = s.id || s.name;
-        if (!seen.has(name)) {
-          sessions.push({
-            name, windows: 1, cols: s.cols || 80, rows: s.rows || 24,
-            title: s.title || name, source: 'claude-proxy'
-          });
-          seen.add(name);
-        }
+    const cpSessions = await cpRequest('listSessions', { user: cpUser }, 2000);
+    for (const s of cpSessions || []) {
+      const name = s.id || s.name;
+      if (!seen.has(name)) {
+        sessions.push({
+          name, windows: 1, cols: s.cols || 80, rows: s.rows || 24,
+          title: s.title || name, source: 'claude-proxy'
+        });
+        seen.add(name);
       }
     }
   } catch (err) {
@@ -662,22 +788,16 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
   if (cpSessions.length > 0) {
     const screenPromises = cpSessions.map(async (s) => {
       try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 1500);
-        const screenRes = await fetch(
-          CLAUDE_PROXY_API + '/api/session/' + encodeURIComponent(s.name) + '/screen',
-          { signal: controller.signal }
-        );
-        clearTimeout(timeout);
-        if (screenRes.ok) {
-          const state = await screenRes.json();
-          if (ws.readyState === 1) {
-            const msg = { type: 'screen', session: s.name, pane: '0',
-              width: state.width, height: state.height,
-              cursor: state.cursor, title: state.title, lines: state.lines,
-              scrollOffset: 0 };
-            ws.send(JSON.stringify(msg));
-          }
+        const state = await cpRequest('getSessionScreen', {
+          sessionId: s.name,
+          user: cpUser,
+        }, 1500);
+        if (ws.readyState === 1) {
+          const msg = { type: 'screen', session: s.name, pane: '0',
+            width: state.width, height: state.height,
+            cursor: state.cursor, title: state.title, lines: state.lines,
+            scrollOffset: 0 };
+          ws.send(JSON.stringify(msg));
         }
       } catch (err) {
         // CP unreachable for this session — bridge will deliver eventually
@@ -688,7 +808,7 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
 
   // Phase 3: Set up bridges for ongoing delta updates (after initial screens sent)
   for (const s of cpSessions) {
-    const watcher = bridgeClaudeProxySession(s.name);
+    const watcher = bridgeClaudeProxySession(s.name, cpUser);
     if (watcher) {
       watcher.subscribers.add(ws);
       if (!wsToWatcherKeys.has(ws)) wsToWatcherKeys.set(ws, new Set());
@@ -708,6 +828,7 @@ async function handleDashboardWs(ws, req) {
 
   dashboardClients.add(ws);
   const knownSessions = new Set();
+  const cpUserDash = user.linux_user || CP_DEFAULT_USER;
 
   // Discover and subscribe to sessions
   await sendSessionDiscovery(ws, knownSessions, user);
@@ -721,7 +842,7 @@ async function handleDashboardWs(ws, req) {
         const session = msg.session;
         if (session && validateParam(session)) {
           if (msg.source === 'claude-proxy') {
-            bridgeClaudeProxySession(session);
+            bridgeClaudeProxySession(session, cpUserDash);
             const watcher = sessionWatchers.get(session + ':0');
             if (watcher) watcher.subscribers.add(ws);
           } else {
@@ -755,18 +876,46 @@ async function handleDashboardWs(ws, req) {
         return;
       }
 
-      // Check if this session has a claude-proxy upstream bridge.
-      // cp-* sessions are NOT in local tmux — input/scroll/resize must go through
-      // the upstream WebSocket to claude-proxy, not through tmux send-keys.
+      // Check if this session is bridged to claude-proxy (Unix socket).
+      // cp-* sessions are NOT in local tmux — input/scroll/resize go through JSON-RPC.
       const watcher = sessionWatchers.get(session + ':' + pane);
-      const cpUpstream = watcher && watcher._cpUpstream;
+      const cpSocketBridge = watcher && watcher._cpTerminalHandler;
 
-      if (cpUpstream && cpUpstream.readyState === 1) {
-        // Forward to claude-proxy upstream — strip session/pane tags (cp doesn't expect them)
+      if (cpSocketBridge) {
         const fwd = { ...msg };
         delete fwd.session;
         delete fwd.pane;
-        cpUpstream.send(JSON.stringify(fwd));
+        try {
+          if (fwd.type === 'input') {
+            await cpRequest('input', {
+              sessionId: session,
+              user: cpUserDash,
+              body: {
+                keys: fwd.keys,
+                specialKey: fwd.specialKey,
+                ctrl: fwd.ctrl,
+                alt: fwd.alt,
+              },
+            });
+          } else if (fwd.type === 'resize') {
+            await cpRequest('resize', {
+              sessionId: session,
+              user: cpUserDash,
+              cols: fwd.cols,
+              rows: fwd.rows,
+            });
+          } else if (fwd.type === 'scroll') {
+            await cpRequest('scroll', {
+              sessionId: session,
+              user: cpUserDash,
+              offset: fwd.offset,
+            });
+          }
+        } catch (err) {
+          if (ws.readyState === 1) {
+            ws.send(JSON.stringify({ type: 'error', message: err.message }));
+          }
+        }
         return;
       }
 
@@ -1471,26 +1620,8 @@ server.on('upgrade', async (req, socket, head) => {
         handleTerminalWs(ws, session, pane);
       });
     } else {
-      // Proxy WebSocket to claude-proxy API for sessions on custom sockets.
-      const cpUrl = 'ws://127.0.0.1:3101/api/session/' + encodeURIComponent(session) + '/stream';
       wss.handleUpgrade(req, socket, head, (clientWs) => {
-        const proxyWs = new WebSocket(cpUrl);
-        proxyWs.onopen = () => {
-          clientWs.on('message', (data) => {
-            if (proxyWs.readyState === WebSocket.OPEN) {
-              proxyWs.send(typeof data === 'string' ? data : data.toString());
-            }
-          });
-          proxyWs.onmessage = (evt) => {
-            if (clientWs.readyState === 1) {
-              clientWs.send(typeof evt.data === 'string' ? evt.data : evt.data.toString());
-            }
-          };
-        };
-        proxyWs.onclose = () => { try { clientWs.close(); } catch(e) {} };
-        proxyWs.onerror = () => { try { clientWs.close(); } catch(e) {} };
-        clientWs.on('close', () => { try { proxyWs.close(); } catch(e) {} });
-        clientWs.on('error', () => { try { proxyWs.close(); } catch(e) {} });
+        attachCpToTerminalWs(clientWs, session, CP_DEFAULT_USER);
       });
     }
   } else {
