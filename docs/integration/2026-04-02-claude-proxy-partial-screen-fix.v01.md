@@ -8,22 +8,22 @@
 
 ## 0. Unified project documentation
 
-**Cross-repo planning and specs** (claude-proxy ↔ svg-terminal: integration, OAuth/API auth parity, PRD alignment) are **canonical under `/srv/svg-terminal`**, primarily in:
+**Platform vs client:** **claude-proxy** runs standalone (SSH + API). **svg-terminal** needs **claude-proxy** for `cp-*` / API integration; local tmux-only mode does not.
 
-- **`/srv/svg-terminal/docs/integration/`** — integration notes, stepped files, handoff narratives  
-- **`/srv/svg-terminal/docs/`** — PRD amendments that span both products  
+- **Single dashboard + workspace:** **`/srv/claude-proxy/docs/integration/UNIFIED-PROJECT.md`** and **`/srv/claude-proxy/unified.code-workspace`**
+- **This directory:** **Client-side** integration stepped notes (partial screen, bridge, `fetch`) — not the platform canonical tree.
 
-**Process:** All **new** unified or stepped work related to this integration should be **created and versioned here** (`cp` → `.v01`, `.v02`, … per team convention). The claude-proxy repo keeps **service-specific** specs and `sessions.md`, and **points** here for the shared storyline.
+**Process:** Platform auth/API/session specs stay in **claude-proxy**. Stepped files **here** describe how the **dashboard** adapts when CP changes.
 
 ### Living documentation index
 
 | Topic | Location |
 |-------|----------|
-| **Single entry / dashboard (start here)** | **`docs/integration/UNIFIED-PROJECT.md`** — workspace + checklist for both repos |
-| **OAuth + HTTP/WebSocket auth wiring (claude-proxy server)** | `/srv/claude-proxy/docs/superpowers/specs/2026-04-03-oauth-web-api-wiring-spec.md` |
-| **Launch profiles / orchestration vs API (research)** | `/srv/claude-proxy/docs/research/add-terminal.v03.md` |
-| **WebSocket bridge (svg-terminal ↔ CP)** | `docs/superpowers/specs/2026-03-30-claude-proxy-websocket-integration-design.md` — **update when CP requires cookies on `/api/session/:id/stream`** |
-| **User identity + typing indicators (browser → CP)** | `docs/PRD-amendment-005.md` |
+| **Single entry / dashboard** | **`/srv/claude-proxy/docs/integration/UNIFIED-PROJECT.md`** |
+| **OAuth + HTTP/WebSocket auth (platform)** | `/srv/claude-proxy/docs/superpowers/specs/2026-04-03-oauth-web-api-wiring-spec.md` |
+| **Launch profiles / orchestration research** | `/srv/claude-proxy/docs/research/add-terminal.v04.md` |
+| **WebSocket bridge (client)** | `docs/superpowers/specs/2026-03-30-claude-proxy-websocket-integration-design.md` — **update when CP requires cookies on `/api/session/:id/stream`** |
+| **User identity + typing (browser → CP)** | `docs/PRD-amendment-005.md` |
 | **claude-proxy session context** | `/srv/claude-proxy/sessions.md` |
 
 ### When claude-proxy enables `api.auth.required`
