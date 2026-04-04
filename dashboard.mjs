@@ -3897,12 +3897,29 @@ function animate() {
 // When a terminal is focused, ALL keyboard events go to tmux via WebSocket.
 // Browser shortcuts (Ctrl+T, Ctrl+W, etc.) are excluded.
 // DO NOT add per-terminal click handlers — see note 4 in header.
+function shouldSendKeysToTerminal() {
+  if (isUiOverlayActive()) return false;
+  var a = document.activeElement;
+  if (!a || a === document.body || a === document.documentElement) return true;
+  var tag = a.tagName && String(a.tagName).toUpperCase();
+  if (tag === 'TEXTAREA' || tag === 'SELECT') return false;
+  if (tag === 'INPUT') {
+    var type = String(a.type || '').toLowerCase();
+    if (type === 'hidden' || type === 'button' || type === 'submit' || type === 'reset' || type === 'file' || type === 'range' || type === 'color') return true;
+    return false;
+  }
+  if (tag === 'BUTTON' || tag === 'A') return false;
+  if (a.isContentEditable) {
+    if (a === _pasteTarget || _pasteTarget.contains(a)) return true;
+    return false;
+  }
+  return true;
+}
+
 document.addEventListener('keydown', function(e) {
+  if (!shouldSendKeysToTerminal()) return;
   if (!activeInputSession) return;
   if (focusedSessions.size === 0) return;
-
-  // Don't capture when help panel is open
-  if (document.getElementById('help-panel').classList.contains('visible')) return;
 
   // Let browser shortcuts through
   if ((e.ctrlKey || e.metaKey) && ['t', 'w', 'n', 'r', 'v'].includes(e.key.toLowerCase())) return;
@@ -4018,6 +4035,7 @@ document.addEventListener('keydown', function(e) {
 
 // Paste support
 document.addEventListener('paste', function(e) {
+  if (!shouldSendKeysToTerminal()) return;
   if (!activeInputSession) return;
   if (focusedSessions.size === 0) return;
   e.preventDefault();
