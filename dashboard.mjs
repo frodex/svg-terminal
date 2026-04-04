@@ -448,15 +448,21 @@ function wireTopBar() {
     });
   }
 
-  var placeholderMenus = ['menu-restart', 'menu-fork'];
-  for (var pm = 0; pm < placeholderMenus.length; pm++) {
-    var pel = document.getElementById(placeholderMenus[pm]);
-    if (pel) {
-      pel.addEventListener('click', function(e) {
-        e.preventDefault();
-        if (mainMenu) mainMenu.classList.remove('visible');
-      });
-    }
+  var menuRestart = document.getElementById('menu-restart');
+  if (menuRestart) {
+    menuRestart.addEventListener('click', function(e) {
+      e.preventDefault();
+      if (mainMenu) mainMenu.classList.remove('visible');
+      void openRestartSessionPanel();
+    });
+  }
+  var menuFork = document.getElementById('menu-fork');
+  if (menuFork) {
+    menuFork.addEventListener('click', function(e) {
+      e.preventDefault();
+      if (mainMenu) mainMenu.classList.remove('visible');
+      void openForkSessionPanel();
+    });
   }
 
   updateTopBarVisibility();
@@ -1368,6 +1374,7 @@ function init() {
 
   wireTopBar();
   wireSessionFormPanel();
+  wireRestartForkPanels();
   syncUiOverlayPointerBlock();
 
   connectDashboardWs();
@@ -1708,6 +1715,10 @@ function onResize() {
 function isUiOverlayActive() {
   var sf = document.getElementById('session-form-panel');
   if (sf && sf.classList.contains('visible')) return true;
+  var rp = document.getElementById('restart-session-panel');
+  if (rp && rp.classList.contains('visible')) return true;
+  var fp = document.getElementById('fork-session-panel');
+  if (fp && fp.classList.contains('visible')) return true;
   var mm = document.getElementById('main-menu-dropdown');
   if (mm && mm.classList.contains('visible')) return true;
   var ld = document.getElementById('layout-dropdown');
@@ -2202,6 +2213,18 @@ function onKeyDown(e) {
     const sessionPanel = document.getElementById('session-form-panel');
     if (sessionPanel && sessionPanel.classList.contains('visible')) {
       closeSessionFormPanel();
+      e.preventDefault();
+      return;
+    }
+    const restartPanel = document.getElementById('restart-session-panel');
+    if (restartPanel && restartPanel.classList.contains('visible')) {
+      closeRestartSessionPanel();
+      e.preventDefault();
+      return;
+    }
+    const forkPanel = document.getElementById('fork-session-panel');
+    if (forkPanel && forkPanel.classList.contains('visible')) {
+      closeForkSessionPanel();
       e.preventDefault();
       return;
     }
@@ -3095,6 +3118,359 @@ function wireSessionFormPanel() {
   panel.querySelector('.session-form-dialog').addEventListener('click', function(e) {
     e.stopPropagation();
   });
+}
+
+function closeRestartSessionPanel() {
+  var panel = document.getElementById('restart-session-panel');
+  if (!panel) return;
+  panel.classList.remove('visible');
+  panel.setAttribute('aria-hidden', 'true');
+  syncUiOverlayPointerBlock();
+}
+
+function closeForkSessionPanel() {
+  var panel = document.getElementById('fork-session-panel');
+  if (!panel) return;
+  panel.classList.remove('visible');
+  panel.setAttribute('aria-hidden', 'true');
+  syncUiOverlayPointerBlock();
+}
+
+function updateRestartPanelVisibility() {
+  var pub = document.getElementById('rs-public');
+  var hid = document.getElementById('rs-hidden');
+  var accessRow = document.getElementById('rs-access-row');
+  if (accessRow && pub && hid) accessRow.hidden = hid.checked || pub.checked;
+
+  var deadSel = document.getElementById('rs-dead');
+  var dangerRow = document.getElementById('rs-danger-row');
+  if (deadSel && dangerRow) {
+    var opt = deadSel.options[deadSel.selectedIndex];
+    var lp = opt && opt.getAttribute('data-profile');
+    dangerRow.hidden = !(sessionFormIsAdmin() && lp === 'claude');
+  }
+}
+
+function updateForkPanelVisibility() {
+  var pub = document.getElementById('fk-public');
+  var hid = document.getElementById('fk-hidden');
+  var accessRow = document.getElementById('fk-access-row');
+  if (accessRow && pub && hid) accessRow.hidden = hid.checked || pub.checked;
+
+  var dangerRow = document.getElementById('fk-danger-row');
+  if (dangerRow) dangerRow.hidden = !sessionFormIsAdmin();
+}
+
+async function loadRestartForkPicklists() {
+  async function load(url) {
+    try {
+      var r = await fetch(url, { credentials: 'same-origin' });
+      if (!r.ok) return [];
+      return await r.json();
+    } catch (e) {
+      return [];
+    }
+  }
+
+  var users = await load('/api/cp/users');
+  ['rs-users', 'fk-users'].forEach(function(id) {
+    var usersEl = document.getElementById(id);
+    if (!usersEl) return;
+    usersEl.innerHTML = '';
+    (Array.isArray(users) ? users : []).forEach(function(u) {
+      var opt = document.createElement('option');
+      opt.value = typeof u === 'string' ? u : (u.name || u);
+      opt.textContent = opt.value;
+      usersEl.appendChild(opt);
+    });
+  });
+
+  var groups = await load('/api/cp/groups');
+  ['rs-groups', 'fk-groups'].forEach(function(id) {
+    var groupsEl = document.getElementById(id);
+    if (!groupsEl) return;
+    groupsEl.innerHTML = '';
+    (Array.isArray(groups) ? groups : []).forEach(function(g) {
+      var opt = document.createElement('option');
+      var v = typeof g === 'string' ? g : (g.systemName || g.name);
+      opt.value = v;
+      opt.textContent = typeof g === 'string' ? g : (g.name || v);
+      groupsEl.appendChild(opt);
+    });
+  });
+}
+
+async function openRestartSessionPanel() {
+  var panel = document.getElementById('restart-session-panel');
+  if (!panel) return;
+  await fetchAuthMeForSessionForm();
+  await loadRestartForkPicklists();
+
+  var deadSel = document.getElementById('rs-dead');
+  var emptyHint = document.getElementById('rs-empty-hint');
+  if (deadSel) {
+    deadSel.innerHTML = '';
+    try {
+      var r = await fetch('/api/cp/dead-sessions', { credentials: 'same-origin' });
+      var list = r.ok ? await r.json() : [];
+      if (!Array.isArray(list)) list = [];
+      if (list.length === 0) {
+        if (emptyHint) emptyHint.hidden = false;
+      } else {
+        if (emptyHint) emptyHint.hidden = true;
+        list.forEach(function(d) {
+          var id = d.id || d.tmuxId;
+          if (!id) return;
+          var opt = document.createElement('option');
+          opt.value = id;
+          var lp = d.launchProfile || '';
+          opt.setAttribute('data-profile', lp);
+          opt.textContent = (d.name || id) + (lp ? ' (' + lp + ')' : '');
+          deadSel.appendChild(opt);
+        });
+      }
+    } catch (e) {
+      if (emptyHint) emptyHint.hidden = false;
+    }
+  }
+
+  var nameEl = document.getElementById('rs-name');
+  if (nameEl) nameEl.value = '';
+  var h = document.getElementById('rs-hidden');
+  if (h) h.checked = false;
+  var vo = document.getElementById('rs-viewonly');
+  if (vo) vo.checked = false;
+  var p = document.getElementById('rs-public');
+  if (p) p.checked = true;
+  var pw = document.getElementById('rs-password');
+  if (pw) pw.value = '';
+  var dm = document.getElementById('rs-dangermode');
+  if (dm) dm.checked = false;
+  ['rs-users', 'rs-groups'].forEach(function(id) {
+    var sel = document.getElementById(id);
+    if (sel) {
+      for (var i = 0; i < sel.options.length; i++) sel.options[i].selected = false;
+    }
+  });
+
+  updateRestartPanelVisibility();
+  panel.classList.add('visible');
+  panel.setAttribute('aria-hidden', 'false');
+  syncUiOverlayPointerBlock();
+  if (deadSel && deadSel.options.length) deadSel.focus();
+}
+
+async function openForkSessionPanel() {
+  var panel = document.getElementById('fork-session-panel');
+  if (!panel) return;
+  await fetchAuthMeForSessionForm();
+  await loadRestartForkPicklists();
+
+  var srcSel = document.getElementById('fk-source');
+  var emptyHint = document.getElementById('fk-empty-hint');
+  if (srcSel) {
+    srcSel.innerHTML = '';
+    try {
+      var r = await fetch('/api/sessions', { credentials: 'same-origin' });
+      var list = r.ok ? await r.json() : [];
+      if (!Array.isArray(list)) list = [];
+      var cpOnly = list.filter(function(s) {
+        return s && s.source === 'claude-proxy';
+      });
+      if (cpOnly.length === 0) {
+        if (emptyHint) emptyHint.hidden = false;
+      } else {
+        if (emptyHint) emptyHint.hidden = true;
+        cpOnly.forEach(function(s) {
+          var opt = document.createElement('option');
+          opt.value = s.name;
+          opt.textContent = (s.title || s.displayName || s.name) + ' — ' + s.name;
+          srcSel.appendChild(opt);
+        });
+        if (activeInputSession && cpOnly.some(function(x) { return x.name === activeInputSession; })) {
+          srcSel.value = activeInputSession;
+        }
+      }
+    } catch (e) {
+      if (emptyHint) emptyHint.hidden = false;
+    }
+  }
+
+  var nameEl = document.getElementById('fk-name');
+  if (nameEl) nameEl.value = '';
+  var h = document.getElementById('fk-hidden');
+  if (h) h.checked = false;
+  var vo = document.getElementById('fk-viewonly');
+  if (vo) vo.checked = false;
+  var p = document.getElementById('fk-public');
+  if (p) p.checked = true;
+  var pw = document.getElementById('fk-password');
+  if (pw) pw.value = '';
+  var dm = document.getElementById('fk-dangermode');
+  if (dm) dm.checked = false;
+  ['fk-users', 'fk-groups'].forEach(function(id) {
+    var sel = document.getElementById(id);
+    if (sel) {
+      for (var i = 0; i < sel.options.length; i++) sel.options[i].selected = false;
+    }
+  });
+
+  updateForkPanelVisibility();
+  panel.classList.add('visible');
+  panel.setAttribute('aria-hidden', 'false');
+  syncUiOverlayPointerBlock();
+  if (srcSel && srcSel.options.length) srcSel.focus();
+}
+
+function buildRestartForkPayloadFrom(prefix) {
+  var payload = {
+    hidden: document.getElementById(prefix + '-hidden').checked,
+    viewOnly: document.getElementById(prefix + '-viewonly').checked,
+    public: document.getElementById(prefix + '-public').checked
+  };
+
+  var nm = document.getElementById(prefix + '-name');
+  if (nm && nm.value.trim()) payload.name = nm.value.trim();
+
+  if (!payload.public && !payload.hidden) {
+    var usersId = prefix === 'rs' ? 'rs-users' : 'fk-users';
+    var groupsId = prefix === 'rs' ? 'rs-groups' : 'fk-groups';
+    var au = collectMultiSelectValues(usersId);
+    var ag = collectMultiSelectValues(groupsId);
+    if (au.length) payload.allowedUsers = au;
+    if (ag.length) payload.allowedGroups = ag;
+  }
+
+  var pwb = document.getElementById(prefix + '-password');
+  if (pwb && pwb.value) payload.password = pwb.value;
+
+  var dangerRow = document.getElementById(prefix === 'rs' ? 'rs-danger-row' : 'fk-danger-row');
+  var dm = document.getElementById(prefix === 'rs' ? 'rs-dangermode' : 'fk-dangermode');
+  if (sessionFormIsAdmin() && dm && dangerRow && !dangerRow.hidden) {
+    payload.dangerousSkipPermissions = dm.checked;
+  }
+
+  return payload;
+}
+
+async function submitRestartFromPanel() {
+  var deadSel = document.getElementById('rs-dead');
+  if (!deadSel || !deadSel.value) {
+    window.alert('Choose a dead session to restart.');
+    return;
+  }
+  var body = buildRestartForkPayloadFrom('rs');
+  body.deadSessionId = deadSel.value;
+
+  try {
+    var res = await fetch('/api/sessions/restart', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(body)
+    });
+    var data = {};
+    try {
+      data = await res.json();
+    } catch (e) {}
+    if (!res.ok) {
+      window.alert(data.error || ('Restart failed (' + res.status + ')'));
+      return;
+    }
+    closeRestartSessionPanel();
+    await refreshSessions();
+    var sessionId = (data.session && (data.session.id || data.session.name)) || null;
+    if (sessionId && terminals.has(sessionId)) {
+      focusTerminal(sessionId);
+    }
+  } catch (err) {
+    window.alert('Could not restart session: ' + (err && err.message ? err.message : err));
+  }
+}
+
+async function submitForkFromPanel() {
+  var srcSel = document.getElementById('fk-source');
+  if (!srcSel || !srcSel.value) {
+    window.alert('Choose a source session to fork.');
+    return;
+  }
+  var body = buildRestartForkPayloadFrom('fk');
+  body.sourceSessionId = srcSel.value;
+
+  try {
+    var res = await fetch('/api/sessions/fork', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(body)
+    });
+    var data = {};
+    try {
+      data = await res.json();
+    } catch (e) {}
+    if (!res.ok) {
+      window.alert(data.error || ('Fork failed (' + res.status + ')'));
+      return;
+    }
+    closeForkSessionPanel();
+    await refreshSessions();
+    var sessionId = (data.session && (data.session.id || data.session.name)) || null;
+    if (sessionId && terminals.has(sessionId)) {
+      focusTerminal(sessionId);
+    }
+  } catch (err) {
+    window.alert('Could not fork session: ' + (err && err.message ? err.message : err));
+  }
+}
+
+function wireRestartForkPanels() {
+  var rp = document.getElementById('restart-session-panel');
+  if (rp) {
+    var rc = document.getElementById('restart-session-close');
+    var rcan = document.getElementById('restart-session-cancel');
+    var rb = document.getElementById('restart-session-backdrop');
+    var rs = document.getElementById('restart-session-submit');
+    if (rc) rc.addEventListener('click', closeRestartSessionPanel);
+    if (rcan) rcan.addEventListener('click', closeRestartSessionPanel);
+    if (rb) rb.addEventListener('click', closeRestartSessionPanel);
+    if (rs) {
+      rs.addEventListener('click', function() {
+        void submitRestartFromPanel();
+      });
+    }
+    var rsDead = document.getElementById('rs-dead');
+    if (rsDead) rsDead.addEventListener('change', updateRestartPanelVisibility);
+    ['rs-public', 'rs-hidden'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el) el.addEventListener('change', updateRestartPanelVisibility);
+    });
+    rp.querySelector('.session-form-dialog').addEventListener('click', function(e) {
+      e.stopPropagation();
+    });
+  }
+
+  var fp = document.getElementById('fork-session-panel');
+  if (fp) {
+    var fc = document.getElementById('fork-session-close');
+    var fcan = document.getElementById('fork-session-cancel');
+    var fb = document.getElementById('fork-session-backdrop');
+    var fs = document.getElementById('fork-session-submit');
+    if (fc) fc.addEventListener('click', closeForkSessionPanel);
+    if (fcan) fcan.addEventListener('click', closeForkSessionPanel);
+    if (fb) fb.addEventListener('click', closeForkSessionPanel);
+    if (fs) {
+      fs.addEventListener('click', function() {
+        void submitForkFromPanel();
+      });
+    }
+    ['fk-public', 'fk-hidden'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el) el.addEventListener('change', updateForkPanelVisibility);
+    });
+    fp.querySelector('.session-form-dialog').addEventListener('click', function(e) {
+      e.stopPropagation();
+    });
+  }
 }
 
 // DEPRECATED (PRD v0.5.0): Titles arrive via WebSocket screen/delta messages

@@ -531,11 +531,14 @@ async function handleSessions(req, res) {
       if (!seen.has(name)) {
         sessions.push({
           name,
+          cpId: s.id || name,
+          displayName: s.name || s.id,
           windows: 1,
           cols: s.cols || 80,
           rows: s.rows || 24,
           title: s.title || name,
-          source: 'claude-proxy'
+          source: 'claude-proxy',
+          launchProfile: s.launchProfile
         });
         seen.add(name);
       }
@@ -581,6 +584,104 @@ function buildCreateSessionPayload(body, autoName) {
   if (typeof body.isResume === 'boolean') payload.isResume = body.isResume;
 
   return payload;
+}
+
+/** Settings payload for restartSession / forkSession (subset of create fields). */
+function buildRestartForkSettings(body) {
+  const s = {};
+  if (body.name && String(body.name).trim()) {
+    s.name = String(body.name)
+      .trim()
+      .replace(/[^a-zA-Z0-9_.-]/g, '_')
+      .substring(0, 64);
+  }
+  if (typeof body.hidden === 'boolean') s.hidden = body.hidden;
+  if (typeof body.viewOnly === 'boolean') s.viewOnly = body.viewOnly;
+  if (typeof body.public === 'boolean') s.public = body.public;
+  if (Array.isArray(body.allowedUsers) && body.allowedUsers.length)
+    s.allowedUsers = body.allowedUsers.map(String);
+  if (Array.isArray(body.allowedGroups) && body.allowedGroups.length)
+    s.allowedGroups = body.allowedGroups.map(String);
+  if (body.password && String(body.password).length) s.password = String(body.password);
+  if (typeof body.dangerousSkipPermissions === 'boolean')
+    s.dangerousSkipPermissions = body.dangerousSkipPermissions;
+  return s;
+}
+
+function mapCpErrorToStatus(err) {
+  const c = err && err.code;
+  if (c === 'NOT_FOUND') return 404;
+  if (c === 'FORBIDDEN') return 403;
+  if (c === 'BAD_REQUEST') return 400;
+  return 502;
+}
+
+async function handleCpDeadSessions(req, res) {
+  const auth = getAuthUser(req);
+  const linuxUser = auth && auth.linux_user ? auth.linux_user : CP_DEFAULT_USER;
+  try {
+    const data = await cpRequest('listDeadSessions', { user: linuxUser }, 8000);
+    return sendJson(res, 200, Array.isArray(data) ? data : []);
+  } catch (err) {
+    process.stderr.write('[svg-terminal] listDeadSessions: ' + (err && err.message ? err.message : err) + '\n');
+    return sendError(res, 502, err.message || String(err));
+  }
+}
+
+async function handleRestartSession(req, res) {
+  const auth = getAuthUser(req);
+  const linuxUser = auth && auth.linux_user ? auth.linux_user : CP_DEFAULT_USER;
+  let body = {};
+  try {
+    const raw = await readBody(req);
+    if (raw) body = JSON.parse(raw);
+  } catch (e) {
+    return sendError(res, 400, 'Invalid JSON');
+  }
+  const deadId = body.deadSessionId || body.sessionId;
+  if (!deadId || typeof deadId !== 'string') {
+    return sendError(res, 400, 'deadSessionId is required');
+  }
+  const settings = buildRestartForkSettings(body);
+  try {
+    const result = await cpRequest(
+      'restartSession',
+      { user: linuxUser, sessionId: deadId, settings },
+      120000
+    );
+    return sendJson(res, 201, { ok: true, source: 'claude-proxy', session: result });
+  } catch (err) {
+    process.stderr.write('[svg-terminal] restartSession: ' + (err && err.message ? err.message : err) + '\n');
+    return sendError(res, mapCpErrorToStatus(err), err.message || String(err));
+  }
+}
+
+async function handleForkSession(req, res) {
+  const auth = getAuthUser(req);
+  const linuxUser = auth && auth.linux_user ? auth.linux_user : CP_DEFAULT_USER;
+  let body = {};
+  try {
+    const raw = await readBody(req);
+    if (raw) body = JSON.parse(raw);
+  } catch (e) {
+    return sendError(res, 400, 'Invalid JSON');
+  }
+  const sourceId = body.sourceSessionId || body.sessionId;
+  if (!sourceId || typeof sourceId !== 'string') {
+    return sendError(res, 400, 'sourceSessionId is required');
+  }
+  const settings = buildRestartForkSettings(body);
+  try {
+    const result = await cpRequest(
+      'forkSession',
+      { user: linuxUser, sessionId: sourceId, settings },
+      120000
+    );
+    return sendJson(res, 201, { ok: true, source: 'claude-proxy', session: result });
+  } catch (err) {
+    process.stderr.write('[svg-terminal] forkSession: ' + (err && err.message ? err.message : err) + '\n');
+    return sendError(res, mapCpErrorToStatus(err), err.message || String(err));
+  }
 }
 
 /**
@@ -1621,11 +1722,28 @@ function router(req, res) {
     return;
   }
 
+  if (req.method === 'POST' && pathname === '/api/sessions/restart') {
+    handleRestartSession(req, res).catch(err => sendError(res, 500, err.message));
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/sessions/fork') {
+    handleForkSession(req, res).catch(err => sendError(res, 500, err.message));
+    return;
+  }
+
   if (
     req.method === 'GET' &&
-    (pathname === '/api/cp/remotes' || pathname === '/api/cp/users' || pathname === '/api/cp/groups')
+    (pathname === '/api/cp/remotes' ||
+      pathname === '/api/cp/users' ||
+      pathname === '/api/cp/groups' ||
+      pathname === '/api/cp/dead-sessions')
   ) {
-    handleCpPicklist(req, res, pathname).catch(err => sendError(res, 500, err.message));
+    if (pathname === '/api/cp/dead-sessions') {
+      handleCpDeadSessions(req, res).catch(err => sendError(res, 500, err.message));
+    } else {
+      handleCpPicklist(req, res, pathname).catch(err => sendError(res, 500, err.message));
+    }
     return;
   }
 

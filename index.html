@@ -162,6 +162,112 @@
     </div>
   </div>
 
+  <!-- Restart dead session (claude-proxy restartSession) -->
+  <div class="session-form-panel" id="restart-session-panel" aria-hidden="true">
+    <div class="session-form-backdrop" id="restart-session-backdrop"></div>
+    <div class="session-form-dialog" role="dialog" aria-labelledby="restart-session-title">
+      <div class="session-form-header">
+        <h2 id="restart-session-title">Restart session</h2>
+        <button type="button" class="session-form-close" id="restart-session-close" title="Close">&times;</button>
+      </div>
+      <p class="session-form-sub">Resume a <strong>dead</strong> session from claude-proxy storage (same profile and working directory as before).</p>
+      <div class="session-form-section">
+        <label class="field-label" for="rs-dead">Dead session <span class="req">*</span></label>
+        <select class="field-input" id="rs-dead" required></select>
+        <p class="session-form-sub" id="rs-empty-hint" hidden style="margin-top:8px">No dead sessions are available. Nothing to restart yet.</p>
+      </div>
+      <div class="session-form-section">
+        <label class="field-label" for="rs-name">New session name</label>
+        <input type="text" class="field-input" id="rs-name" placeholder="(optional — uses previous name)" autocomplete="off" />
+      </div>
+      <div class="checkbox-row" id="rs-flags-row">
+        <label><input type="checkbox" id="rs-hidden" /> Hidden session</label>
+        <label><input type="checkbox" id="rs-viewonly" /> View-only</label>
+        <label><input type="checkbox" id="rs-public" checked /> Public session</label>
+      </div>
+      <div class="session-form-section sf-access-row" id="rs-access-row" hidden>
+        <div class="section-label">Access <span class="note">(private, not hidden)</span></div>
+        <div class="session-form-row">
+          <div>
+            <label class="field-label" for="rs-users">Allowed users</label>
+            <select class="field-input field-multiselect" id="rs-users" multiple size="4"></select>
+          </div>
+          <div>
+            <label class="field-label" for="rs-groups">Allowed groups</label>
+            <select class="field-input field-multiselect" id="rs-groups" multiple size="4"></select>
+          </div>
+        </div>
+      </div>
+      <div class="session-form-row">
+        <div>
+          <label class="field-label" for="rs-password">Password</label>
+          <input type="password" class="field-input" id="rs-password" placeholder="Optional" autocomplete="new-password" />
+        </div>
+        <div class="sf-claude-admin" id="rs-danger-row" hidden>
+          <label class="field-label">Skip permissions <span class="note">(Claude)</span></label>
+          <label class="inline-check"><input type="checkbox" id="rs-dangermode" /> Enable <code>--dangerously-skip-permissions</code></label>
+        </div>
+      </div>
+      <div class="session-form-actions">
+        <button type="button" class="btn-session-primary" id="restart-session-submit">Restart</button>
+        <button type="button" class="btn-session-outline" id="restart-session-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fork live Claude session (claude-proxy forkSession) -->
+  <div class="session-form-panel" id="fork-session-panel" aria-hidden="true">
+    <div class="session-form-backdrop" id="fork-session-backdrop"></div>
+    <div class="session-form-dialog" role="dialog" aria-labelledby="fork-session-title">
+      <div class="session-form-header">
+        <h2 id="fork-session-title">Fork session</h2>
+        <button type="button" class="session-form-close" id="fork-session-close" title="Close">&times;</button>
+      </div>
+      <p class="session-form-sub">Create a new <strong>Claude</strong> session branched from a live session (<code>--fork-session</code>). Requires a stored Claude session ID on the source.</p>
+      <div class="session-form-section">
+        <label class="field-label" for="fk-source">Source session <span class="req">*</span></label>
+        <select class="field-input" id="fk-source" required></select>
+        <p class="session-form-sub" id="fk-empty-hint" hidden style="margin-top:8px">No claude-proxy sessions available to fork.</p>
+      </div>
+      <div class="session-form-section">
+        <label class="field-label" for="fk-name">New session name</label>
+        <input type="text" class="field-input" id="fk-name" placeholder="(optional — default name-fork)" autocomplete="off" />
+      </div>
+      <div class="checkbox-row" id="fk-flags-row">
+        <label><input type="checkbox" id="fk-hidden" /> Hidden session</label>
+        <label><input type="checkbox" id="fk-viewonly" /> View-only</label>
+        <label><input type="checkbox" id="fk-public" checked /> Public session</label>
+      </div>
+      <div class="session-form-section sf-access-row" id="fk-access-row" hidden>
+        <div class="section-label">Access <span class="note">(private, not hidden)</span></div>
+        <div class="session-form-row">
+          <div>
+            <label class="field-label" for="fk-users">Allowed users</label>
+            <select class="field-input field-multiselect" id="fk-users" multiple size="4"></select>
+          </div>
+          <div>
+            <label class="field-label" for="fk-groups">Allowed groups</label>
+            <select class="field-input field-multiselect" id="fk-groups" multiple size="4"></select>
+          </div>
+        </div>
+      </div>
+      <div class="session-form-row">
+        <div>
+          <label class="field-label" for="fk-password">Password</label>
+          <input type="password" class="field-input" id="fk-password" placeholder="Optional" autocomplete="new-password" />
+        </div>
+        <div class="sf-claude-admin" id="fk-danger-row" hidden>
+          <label class="field-label">Skip permissions</label>
+          <label class="inline-check"><input type="checkbox" id="fk-dangermode" /> Enable <code>--dangerously-skip-permissions</code></label>
+        </div>
+      </div>
+      <div class="session-form-actions">
+        <button type="button" class="btn-session-primary" id="fork-session-submit">Fork</button>
+        <button type="button" class="btn-session-outline" id="fork-session-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Input status bar (keystrokes captured at document level) -->
   <div class="input-bar" id="input-bar">
     <span class="status-dot" id="ws-status"></span>
