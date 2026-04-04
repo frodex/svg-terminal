@@ -436,8 +436,8 @@ function maximizeCardToSlot(t) {
   // Use TARGET_WORLD_AREA for consistent visual weight.
   var worldW = Math.sqrt(TARGET_WORLD_AREA * slotAspect);
   var worldH = TARGET_WORLD_AREA / worldW;
-  var cardW = Math.round(worldW * 4);
-  var cardH = Math.round(worldH * 4) + HEADER_H;
+  var cardW = Math.round(worldW * DOM_SCALE);
+  var cardH = Math.round(worldH * DOM_SCALE) + HEADER_H;
   cardW = Math.max(MIN_CARD_W, Math.min(MAX_CARD_W, cardW));
   cardH = Math.max(MIN_CARD_H, Math.min(MAX_CARD_H, cardH));
 
@@ -468,7 +468,17 @@ const MORPH_DURATION = 1.5;
 const BILLBOARD_SLERP = 0.08;
 const SIDEBAR_WIDTH = 140;
 const FOCUS_DIST = 350;
-const RENDER_SCALE = 2;
+
+// DOM scale trick: card DOM is oversized by DOM_SCALE, CSS3DObject renders at WORLD_SCALE.
+// This forces Chrome to rasterize text at high resolution before 3D transform scales it down.
+// DO NOT set DOM_SCALE to 1 — text will blur. See note 1 in header.
+var DOM_SCALE = 4;
+var WORLD_SCALE = 1 / DOM_SCALE;
+
+// Renderer resolution multiplier — separate from DOM_SCALE.
+// RENDER_SCALE=2 means renderer canvas is 2x viewport, scaled down via CSS transform.
+// Can be reduced to 1 by performance system for lower-end hardware.
+var RENDER_SCALE = 2;
 
 // Camera position — closer to match original visual density
 const HOME_POS = new THREE.Vector3(-15, 20, 900);
@@ -481,6 +491,17 @@ const terminals = new Map();
 let sessionOrder = [];
 let focusedSessions = new Set();
 let activeInputSession = null;
+
+// Performance mode (see docs/superpowers/plans/2026-04-03-performance-detection.02.md)
+var perfMode = 'auto';
+var perfTier = 0;
+var _savedRingSpeed = null;
+var _savedRenderScale = null;
+var _perfFrameTimes = [];
+var _perfCheckStart = 0;
+var _perfCheckPhase = 0;
+var _cachedGPU = null;
+
 let dashboardWs = null; // shared WebSocket to /ws/dashboard
 const clock = new THREE.Clock();
 
@@ -617,8 +638,8 @@ function calculateFocusedLayout() {
     const cells = cols * rows;
     const m = t ? getMeasuredCellSize(t) : null;
     const aspect = (cols * (m ? m.cellW : SVG_CELL_W)) / (rows * (m ? m.cellH : SVG_CELL_H));
-    const worldW = (t ? t.baseCardW || 1280 : 1280) * 0.25;
-    const worldH = (t ? t.baseCardH || 992 : 992) * 0.25;
+    const worldW = (t ? t.baseCardW || 1280 : 1280) * WORLD_SCALE;
+    const worldH = (t ? t.baseCardH || 992 : 992) * WORLD_SCALE;
     cards.push({ name, cols, rows, cells, aspect, worldW, worldH });
   }
 
@@ -776,8 +797,8 @@ function calculateSlotLayout(slots) {
     var cells = cols * rows;
     var m = t ? getMeasuredCellSize(t) : null;
     var aspect = (cols * (m ? m.cellW : SVG_CELL_W)) / (rows * (m ? m.cellH : SVG_CELL_H));
-    var worldW = (t ? t.baseCardW || 1280 : 1280) * 0.25;
-    var worldH = (t ? t.baseCardH || 992 : 992) * 0.25;
+    var worldW = (t ? t.baseCardW || 1280 : 1280) * WORLD_SCALE;
+    var worldH = (t ? t.baseCardH || 992 : 992) * WORLD_SCALE;
     cards.push({ name: name, cols: cols, rows: rows, cells: cells, aspect: aspect, worldW: worldW, worldH: worldH });
   }
 
@@ -915,8 +936,97 @@ function calculateSlotLayout(slots) {
   };
 }
 
+// === Performance detection & tiers (see docs/superpowers/plans/2026-04-03-performance-detection.02.md) ===
+function detectGPU() {
+  var result = { renderer: 'unknown', isSoftware: false, cores: navigator.hardwareConcurrency || 0, memory: navigator.deviceMemory || 0, maxTexture: 0 };
+  try {
+    var canvas = document.createElement('canvas');
+    var gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+    if (!gl) { result.isSoftware = true; return result; }
+    var dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    if (dbg) result.renderer = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || 'unknown';
+    result.maxTexture = gl.getParameter(gl.MAX_TEXTURE_SIZE) || 0;
+    var sw = result.renderer.toLowerCase();
+    result.isSoftware = sw.includes('swiftshader') || sw.includes('llvmpipe')
+      || sw.includes('microsoft basic render') || sw.includes('apple software renderer');
+    canvas.remove();
+  } catch (e) { result.isSoftware = true; }
+  return result;
+}
+
+function updatePerfIndicator() {
+  var el = document.getElementById('perf-indicator');
+  if (!el) return;
+  el.className = 'perf-indicator tier-' + perfTier;
+  if (perfTier === 0) {
+    el.textContent = '';
+  } else if (perfTier === 1) {
+    el.textContent = 'reduced';
+  } else {
+    el.textContent = 'minimal';
+  }
+  el.title = 'Performance: ' + (perfTier === 0 ? 'full' : perfTier === 1 ? 'reduced' : 'minimal')
+    + ' (click to cycle, current: ' + perfMode + ')';
+}
+
+function applyPerfTier(tier) {
+  var prev = perfTier;
+  perfTier = tier;
+
+  if (tier >= 1) {
+    if (_savedRingSpeed === null) {
+      _savedRingSpeed = { outer: RING.outer.spinSpeed, inner: RING.inner.spinSpeed };
+    }
+    RING.outer.spinSpeed = 0;
+    RING.inner.spinSpeed = 0;
+    if (shadowGroup) shadowGroup.visible = false;
+    document.querySelectorAll('.specular-overlay').forEach(function(e) { e.style.display = 'none'; });
+    if (_savedRenderScale === null && RENDER_SCALE > 1) {
+      _savedRenderScale = RENDER_SCALE;
+      RENDER_SCALE = 1;
+      renderer.setSize(window.innerWidth * RENDER_SCALE, window.innerHeight * RENDER_SCALE);
+      renderer.domElement.style.transform = 'scale(' + (1 / RENDER_SCALE) + ')';
+    }
+  } else {
+    if (_savedRingSpeed) {
+      RING.outer.spinSpeed = _savedRingSpeed.outer;
+      RING.inner.spinSpeed = _savedRingSpeed.inner;
+      _savedRingSpeed = null;
+    }
+    if (shadowGroup) shadowGroup.visible = true;
+    document.querySelectorAll('.specular-overlay').forEach(function(e) { e.style.display = ''; });
+    if (_savedRenderScale !== null) {
+      RENDER_SCALE = _savedRenderScale;
+      _savedRenderScale = null;
+      renderer.setSize(window.innerWidth * RENDER_SCALE, window.innerHeight * RENDER_SCALE);
+      renderer.domElement.style.transform = 'scale(' + (1 / RENDER_SCALE) + ')';
+    }
+  }
+
+  if (tier >= 2) {
+    for (var [name, t] of terminals) {
+      if (!focusedSessions.has(name)) {
+        t.css3dObject.visible = false;
+        if (t.shadowObject) t.shadowObject.visible = false;
+      }
+    }
+  } else if (prev >= 2 && tier < 2) {
+    for (var [name, t] of terminals) {
+      t.css3dObject.visible = true;
+      if (t.shadowObject) t.shadowObject.visible = true;
+    }
+  }
+
+  updatePerfIndicator();
+  console.log('[perf] tier ' + prev + ' → ' + tier + ' (' + perfMode + ')');
+}
+
 // === Init ===
 function init() {
+  var gpu = detectGPU();
+  console.log('[perf] GPU:', gpu.renderer, gpu.isSoftware ? '(SOFTWARE)' : '(hardware)',
+    'cores:', gpu.cores, 'mem:', gpu.memory != null ? gpu.memory + 'GB' : 'n/a');
+
   scene = new THREE.Scene();
 
   camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 10000);
@@ -939,6 +1049,27 @@ function init() {
   shadowGroup = new THREE.Group();
   scene.add(shadowGroup);
 
+  _cachedGPU = gpu;
+  if (perfMode === 'auto' && gpu.isSoftware) {
+    applyPerfTier(1);
+  }
+
+  window._perfState = function() {
+    return {
+      DOM_SCALE: DOM_SCALE, WORLD_SCALE: WORLD_SCALE, RENDER_SCALE: RENDER_SCALE,
+      perfTier: perfTier, perfMode: perfMode,
+      gpu: _cachedGPU,
+      shadowVisible: shadowGroup ? shadowGroup.visible : null,
+      ringSpeed: RING ? RING.outer.spinSpeed : null,
+      terminalCount: terminals ? terminals.size : 0,
+      hiddenCount: (function() {
+        var n = 0;
+        for (var [, t] of terminals) { if (!t.css3dObject.visible) n++; }
+        return n;
+      })()
+    };
+  };
+
   // Events
   window.addEventListener('resize', onResize);
   document.addEventListener('mousemove', onMouseMove);
@@ -950,6 +1081,22 @@ function init() {
   document.addEventListener('keydown', onKeyDown);
   document.getElementById('help-btn').addEventListener('click', toggleHelp);
   document.getElementById('help-close').addEventListener('click', toggleHelp);
+
+  var perfEl = document.getElementById('perf-indicator');
+  if (perfEl) {
+    perfEl.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var modes = ['auto', 'full', 'reduced', 'minimal'];
+      var idx = modes.indexOf(perfMode);
+      perfMode = modes[(idx + 1) % modes.length];
+      if (perfMode === 'full') applyPerfTier(0);
+      else if (perfMode === 'reduced') applyPerfTier(1);
+      else if (perfMode === 'minimal') applyPerfTier(2);
+      else { _perfCheckPhase = 0; _perfFrameTimes = []; }
+      console.log('[perf] mode set to ' + perfMode);
+    });
+  }
+  updatePerfIndicator();
 
   // Auto-generate help panel from KEYBINDINGS
   const helpControls = document.querySelector('.help-controls');
@@ -1198,6 +1345,7 @@ function onResize() {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth * RENDER_SCALE, window.innerHeight * RENDER_SCALE);
+  renderer.domElement.style.transform = 'scale(' + (1 / RENDER_SCALE) + ')';
 }
 
 // === Mouse ===
@@ -1304,14 +1452,14 @@ function onMouseMove(e) {
       if (!activeInputSession) return;
       const t = terminals.get(activeInputSession);
       if (!t || !t._resizeEdge) return;
-      // Scale mouse movement to DOM pixels. DOM is 4x, CSS3D renders at 0.25,
+      // Scale mouse movement to DOM pixels. DOM is DOM_SCALEx, CSS3D renders at WORLD_SCALE,
       // but the card's apparent size depends on its Z-depth relative to camera.
       // Use the ratio of card DOM width to its screen bounding rect width.
       const rect = t.dom.getBoundingClientRect();
       const edge = t._resizeEdge;
       const currentW = parseInt(t.dom.style.width) || 1280;
       const currentH = parseInt(t.dom.style.height) || 992;
-      const scaleF = rect.width > 10 ? currentW / rect.width : 4;
+      const scaleF = rect.width > 10 ? currentW / rect.width : DOM_SCALE;
       let newW = currentW;
       let newH = currentH;
 
@@ -1332,9 +1480,9 @@ function onMouseMove(e) {
       // Anchor the opposite edge by shifting the 3D position.
       // CSS3DObject origin is center, so changing width shifts both edges equally.
       // To keep the opposite edge fixed, move the card by half the size change.
-      // World units = DOM pixels * 0.25 (CSS3DObject scale)
-      const dw = (newW - currentW) * 0.25;
-      const dh = (newH - currentH) * 0.25;
+      // World units = DOM pixels * WORLD_SCALE (CSS3DObject scale)
+      const dw = (newW - currentW) * WORLD_SCALE;
+      const dh = (newH - currentH) * WORLD_SCALE;
       if (edge.right && !edge.left)  { t.currentPos.x += dw / 2; t.targetPos.x = t.currentPos.x; }
       if (edge.left && !edge.right)  { t.currentPos.x -= dw / 2; t.targetPos.x = t.currentPos.x; }
       if (edge.bottom && !edge.top)  { t.currentPos.y -= dh / 2; t.targetPos.y = t.currentPos.y; }
@@ -1702,7 +1850,7 @@ function zoomToFocusedTerminal(sessionName) {
   const halfTan = Math.tan(vFov / 2);
 
   // Calculate camera distance to fill ~85% of viewport height with this card
-  const worldH = (t.baseCardH || 992) * 0.25;
+  const worldH = (t.baseCardH || 992) * WORLD_SCALE;
   const depth = worldH / (0.85 * 2 * halfTan);
 
   // Camera flies to look directly at this terminal's position
@@ -2116,7 +2264,7 @@ function addBrowserCard(url) {
 
   const shadowDiv = createShadowDOM();
   const css3dObj = new CSS3DObject(dom);
-  css3dObj.scale.setScalar(0.25);
+  css3dObj.scale.setScalar(WORLD_SCALE);
   // No random rotation — face camera from spawn (consistent with terminal cards)
   terminalGroup.add(css3dObj);
   dom.style.pointerEvents = 'auto';
@@ -2124,6 +2272,10 @@ function addBrowserCard(url) {
   const shadowObj = new CSS3DObject(shadowDiv);
   shadowObj.rotation.x = -Math.PI / 2;
   shadowGroup.add(shadowObj);
+  if (perfTier >= 2) {
+    css3dObj.visible = false;
+    shadowObj.visible = false;
+  }
 
   // Create thumbnail for browser card
   const thumb = document.createElement('div');
@@ -2298,9 +2450,9 @@ function calcCardSize(cols, rows, cellW, cellH) {
   // worldW = sqrt(TARGET_WORLD_AREA * termAspect)
   const worldW = Math.sqrt(TARGET_WORLD_AREA * termAspect);
   const worldH = TARGET_WORLD_AREA / worldW;
-  // Convert world → DOM at 4x (world * 4 = DOM pixels)
-  let cardW = Math.round(worldW * 4);
-  let cardH = Math.round(worldH * 4) + HEADER_H;
+  // Convert world → DOM at DOM_SCALE (world * DOM_SCALE = DOM pixels)
+  let cardW = Math.round(worldW * DOM_SCALE);
+  let cardH = Math.round(worldH * DOM_SCALE) + HEADER_H;
   // Clamp to bounds
   cardW = Math.max(MIN_CARD_W, Math.min(MAX_CARD_W, cardW));
   cardH = Math.max(MIN_CARD_H, Math.min(MAX_CARD_H, cardH));
@@ -2358,8 +2510,8 @@ function updateCardForNewSize(t, newCols, newRows) {
   // Default to center (0.5, 0.5) if no anchor set — no position change.
   var oldW = parseInt(t.dom.style.width) || cardW;
   var oldH = parseInt(t.dom.style.height) || cardH;
-  var dwWorld = (cardW - oldW) * 0.25;  // DOM to world: * CSS3DObject scale (0.25)
-  var dhWorld = (cardH - oldH) * 0.25;
+  var dwWorld = (cardW - oldW) * WORLD_SCALE;  // DOM to world: * CSS3DObject scale
+  var dhWorld = (cardH - oldH) * WORLD_SCALE;
   if (t.currentPos && (dwWorld !== 0 || dhWorld !== 0)) {
     // Anchor fraction: 0.5 = center (no shift), 0 = left/top edge, 1 = right/bottom edge
     var fx = t._resizeAnchorFx != null ? t._resizeAnchorFx : 0.5;
@@ -2405,10 +2557,10 @@ function addTerminal(sessionName, cols, rows) {
   const thumbnail = createThumbnail(sessionName);
 
   const css3dObj = new CSS3DObject(dom);
-  // IMPORTANT: DOM element is sized to match terminal at 4x scale.
-  // CSS3DObject scale 0.25 forces Chrome to rasterize at 4x resolution.
+  // IMPORTANT: DOM element is sized to match terminal at DOM_SCALE.
+  // CSS3DObject scale WORLD_SCALE forces Chrome to rasterize at DOM_SCALEx resolution.
   // DO NOT change to 1.0 with smaller DOM — text will be blurry. See note 1.
-  css3dObj.scale.setScalar(0.25);
+  css3dObj.scale.setScalar(WORLD_SCALE);
   // NOTE: Previously cards spawned with random 3D angles for a fly-in rotation effect.
   // Removed because it caused unpredictable bouncing/overshooting when focusing terminals.
   // The effect was visually nice but too hard to control — terminals would fly too far back
@@ -2421,6 +2573,10 @@ function addTerminal(sessionName, cols, rows) {
   const shadowObj = new CSS3DObject(shadowDiv);
   shadowObj.rotation.x = -Math.PI / 2;
   shadowGroup.add(shadowObj);
+  if (perfTier >= 2) {
+    css3dObj.visible = false;
+    shadowObj.visible = false;
+  }
 
   sessionOrder.push(sessionName);
   terminals.set(sessionName, {
@@ -2610,6 +2766,14 @@ function focusTerminal(sessionName) {
 
   updateFocusStyles();
 
+  if (perfTier >= 2) {
+    var ft = terminals.get(sessionName);
+    if (ft) {
+      ft.css3dObject.visible = true;
+      if (ft.shadowObject) ft.shadowObject.visible = true;
+    }
+  }
+
   const now = clock.getElapsedTime();
   t.morphFrom = { ...t.currentPos };
   t.targetPos = { x: 0, y: 0, z: 0 };
@@ -2628,8 +2792,8 @@ function focusTerminal(sessionName) {
   // enough to fill the viewport. No DOM resize, no inner scale transform, no state
   // to restore. The abandoned DOM-resize approach required every feature (alt+drag,
   // +/-, optimize, unfocus) to branch on focus state — they all fought each other.
-  const worldW = (t.baseCardW || 1280) * 0.25;
-  const worldH = (t.baseCardH || 992) * 0.25;
+  const worldW = (t.baseCardW || 1280) * WORLD_SCALE;
+  const worldH = (t.baseCardH || 992) * WORLD_SCALE;
 
   const vFov = camera.fov * DEG2RAD;
   const halfTan = Math.tan(vFov / 2);
@@ -2679,6 +2843,14 @@ function addToFocus(sessionName) {
 
   updateFocusStyles();
   calculateFocusedLayout();
+
+  if (perfTier >= 2) {
+    var ft2 = terminals.get(sessionName);
+    if (ft2) {
+      ft2.css3dObject.visible = true;
+      if (ft2.shadowObject) ft2.shadowObject.visible = true;
+    }
+  }
 
   document.getElementById('input-bar').classList.add('visible');
   document.getElementById('input-target').textContent = activeInputSession;
@@ -2844,6 +3016,14 @@ function unfocusTerminal() {
 
   document.getElementById('input-bar').classList.remove('visible');
   hideTermControls();
+
+  if (perfTier >= 2) {
+    for (var [name, t] of terminals) {
+      t.css3dObject.visible = false;
+      if (t.shadowObject) t.shadowObject.visible = false;
+    }
+  }
+
   sendFocusState();
 }
 
@@ -2853,6 +3033,31 @@ function animate() {
 
   const time = clock.getElapsedTime();
   clock.getDelta(); // advance clock internal state (side effect needed for accurate getElapsedTime)
+
+  if (perfMode === 'auto' && _perfCheckPhase < 2) {
+    if (_perfCheckPhase === 0) {
+      _perfCheckStart = performance.now();
+      _perfCheckPhase = 1;
+    }
+    if (_perfCheckPhase === 1) {
+      var now = performance.now();
+      if (_perfFrameTimes.length > 0) {
+        _perfFrameTimes.push(now - _perfFrameTimes._lastTime);
+      }
+      _perfFrameTimes._lastTime = now;
+      if (now - _perfCheckStart > 3000) {
+        var times = _perfFrameTimes.slice(Math.floor(_perfFrameTimes.length * 0.33));
+        var avg = times.length > 0 ? times.reduce(function(a, b) { return a + b; }, 0) / times.length : 16;
+        console.log('[perf] avg frame time: ' + avg.toFixed(1) + 'ms (' + (1000 / avg).toFixed(0) + ' fps)');
+        if (avg > 50) {
+          applyPerfTier(2);
+        } else if (avg > 33) {
+          applyPerfTier(1);
+        }
+        _perfCheckPhase = 2;
+      }
+    }
+  }
 
   // Camera tween
   if (cameraTween) {
@@ -3629,6 +3834,7 @@ init();
     const state = {
       uid: activeUid,
       timestamp: Date.now(),
+      perfMode: perfMode,
       viewport: { w: window.innerWidth, h: window.innerHeight },
       userAgent: navigator.userAgent.slice(0, 80),
       camera: {
