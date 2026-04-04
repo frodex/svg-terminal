@@ -958,11 +958,9 @@ function updatePerfIndicator() {
   var el = document.getElementById('perf-indicator');
   if (!el) return;
   el.className = 'perf-indicator tier-' + perfTier;
-  // Always show current mode in the input bar — manual GPU/3D tier (click cycles auto→full→reduced→minimal).
-  el.textContent = perfMode === 'minimal' ? 'min' : perfMode;
-  el.title = 'GPU / 3D performance: tier ' + perfTier + ' ('
-    + (perfTier === 0 ? 'full' : perfTier === 1 ? 'reduced' : 'minimal')
-    + '). Click to cycle mode, current: ' + perfMode;
+  var tierName = perfTier === 0 ? 'full' : perfTier === 1 ? 'reduced' : 'minimal';
+  el.textContent = tierName + ' (' + perfMode + ')';
+  el.title = 'Performance: ' + tierName + ' (click to cycle, current: ' + perfMode + ')';
 }
 
 function applyPerfTier(tier) {
@@ -1012,11 +1010,15 @@ function applyPerfTier(tier) {
   console.log('[perf] tier ' + prev + ' → ' + tier + ' (' + perfMode + ')');
 }
 
-// Tier 2 (minimal): cull unfocused cards only while focus mode is active. In overview
-// (no focus), show the full ring — see docs/research/2026-04-03-v0.1-mobile-css3d-perf-tiers-journal.md
+// Tier 2 (minimal): on desktop overview, show all cards (empty ring looks broken).
+// On touch landscape, hide all unfocused cards even in overview — compositor can't handle them.
 function tier2CardShouldShow(sessionName) {
   if (perfTier < 2) return true;
-  return focusedSessions.size === 0 || focusedSessions.has(sessionName);
+  if (focusedSessions.has(sessionName)) return true;
+  if (focusedSessions.size > 0) return false;
+  // Overview (no focus): hide cards on touch landscape, show on desktop
+  var coarse = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
+  return !coarse || window.innerWidth <= window.innerHeight;
 }
 
 function syncPerfTier2Visibility() {
@@ -1040,7 +1042,6 @@ function init() {
   camera.position.copy(HOME_POS);
   camera.lookAt(HOME_TARGET);
 
-  // Renderer at 2x size, scaled down — forces Chrome to rasterize at 2x resolution
   renderer = new CSS3DRenderer();
   renderer.setSize(window.innerWidth * RENDER_SCALE, window.innerHeight * RENDER_SCALE);
   renderer.domElement.style.position = 'fixed';
@@ -1057,8 +1058,17 @@ function init() {
   scene.add(shadowGroup);
 
   _cachedGPU = gpu;
-  if (perfMode === 'auto' && gpu.isSoftware) {
-    applyPerfTier(1);
+  if (perfMode === 'auto') {
+    if (gpu.isSoftware) {
+      applyPerfTier(1);
+      console.log('[perf] auto tier 1: software renderer');
+    } else {
+      var coarse = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
+      if (coarse && window.innerWidth > window.innerHeight) {
+        applyPerfTier(2);
+        console.log('[perf] auto tier 2: touch device + landscape');
+      }
+    }
   }
 
   window._perfState = function() {
@@ -1079,9 +1089,6 @@ function init() {
 
   // Events
   window.addEventListener('resize', onResize);
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', onResize);
-  }
   document.addEventListener('mousemove', onMouseMove);
   document.addEventListener('mousedown', onMouseDown);
   document.addEventListener('mouseup', onMouseUp);
@@ -1278,8 +1285,22 @@ function routeDashboardMessage(msg) {
           }
         }
       }
-      // Thumbnail snapshot triggered from _screenCallback (after screenLines populated),
-      // not here — screenLines isn't ready yet when routeDashboardMessage fires.
+      // Populate screenLines directly so thumbnails work even when card is hidden
+      // (CSS3DObject.visible=false sets display:none, preventing <object> SVG load).
+      if (msg.type === 'screen' && msg.lines) {
+        t.screenLines = msg.lines.map(function(l) {
+          var spans = l.spans || l;
+          return { text: (Array.isArray(spans) ? spans : [spans]).map(function(s) { return s.text; }).join(''), spans: Array.isArray(spans) ? spans : [spans] };
+        });
+        t._thumbDirty = true;
+      } else if (msg.type === 'delta' && msg.changed && t.screenLines) {
+        for (var idx in msg.changed) {
+          var lineData = msg.changed[idx];
+          var spans = lineData.spans || lineData;
+          t.screenLines[parseInt(idx)] = { text: (Array.isArray(spans) ? spans : [spans]).map(function(s) { return s.text; }).join(''), spans: Array.isArray(spans) ? spans : [spans] };
+        }
+        t._thumbDirty = true;
+      }
     }
   }
 }
@@ -1405,21 +1426,68 @@ function sendFocusState() {
   sendDashboardMessage({ type: 'focus', sessions: [...focusedSessions] });
 }
 
-// Mobile browsers: use visualViewport when present (keyboard, safe areas, aspect changes).
-function viewportSize() {
-  var vv = window.visualViewport;
-  if (vv && vv.width > 0 && vv.height > 0) {
-    return { w: vv.width, h: vv.height };
-  }
-  return { w: window.innerWidth, h: window.innerHeight };
-}
-
 function onResize() {
-  var v = viewportSize();
-  camera.aspect = v.w / v.h;
+  // Hide cards BEFORE resize — prevents compositor from choking on CSS3D at new size.
+  for (var [, t] of terminals) {
+    t.css3dObject.visible = false;
+    if (t.shadowObject) t.shadowObject.visible = false;
+  }
+
+  camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setSize(v.w * RENDER_SCALE, v.h * RENDER_SCALE);
+  renderer.setSize(window.innerWidth * RENDER_SCALE, window.innerHeight * RENDER_SCALE);
   renderer.domElement.style.transform = 'scale(' + (1 / RENDER_SCALE) + ')';
+  renderer.render(scene, camera);
+
+  if (perfMode !== 'auto') {
+    // Manual mode: restore visibility per current tier
+    if (perfTier >= 2) { syncPerfTier2Visibility(); }
+    else { for (var [, t] of terminals) { t.css3dObject.visible = true; if (t.shadowObject) t.shadowObject.visible = true; } }
+    return;
+  }
+
+  // Auto: cards are hidden, scene is clean. Reset to tier 0 (with cards still hidden,
+  // so RENDER_SCALE and effects are restored without compositor load), then show cards
+  // and test whether full quality is sustainable at this viewport size.
+  applyPerfTier(0);
+  for (var [, t] of terminals) {
+    t.css3dObject.visible = true;
+    if (t.shadowObject) t.shadowObject.visible = true;
+  }
+  renderer.render(scene, camera);
+  var _frameTimes = [];
+  var _prevT = performance.now();
+  var _testN = 0;
+  function testFrame() {
+    var now = performance.now();
+    _frameTimes.push(now - _prevT);
+    _prevT = now;
+    _testN++;
+    renderer.render(scene, camera);
+    if (_testN < 8) { requestAnimationFrame(testFrame); return; }
+    _frameTimes.sort(function(a, b) { return a - b; });
+    var worst = _frameTimes[Math.floor(_frameTimes.length * 0.9)];
+    var coarse = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
+    var threshold = coarse ? 20 : 35;
+    console.log('[perf] resize test: p90 ' + worst.toFixed(1) + 'ms (threshold ' + threshold + '), tier ' + perfTier);
+    if (worst > threshold) {
+      applyPerfTier(perfTier < 1 ? 1 : 2);
+      renderer.render(scene, camera);
+      if (perfTier < 2) {
+        _frameTimes = [];
+        _prevT = performance.now();
+        _testN = 0;
+        requestAnimationFrame(testFrame);
+      }
+    }
+    updatePerfIndicator();
+  }
+  requestAnimationFrame(testFrame);
+
+  if (_perfCheckPhase === 2) {
+    _perfCheckPhase = 0;
+    _perfFrameTimes = [];
+  }
 }
 
 // === Mouse ===
@@ -2920,6 +2988,7 @@ function setActiveInput(sessionName) {
   activeInputSession = sessionName;
   updateFocusStyles();
   document.getElementById('input-target').textContent = sessionName;
+  document.getElementById('input-bar').classList.add('visible');
   showTermControls(sessionName);
 }
 
