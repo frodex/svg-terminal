@@ -1173,6 +1173,19 @@ function connectDashboardWs() {
   };
 }
 
+// Chrome/CSS3D: embedded <object> SVG often fails to composite updated DOM until scroll
+// or another invalidation. Nudge the object layer after terminal content changes.
+function scheduleEmbeddedSvgRepaint(obj) {
+  if (!obj) return;
+  requestAnimationFrame(function() {
+    requestAnimationFrame(function() {
+      obj.style.transform = 'translateZ(0)';
+      void obj.offsetHeight;
+      obj.style.transform = '';
+    });
+  });
+}
+
 function routeDashboardMessage(msg) {
   if (msg.type === 'session-add') {
     if (!terminals.has(msg.session) && !msg.session.startsWith('browser-')) {
@@ -1202,6 +1215,7 @@ function routeDashboardMessage(msg) {
       var obj = t.dom ? t.dom.querySelector('object') : null;
       if (obj && obj.contentWindow && typeof obj.contentWindow.renderMessage === 'function') {
         obj.contentWindow.renderMessage(msg);
+        scheduleEmbeddedSvgRepaint(obj);
       } else {
         // SVG not loaded yet — queue the message, flush when object loads
         if (!t._pendingMessages) t._pendingMessages = [];
@@ -2704,6 +2718,7 @@ function addTerminal(sessionName, cols, rows) {
               termObj.contentWindow.renderMessage(pending[p]);
             }
           }
+          scheduleEmbeddedSvgRepaint(termObj);
         }
         // Initial thumbnail snapshot once main SVG has content
         t._thumbDirty = true;
