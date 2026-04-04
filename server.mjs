@@ -1569,6 +1569,11 @@ function router(req, res) {
     if (!user) return;
   }
 
+  if (req.method === 'POST' && pathname === '/api/sessions/create') {
+    handleCreateSession(req, res).catch(err => sendError(res, 500, err.message));
+    return;
+  }
+
   if (req.method === 'GET') {
     if (pathname === '/') {
       return handleRoot(req, res);
@@ -1626,10 +1631,6 @@ function router(req, res) {
         return;
       }
       sendError(res, 405, 'GET or POST only');
-      return;
-    }
-    if (pathname === '/api/sessions/create' && req.method === 'POST') {
-      handleCreateSession(req, res).catch(err => sendError(res, 500, err.message));
       return;
     }
     if (pathname === '/api/sessions') {
