@@ -547,10 +547,45 @@ async function handleSessions(req, res) {
   sendJson(res, 200, sessions);
 }
 
+/** Build createSession body for claude-proxy — mirrors CreateSessionRequest / session-form field mapping. */
+function buildCreateSessionPayload(body, autoName) {
+  const allowedProfiles = new Set(['shell', 'claude', 'cursor']);
+  const launchProfile =
+    typeof body.launchProfile === 'string' && allowedProfiles.has(body.launchProfile.trim())
+      ? body.launchProfile.trim()
+      : 'claude';
+
+  let name =
+    typeof body.name === 'string' && body.name.trim()
+      ? body.name.trim().replace(/[^a-zA-Z0-9_.-]/g, '_').substring(0, 64)
+      : '';
+  if (!name) name = autoName;
+
+  const payload = { name, launchProfile };
+
+  if (body.runAsUser && String(body.runAsUser).trim()) payload.runAsUser = String(body.runAsUser).trim();
+  if (body.workingDir && String(body.workingDir).trim()) payload.workingDir = String(body.workingDir).trim();
+  if (body.remoteHost && String(body.remoteHost).trim()) payload.remoteHost = String(body.remoteHost).trim();
+  if (typeof body.hidden === 'boolean') payload.hidden = body.hidden;
+  if (typeof body.viewOnly === 'boolean') payload.viewOnly = body.viewOnly;
+  if (typeof body.public === 'boolean') payload.public = body.public;
+  if (Array.isArray(body.allowedUsers) && body.allowedUsers.length)
+    payload.allowedUsers = body.allowedUsers.map(String);
+  if (Array.isArray(body.allowedGroups) && body.allowedGroups.length)
+    payload.allowedGroups = body.allowedGroups.map(String);
+  if (body.password && String(body.password).length) payload.password = String(body.password);
+  if (typeof body.dangerousSkipPermissions === 'boolean')
+    payload.dangerousSkipPermissions = body.dangerousSkipPermissions;
+  if (body.claudeSessionId && String(body.claudeSessionId).trim())
+    payload.claudeSessionId = String(body.claudeSessionId).trim();
+  if (typeof body.isResume === 'boolean') payload.isResume = body.isResume;
+
+  return payload;
+}
+
 /**
- * Create a new tmux-backed session: try claude-proxy JSON-RPC `createSession` first,
- * then fall back to local `tmux new-session` if the proxy socket is unavailable.
- * POST body (optional JSON): { name?: string, launchProfile?: string }
+ * Create session: claude-proxy `createSession` via Unix socket; optional tmux fallback for shell-only.
+ * POST JSON matches claude-proxy CreateSessionRequest (+ launchProfile shell|claude|cursor).
  */
 async function handleCreateSession(req, res) {
   const auth = getAuthUser(req);
@@ -564,33 +599,29 @@ async function handleCreateSession(req, res) {
     return sendError(res, 400, 'Invalid JSON');
   }
 
-  const launchProfile = typeof body.launchProfile === 'string' && body.launchProfile.trim()
-    ? body.launchProfile.trim()
-    : 'claude';
-
-  let baseName = typeof body.name === 'string' && body.name.trim()
-    ? body.name.trim().replace(/[^a-zA-Z0-9_.-]/g, '_').substring(0, 64)
-    : '';
-
-  if (!baseName) {
-    baseName = 'svg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
-  }
+  const autoName = 'svg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  const payload = buildCreateSessionPayload(body, autoName);
+  const launchProfile = payload.launchProfile;
 
   try {
-    const result = await cpRequest(
-      'createSession',
-      { user: linuxUser, body: { name: baseName, launchProfile } },
-      120000
-    );
+    const result = await cpRequest('createSession', { user: linuxUser, body: payload }, 120000);
     return sendJson(res, 201, { ok: true, source: 'claude-proxy', session: result });
   } catch (err) {
     process.stderr.write('[svg-terminal] createSession (cp): ' + (err && err.message ? err.message : err) + '\n');
+    if (launchProfile !== 'shell') {
+      const msg = err && err.message ? err.message : String(err);
+      return sendError(
+        res,
+        502,
+        'claude-proxy could not create this session (' + launchProfile + '). ' + msg
+      );
+    }
   }
 
-  let tmuxName = baseName;
+  let tmuxName = payload.name;
   try {
     await tmuxAsync('has-session', '-t', tmuxName);
-    tmuxName = baseName + '-' + Date.now().toString(36);
+    tmuxName = payload.name + '-' + Date.now().toString(36);
   } catch (e) {
     /* name free */
   }
@@ -601,6 +632,22 @@ async function handleCreateSession(req, res) {
   } catch (err2) {
     const msg = err2 && err2.message ? err2.message : String(err2);
     return sendError(res, 500, 'Could not create session: ' + msg);
+  }
+}
+
+/** Proxy claude-proxy picklists for session form (same data as ANSI TUI). */
+async function handleCpPicklist(req, res, pathname) {
+  let method = null;
+  if (pathname === '/api/cp/remotes') method = 'listRemotes';
+  else if (pathname === '/api/cp/users') method = 'listUsers';
+  else if (pathname === '/api/cp/groups') method = 'listGroups';
+  else return sendError(res, 404, 'Not found');
+  try {
+    const data = await cpRequest(method, {}, 8000);
+    return sendJson(res, 200, data == null ? [] : data);
+  } catch (err) {
+    process.stderr.write(`[svg-terminal] ${method}: ` + (err && err.message ? err.message : err) + '\n');
+    return sendJson(res, 200, []);
   }
 }
 
@@ -1571,6 +1618,14 @@ function router(req, res) {
 
   if (req.method === 'POST' && pathname === '/api/sessions/create') {
     handleCreateSession(req, res).catch(err => sendError(res, 500, err.message));
+    return;
+  }
+
+  if (
+    req.method === 'GET' &&
+    (pathname === '/api/cp/remotes' || pathname === '/api/cp/users' || pathname === '/api/cp/groups')
+  ) {
+    handleCpPicklist(req, res, pathname).catch(err => sendError(res, 500, err.message));
     return;
   }
 

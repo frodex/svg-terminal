@@ -441,7 +441,7 @@ function wireTopBar() {
     newSess.addEventListener('click', function(e) {
       e.preventDefault();
       if (mainMenu) mainMenu.classList.remove('visible');
-      void createNewSessionViaApi();
+      void openSessionFormPanel();
     });
   }
 
@@ -1364,6 +1364,7 @@ function init() {
   }
 
   wireTopBar();
+  wireSessionFormPanel();
 
   connectDashboardWs();
   // Keep refreshSessions as fallback for old sessions during transition
@@ -2152,6 +2153,12 @@ let _zoomedSession = null; // which terminal is currently zoomed in multi-focus
 
 function onKeyDown(e) {
   if (e.key === 'Escape') {
+    const sessionPanel = document.getElementById('session-form-panel');
+    if (sessionPanel && sessionPanel.classList.contains('visible')) {
+      closeSessionFormPanel();
+      e.preventDefault();
+      return;
+    }
     const panel = document.getElementById('help-panel');
     if (panel.classList.contains('visible')) {
       panel.classList.remove('visible');
@@ -2733,26 +2740,270 @@ async function refreshSessions() {
   } catch (e) {}
 }
 
-/** Create session via server (claude-proxy or tmux fallback), then refresh cards. */
-async function createNewSessionViaApi() {
-  var name = window.prompt('Session name (leave empty for auto-generated):');
-  if (name === null) return;
+/** Cached /auth/me for session form (admin-only fields). */
+var _authMeCache = null;
+var _sessionFormRemotesCount = 0;
+
+async function fetchAuthMeForSessionForm() {
+  try {
+    var r = await fetch('/auth/me', { credentials: 'same-origin' });
+    _authMeCache = r.ok ? await r.json() : null;
+  } catch (e) {
+    _authMeCache = null;
+  }
+  return _authMeCache;
+}
+
+function sessionFormIsAdmin() {
+  var u = _authMeCache;
+  if (!u) return false;
+  if (u.linuxUser === 'root') return true;
+  return !!u.canApprove;
+}
+
+function getSessionFormProfile() {
+  var el = document.querySelector('input[name="sf-profile"]:checked');
+  return el ? el.value : 'claude';
+}
+
+function updateSessionFormVisibility() {
+  var profile = getSessionFormProfile();
+  document.querySelectorAll('.profile-pill').forEach(function(lab) {
+    var inp = lab.querySelector('input[type="radio"]');
+    lab.classList.toggle('profile-pill--active', !!(inp && inp.checked));
+  });
+
+  var admin = sessionFormIsAdmin();
+  var runRow = document.getElementById('sf-runas-row');
+  if (runRow) {
+    runRow.hidden = !admin;
+  }
+
+  var remoteRow = document.getElementById('sf-remote-row');
+  if (remoteRow) {
+    remoteRow.hidden = !(admin && profile === 'claude' && _sessionFormRemotesCount > 0);
+  }
+
+  var dangerRow = document.getElementById('sf-danger-row');
+  if (dangerRow) {
+    dangerRow.hidden = !(admin && profile === 'claude');
+  }
+
+  var resumeRow = document.getElementById('sf-resume-row');
+  if (resumeRow) {
+    resumeRow.style.display = profile === 'claude' ? 'block' : 'none';
+  }
+
+  var resumeCb = document.getElementById('sf-resume');
+  var claudeId = document.getElementById('sf-claude-id');
+  if (resumeCb && claudeId) {
+    claudeId.disabled = !resumeCb.checked || profile !== 'claude';
+  }
+
+  var pub = document.getElementById('sf-public');
+  var hid = document.getElementById('sf-hidden');
+  var accessRow = document.getElementById('sf-access-row');
+  if (accessRow && pub && hid) {
+    accessRow.hidden = hid.checked || pub.checked;
+  }
+}
+
+async function loadSessionFormPicklists() {
+  var usersEl = document.getElementById('sf-users');
+  var groupsEl = document.getElementById('sf-groups');
+  var remoteEl = document.getElementById('sf-remote');
+  _sessionFormRemotesCount = 0;
+
+  async function load(url) {
+    try {
+      var r = await fetch(url, { credentials: 'same-origin' });
+      if (!r.ok) return [];
+      return await r.json();
+    } catch (e) {
+      return [];
+    }
+  }
+
+  var users = await load('/api/cp/users');
+  if (usersEl) {
+    usersEl.innerHTML = '';
+    (Array.isArray(users) ? users : []).forEach(function(u) {
+      var opt = document.createElement('option');
+      opt.value = typeof u === 'string' ? u : (u.name || u);
+      opt.textContent = opt.value;
+      usersEl.appendChild(opt);
+    });
+  }
+
+  var groups = await load('/api/cp/groups');
+  if (groupsEl) {
+    groupsEl.innerHTML = '';
+    (Array.isArray(groups) ? groups : []).forEach(function(g) {
+      var opt = document.createElement('option');
+      var v = typeof g === 'string' ? g : (g.systemName || g.name);
+      opt.value = v;
+      opt.textContent = typeof g === 'string' ? g : (g.name || v);
+      groupsEl.appendChild(opt);
+    });
+  }
+
+  if (remoteEl) {
+    remoteEl.innerHTML = '';
+    var loc = document.createElement('option');
+    loc.value = '';
+    loc.textContent = 'local';
+    remoteEl.appendChild(loc);
+    var remotes = await load('/api/cp/remotes');
+    if (Array.isArray(remotes)) {
+      _sessionFormRemotesCount = remotes.length;
+      remotes.forEach(function(r) {
+        var opt = document.createElement('option');
+        if (typeof r === 'string') {
+          opt.value = r;
+          opt.textContent = r;
+        } else {
+          opt.value = r.host || r.name || r.id || '';
+          opt.textContent = r.label || r.name || r.host || opt.value;
+        }
+        if (opt.value) remoteEl.appendChild(opt);
+      });
+    }
+  }
+  updateSessionFormVisibility();
+}
+
+function closeSessionFormPanel() {
+  var panel = document.getElementById('session-form-panel');
+  if (!panel) return;
+  panel.classList.remove('visible');
+  panel.setAttribute('aria-hidden', 'true');
+}
+
+async function openSessionFormPanel() {
+  var panel = document.getElementById('session-form-panel');
+  if (!panel) return;
+  await fetchAuthMeForSessionForm();
+  await loadSessionFormPicklists();
+
+  var nameEl = document.getElementById('sf-name');
+  if (nameEl) nameEl.value = '';
+  var claude = document.querySelector('input[name="sf-profile"][value="claude"]');
+  if (claude) claude.checked = true;
+  var wd = document.getElementById('sf-workdir');
+  if (wd) wd.value = '';
+  var h = document.getElementById('sf-hidden');
+  if (h) h.checked = false;
+  var vo = document.getElementById('sf-viewonly');
+  if (vo) vo.checked = false;
+  var p = document.getElementById('sf-public');
+  if (p) p.checked = true;
+  var pw = document.getElementById('sf-password');
+  if (pw) pw.value = '';
+  var dm = document.getElementById('sf-dangermode');
+  if (dm) dm.checked = false;
+  var ru = document.getElementById('sf-resume');
+  if (ru) ru.checked = false;
+  var cid = document.getElementById('sf-claude-id');
+  if (cid) {
+    cid.value = '';
+    cid.disabled = true;
+  }
+  var ra = document.getElementById('sf-runas');
+  if (ra) ra.value = '';
+
+  ['sf-users', 'sf-groups'].forEach(function(id) {
+    var sel = document.getElementById(id);
+    if (sel) {
+      for (var i = 0; i < sel.options.length; i++) sel.options[i].selected = false;
+    }
+  });
+
+  updateSessionFormVisibility();
+  panel.classList.add('visible');
+  panel.setAttribute('aria-hidden', 'false');
+  if (nameEl) nameEl.focus();
+}
+
+function collectMultiSelectValues(id) {
+  var sel = document.getElementById(id);
+  if (!sel) return [];
+  var out = [];
+  for (var i = 0; i < sel.options.length; i++) {
+    if (sel.options[i].selected) out.push(sel.options[i].value);
+  }
+  return out;
+}
+
+async function submitSessionFormFromPanel() {
+  var nameEl = document.getElementById('sf-name');
+  var name = nameEl && nameEl.value.trim();
+  if (!name) {
+    window.alert('Session name is required.');
+    return;
+  }
+
+  var profile = getSessionFormProfile();
+  var payload = {
+    name: name,
+    launchProfile: profile,
+    hidden: document.getElementById('sf-hidden').checked,
+    viewOnly: document.getElementById('sf-viewonly').checked,
+    public: document.getElementById('sf-public').checked
+  };
+
+  var wd = document.getElementById('sf-workdir').value.trim();
+  if (wd) payload.workingDir = wd;
+
+  var runas = document.getElementById('sf-runas');
+  if (sessionFormIsAdmin() && runas && runas.value.trim()) {
+    payload.runAsUser = runas.value.trim();
+  }
+
+  var remoteSel = document.getElementById('sf-remote');
+  var remoteRowEl = document.getElementById('sf-remote-row');
+  if (remoteSel && remoteRowEl && !remoteRowEl.hidden && remoteSel.value) {
+    payload.remoteHost = remoteSel.value;
+  }
+
+  if (!payload.public && !payload.hidden) {
+    var au = collectMultiSelectValues('sf-users');
+    var ag = collectMultiSelectValues('sf-groups');
+    if (au.length) payload.allowedUsers = au;
+    if (ag.length) payload.allowedGroups = ag;
+  }
+
+  var pwb = document.getElementById('sf-password').value;
+  if (pwb) payload.password = pwb;
+
+  if (profile === 'claude' && sessionFormIsAdmin()) {
+    payload.dangerousSkipPermissions = document.getElementById('sf-dangermode').checked;
+  }
+
+  if (profile === 'claude') {
+    var resCb = document.getElementById('sf-resume');
+    if (resCb && resCb.checked) {
+      payload.isResume = true;
+      var cid = document.getElementById('sf-claude-id').value.trim();
+      if (cid) payload.claudeSessionId = cid;
+    }
+  }
+
   try {
     var res = await fetch('/api/sessions/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({
-        name: (name && String(name).trim()) ? String(name).trim() : undefined,
-        launchProfile: 'claude'
-      })
+      body: JSON.stringify(payload)
     });
     var data = {};
-    try { data = await res.json(); } catch (e) {}
+    try {
+      data = await res.json();
+    } catch (e) {}
     if (!res.ok) {
       window.alert(data.error || ('Failed to create session (' + res.status + ')'));
       return;
     }
+    closeSessionFormPanel();
     await refreshSessions();
     var sessionId = (data.session && (data.session.id || data.session.name)) || data.name;
     if (sessionId && terminals.has(sessionId)) {
@@ -2761,6 +3012,38 @@ async function createNewSessionViaApi() {
   } catch (err) {
     window.alert('Could not create session: ' + (err && err.message ? err.message : err));
   }
+}
+
+function wireSessionFormPanel() {
+  var panel = document.getElementById('session-form-panel');
+  if (!panel) return;
+
+  document.getElementById('session-form-close').addEventListener('click', closeSessionFormPanel);
+  document.getElementById('session-form-cancel').addEventListener('click', closeSessionFormPanel);
+  document.getElementById('session-form-backdrop').addEventListener('click', closeSessionFormPanel);
+  document.getElementById('session-form-submit').addEventListener('click', function() {
+    void submitSessionFormFromPanel();
+  });
+
+  document.querySelectorAll('input[name="sf-profile"]').forEach(function(inp) {
+    inp.addEventListener('change', updateSessionFormVisibility);
+  });
+  ['sf-public', 'sf-hidden'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('change', updateSessionFormVisibility);
+  });
+  var resumeCb = document.getElementById('sf-resume');
+  if (resumeCb) {
+    resumeCb.addEventListener('change', function() {
+      var profile = getSessionFormProfile();
+      var claudeId = document.getElementById('sf-claude-id');
+      if (claudeId) claudeId.disabled = !resumeCb.checked || profile !== 'claude';
+    });
+  }
+
+  panel.querySelector('.session-form-dialog').addEventListener('click', function(e) {
+    e.stopPropagation();
+  });
 }
 
 // DEPRECATED (PRD v0.5.0): Titles arrive via WebSocket screen/delta messages

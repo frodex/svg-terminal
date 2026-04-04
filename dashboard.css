@@ -715,6 +715,216 @@ html, body {
   flex: 1;
 }
 
+/* === New session form (claude-proxy ANSI / session-form parity) — palette from ui-web/prototype.html === */
+.session-form-panel {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 450;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.session-form-panel.visible {
+  display: flex;
+}
+.session-form-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+}
+.session-form-dialog {
+  position: relative;
+  width: min(520px, 100%);
+  max-height: min(88vh, 720px);
+  overflow-y: auto;
+  background: #16213e;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 20px 22px 18px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  color: #e0e0e0;
+  font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 13px;
+}
+.session-form-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.session-form-header h2 {
+  margin: 0;
+  font-size: 1.15rem;
+  color: #fff;
+  font-weight: 600;
+}
+.session-form-close {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 22px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 4px 8px;
+}
+.session-form-close:hover {
+  color: #fff;
+}
+.session-form-sub {
+  margin: 0 0 14px;
+  color: #767676;
+  font-size: 0.82rem;
+}
+.session-form-sub .req {
+  color: #4285f4;
+}
+.section-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #999;
+  margin-bottom: 8px;
+}
+.session-form-section {
+  margin-bottom: 14px;
+}
+.session-form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+@media (max-width: 520px) {
+  .session-form-row {
+    grid-template-columns: 1fr;
+  }
+}
+.field-label {
+  display: block;
+  margin-bottom: 4px;
+  color: #ccc;
+  font-size: 0.88rem;
+}
+.field-label .note {
+  color: #767676;
+  font-weight: normal;
+  font-size: 0.78rem;
+}
+.req {
+  color: #4285f4;
+}
+.field-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #333;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  font-size: 0.88rem;
+  font-family: inherit;
+}
+.field-input:focus {
+  outline: none;
+  border-color: #4285f4;
+}
+.field-multiselect {
+  min-height: 100px;
+}
+.launch-profile-pick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.profile-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #333;
+  background: #1a1a2e;
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: #ccc;
+  user-select: none;
+}
+.profile-pill.profile-pill--active {
+  border-color: #4285f4;
+  background: rgba(66, 133, 244, 0.12);
+  color: #fff;
+}
+.profile-pill input {
+  accent-color: #4285f4;
+}
+.key-hint {
+  color: #767676;
+  font-size: 0.72rem;
+}
+.checkbox-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  margin-bottom: 12px;
+}
+.checkbox-row label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: #bbb;
+}
+.inline-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.inline-check code {
+  font-size: 0.75rem;
+  color: #888;
+}
+.session-form-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.btn-session-primary {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 6px;
+  background: #4285f4;
+  color: #fff;
+  font-size: 0.88rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+.btn-session-primary:hover {
+  opacity: 0.92;
+}
+.btn-session-outline {
+  padding: 10px 20px;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: transparent;
+  color: #e0e0e0;
+  font-size: 0.88rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+.btn-session-outline:hover {
+  border-color: #666;
+  color: #fff;
+}
+
 /* Terminal title bar controls */
 .term-controls {
   margin-left: auto;

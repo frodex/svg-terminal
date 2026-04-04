@@ -79,6 +79,89 @@
     </div>
   </div>
 
+  <!-- New session form — fields aligned with claude-proxy session-form.yaml + launch profiles (shell / claude / cursor) -->
+  <div class="session-form-panel" id="session-form-panel" aria-hidden="true">
+    <div class="session-form-backdrop" id="session-form-backdrop"></div>
+    <div class="session-form-dialog" role="dialog" aria-labelledby="session-form-title">
+      <div class="session-form-header">
+        <h2 id="session-form-title">New session</h2>
+        <button type="button" class="session-form-close" id="session-form-close" title="Close">&times;</button>
+      </div>
+      <p class="session-form-sub">Same options as the claude-proxy TUI session form. <span class="req">*</span> = required.</p>
+
+      <div class="session-form-section">
+        <div class="section-label">Session kind</div>
+        <div class="launch-profile-pick" id="sf-profiles" role="radiogroup" aria-label="Launch profile">
+          <label class="profile-pill"><input type="radio" name="sf-profile" value="shell" /> <span>New terminal</span> <span class="key-hint">[t]</span></label>
+          <label class="profile-pill"><input type="radio" name="sf-profile" value="claude" checked /> <span>New Claude session</span> <span class="key-hint">[n]</span></label>
+          <label class="profile-pill"><input type="radio" name="sf-profile" value="cursor" /> <span>New Cursor session</span> <span class="key-hint">[c]</span></label>
+        </div>
+      </div>
+
+      <div class="session-form-section">
+        <label class="field-label" for="sf-name">Session name <span class="req">*</span></label>
+        <input type="text" class="field-input" id="sf-name" placeholder="my-project" autocomplete="off" />
+      </div>
+
+      <div class="session-form-row sf-admin-only" id="sf-runas-row" hidden>
+        <label class="field-label" for="sf-runas">Run as user</label>
+        <input type="text" class="field-input" id="sf-runas" placeholder="linux account" />
+      </div>
+
+      <div class="session-form-row sf-admin-remotes" id="sf-remote-row" hidden>
+        <label class="field-label" for="sf-remote">Remote host</label>
+        <select class="field-input" id="sf-remote"><option value="">local</option></select>
+      </div>
+
+      <div class="session-form-section">
+        <label class="field-label" for="sf-workdir">Working directory</label>
+        <input type="text" class="field-input" id="sf-workdir" placeholder="~ or /path/to/project" />
+      </div>
+
+      <div class="checkbox-row" id="sf-flags-row">
+        <label><input type="checkbox" id="sf-hidden" /> Hidden session</label>
+        <label><input type="checkbox" id="sf-viewonly" /> View-only</label>
+        <label><input type="checkbox" id="sf-public" checked /> Public session</label>
+      </div>
+
+      <div class="session-form-section sf-access-row" id="sf-access-row" hidden>
+        <div class="section-label">Access <span class="note">(private, not hidden)</span></div>
+        <div class="session-form-row">
+          <div>
+            <label class="field-label" for="sf-users">Allowed users</label>
+            <select class="field-input field-multiselect" id="sf-users" multiple size="4"></select>
+          </div>
+          <div>
+            <label class="field-label" for="sf-groups">Allowed groups</label>
+            <select class="field-input field-multiselect" id="sf-groups" multiple size="4"></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="session-form-row">
+        <div>
+          <label class="field-label" for="sf-password">Password</label>
+          <input type="password" class="field-input" id="sf-password" placeholder="Optional" autocomplete="new-password" />
+        </div>
+        <div class="sf-claude-admin" id="sf-danger-row" hidden>
+          <label class="field-label">Skip permissions <span class="note">(admin, Claude)</span></label>
+          <label class="inline-check"><input type="checkbox" id="sf-dangermode" /> Enable <code>--dangerously-skip-permissions</code></label>
+        </div>
+      </div>
+
+      <div class="session-form-section sf-claude-only" id="sf-resume-row">
+        <label class="inline-check"><input type="checkbox" id="sf-resume" /> Resume Claude session</label>
+        <label class="field-label" for="sf-claude-id">Claude session ID</label>
+        <input type="text" class="field-input" id="sf-claude-id" placeholder="UUID when resuming" disabled />
+      </div>
+
+      <div class="session-form-actions">
+        <button type="button" class="btn-session-primary" id="session-form-submit">Create session</button>
+        <button type="button" class="btn-session-outline" id="session-form-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Input status bar (keystrokes captured at document level) -->
   <div class="input-bar" id="input-bar">
     <span class="status-dot" id="ws-status"></span>
