@@ -2,7 +2,7 @@
 
 **Goal:** Add a fixed top menu bar to the 3D dashboard that consolidates group-level controls (layout, session management) and serves as the integration point for OAuth login and claude-proxy web UI features.
 
-**Status:** Not started
+**Status:** Core UI implemented (2026-04-04): `#top-bar` in `index.html`, styles in `dashboard.css`, wiring + ghost preview + layout reserve + `/auth/me` pill in `dashboard.mjs`. Card headers no longer include ▦ / ⬜. Session CRUD menu items are placeholders until claude-proxy API wiring.
 
 ---
 

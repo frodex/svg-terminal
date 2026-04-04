@@ -233,6 +233,7 @@ function cycleLayout() {
   activeLayout = LAYOUT_ORDER[(idx + 1) % LAYOUT_ORDER.length];
   calculateFocusedLayout();
   showLayoutIndicator();
+  updateTopBarLayoutLabel();
 }
 
 // Show a brief overlay indicating the current layout name.
@@ -251,6 +252,203 @@ function showLayoutIndicator() {
   indicator._fadeTimer = setTimeout(function() {
     indicator.style.opacity = '0';
   }, 1500);
+}
+
+/** Apply named layout from top bar (multi-focus only). */
+function setActiveLayoutFromMenu(layoutKey) {
+  if (focusedSessions.size < 2) return;
+  if (!LAYOUTS[layoutKey]) return;
+  activeLayout = layoutKey;
+  calculateFocusedLayout();
+  showLayoutIndicator();
+  updateTopBarLayoutLabel();
+}
+
+/** Slot list for ghost preview (percent of content area below top bar). */
+function getSlotsForGhost(layoutKey) {
+  if (layoutKey === 'auto') {
+    return [{ x: 0, y: 0, w: 100, h: 100 }];
+  }
+  if (layoutKey === 'n-stacked') {
+    var n = Math.max(1, focusedSessions.size);
+    return generateNStacked(n);
+  }
+  var L = LAYOUTS[layoutKey];
+  if (!L || !L.slots) return [{ x: 0, y: 0, w: 100, h: 100 }];
+  return L.slots;
+}
+
+var _ghostFadeTimer = null;
+var _ghostHoverKey = null;
+
+function clearGhostLayoutPreview() {
+  var host = document.getElementById('ghost-layout-preview');
+  if (!host) return;
+  host.innerHTML = '';
+  host.classList.remove('visible');
+  host.setAttribute('aria-hidden', 'true');
+  clearTimeout(_ghostFadeTimer);
+  _ghostFadeTimer = null;
+  _ghostHoverKey = null;
+}
+
+function renderGhostLayoutPreview(layoutKey) {
+  var host = document.getElementById('ghost-layout-preview');
+  if (!host) return;
+  clearTimeout(_ghostFadeTimer);
+  host.innerHTML = '';
+  var slots = getSlotsForGhost(layoutKey);
+  for (var i = 0; i < slots.length; i++) {
+    var s = slots[i];
+    var el = document.createElement('div');
+    el.className = 'ghost-slot';
+    el.style.left = s.x + '%';
+    el.style.top = s.y + '%';
+    el.style.width = s.w + '%';
+    el.style.height = s.h + '%';
+    host.appendChild(el);
+  }
+  host.classList.add('visible');
+  host.setAttribute('aria-hidden', 'false');
+  _ghostHoverKey = layoutKey;
+  _ghostFadeTimer = setTimeout(function() {
+    for (var j = 0; j < host.children.length; j++) {
+      host.children[j].classList.add('ghost-slot--faded');
+    }
+  }, 1000);
+}
+
+function updateTopBarLayoutLabel() {
+  var el = document.getElementById('layout-current-label');
+  if (!el) return;
+  var layout = LAYOUTS[activeLayout];
+  el.textContent = layout ? layout.name : activeLayout;
+  var opts = document.querySelectorAll('[data-layout-key]');
+  for (var i = 0; i < opts.length; i++) {
+    var k = opts[i].getAttribute('data-layout-key');
+    opts[i].classList.toggle('active', k === activeLayout);
+  }
+}
+
+function fitAllFocused() {
+  if (focusedSessions.size < 2) return;
+  for (var name of focusedSessions) {
+    var t = terminals.get(name);
+    if (t) optimizeTermToCard(t);
+  }
+}
+
+function maxAllFocused() {
+  if (focusedSessions.size < 2) return;
+  for (var name of focusedSessions) {
+    var t = terminals.get(name);
+    if (t) maximizeCardToSlot(t);
+  }
+}
+
+function updateTopBarVisibility() {
+  var multi = document.getElementById('top-bar-multi');
+  if (multi) multi.style.display = focusedSessions.size >= 2 ? 'flex' : 'none';
+  updateTopBarLayoutLabel();
+}
+
+function refreshTopBarUser() {
+  var pill = document.getElementById('top-user-pill');
+  if (!pill) return;
+  fetch('/auth/me', { credentials: 'same-origin' })
+    .then(function(r) { return r.ok ? r.json() : Promise.reject(); })
+    .then(function(u) {
+      pill.textContent = u.displayName || u.email || u.linuxUser || 'Signed in';
+      pill.title = u.email || '';
+    })
+    .catch(function() {
+      pill.textContent = 'Guest';
+      pill.title = 'Not signed in — use Menu → Login';
+    });
+}
+
+function wireTopBar() {
+  var hamburger = document.getElementById('top-menu-hamburger');
+  var mainMenu = document.getElementById('main-menu-dropdown');
+  var layoutBtn = document.getElementById('layout-selector-btn');
+  var layoutDd = document.getElementById('layout-dropdown');
+  var fitAll = document.getElementById('top-fit-all');
+  var maxAll = document.getElementById('top-max-all');
+  var helpMenu = document.getElementById('menu-help');
+  var logoutMenu = document.getElementById('menu-logout');
+
+  if (hamburger && mainMenu) {
+    hamburger.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var open = mainMenu.classList.toggle('visible');
+      if (layoutDd) layoutDd.classList.remove('visible');
+      if (open) refreshTopBarUser();
+    });
+  }
+  if (helpMenu) {
+    helpMenu.addEventListener('click', function(e) {
+      e.preventDefault();
+      toggleHelp();
+      if (mainMenu) mainMenu.classList.remove('visible');
+    });
+  }
+  if (logoutMenu) {
+    logoutMenu.addEventListener('click', function(e) {
+      e.preventDefault();
+      fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }).then(function() {
+        refreshTopBarUser();
+        if (mainMenu) mainMenu.classList.remove('visible');
+      });
+    });
+  }
+  if (layoutBtn && layoutDd) {
+    layoutBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      layoutDd.classList.toggle('visible');
+      if (mainMenu) mainMenu.classList.remove('visible');
+    });
+  }
+  if (fitAll) fitAll.addEventListener('click', function() { fitAllFocused(); });
+  if (maxAll) maxAll.addEventListener('click', function() { maxAllFocused(); });
+
+  var layoutOptions = document.querySelectorAll('[data-layout-key]');
+  for (var i = 0; i < layoutOptions.length; i++) {
+    layoutOptions[i].addEventListener('mouseenter', function(ev) {
+      var key = ev.currentTarget.getAttribute('data-layout-key');
+      if (focusedSessions.size >= 2) renderGhostLayoutPreview(key);
+    });
+    layoutOptions[i].addEventListener('mouseleave', function() {
+      clearGhostLayoutPreview();
+    });
+    layoutOptions[i].addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      var key = ev.currentTarget.getAttribute('data-layout-key');
+      setActiveLayoutFromMenu(key);
+      clearGhostLayoutPreview();
+      if (layoutDd) layoutDd.classList.remove('visible');
+    });
+  }
+
+  document.addEventListener('click', function(ev) {
+    if (ev.target.closest && ev.target.closest('#top-bar')) return;
+    if (mainMenu) mainMenu.classList.remove('visible');
+    if (layoutDd) layoutDd.classList.remove('visible');
+    clearGhostLayoutPreview();
+  });
+
+  var placeholderMenus = ['menu-new-session', 'menu-restart', 'menu-fork'];
+  for (var pm = 0; pm < placeholderMenus.length; pm++) {
+    var pel = document.getElementById(placeholderMenus[pm]);
+    if (pel) {
+      pel.addEventListener('click', function(e) {
+        e.preventDefault();
+        if (mainMenu) mainMenu.classList.remove('visible');
+      });
+    }
+  }
+
+  updateTopBarVisibility();
+  refreshTopBarUser();
 }
 
 // Assign cards to slots: largest terminal (by cell count) → largest slot (by area).
@@ -467,6 +665,8 @@ const FLOOR_Y = -300;
 const MORPH_DURATION = 1.5;
 const BILLBOARD_SLERP = 0.08;
 const SIDEBAR_WIDTH = 140;
+/** Fixed top menu bar height — must match `.top-bar` CSS and ghost preview inset */
+const TOP_BAR_H = 44;
 const FOCUS_DIST = 350;
 
 // DOM scale trick: card DOM is oversized by DOM_SCALE, CSS3DObject renders at WORLD_SCALE.
@@ -479,6 +679,7 @@ var WORLD_SCALE = 1 / DOM_SCALE;
 // RENDER_SCALE=2 means renderer canvas is 2x viewport, scaled down via CSS transform.
 // Can be reduced to 1 by performance system for lower-end hardware.
 var RENDER_SCALE = 2;
+var RENDER_SCALE_DEFAULT = 2;
 
 // Camera position — closer to match original visual density
 const HOME_POS = new THREE.Vector3(-15, 20, 900);
@@ -496,7 +697,6 @@ let activeInputSession = null;
 var perfMode = 'auto';
 var perfTier = 0;
 var _savedRingSpeed = null;
-var _savedRenderScale = null;
 var _perfFrameTimes = [];
 var _perfCheckStart = 0;
 var _perfCheckPhase = 0;
@@ -597,7 +797,7 @@ function computeRingPos(index, total, config, angle) {
 // Camera looks straight at origin. No offsets. Everything is a card in one frustum.
 // Each terminal gets a screen rectangle proportional to its cell count.
 // The card sits at whatever Z depth makes its world size fill that screen rectangle.
-const STATUS_BAR_H = 50;
+const STATUS_BAR_H = 50; /* bottom input bar reserve — cards avoid this strip when focused */
 const LAYOUT_GAP_PX = 8;
 
 function calculateFocusedLayout() {
@@ -618,14 +818,12 @@ function calculateFocusedLayout() {
   }
   // 'auto' layout — fall through to masonry bin-packer below
 
-  // Full viewport — sidebar and status bar are just overlays, not subtracted.
-  // But we avoid placing cards under them.
+  // Full viewport — sidebar, top bar, and status bar are overlays; layout avoids them.
   const screenW = window.innerWidth;
   const screenH = window.innerHeight;
 
-  // Available region: left of sidebar, above status bar
   const availW = screenW - SIDEBAR_WIDTH;
-  const availH = screenH - STATUS_BAR_H;
+  const availH = screenH - STATUS_BAR_H - TOP_BAR_H;
 
   // Build cards with cell counts — skip user-positioned terminals
   const names = [...focusedSessions];
@@ -725,9 +923,9 @@ function calculateFocusedLayout() {
     const t = terminals.get(p.name);
     if (!t) continue;
 
-    // Screen center of this card (in full viewport coordinates)
+    // Screen center of this card (full viewport coordinates; content below top bar)
     p._cx = originX + colX[p.col];
-    p._cy = originY + p.y * scale + (p.sh * scale) / 2;
+    p._cy = TOP_BAR_H + originY + p.y * scale + (p.sh * scale) / 2;
     p._fracH = (p.sh * scale) / screenH;
     p._depth = p.worldH / (p._fracH * 2 * halfTan);
   }
@@ -783,7 +981,7 @@ function calculateSlotLayout(slots) {
   var screenW = window.innerWidth;
   var screenH = window.innerHeight;
   var availW = screenW - SIDEBAR_WIDTH;
-  var availH = screenH - STATUS_BAR_H;
+  var availH = screenH - STATUS_BAR_H - TOP_BAR_H;
 
   // Build card info — same structure as masonry path
   var names = [...focusedSessions];
@@ -861,9 +1059,9 @@ function calculateSlotLayout(slots) {
       continue;
     }
 
-    // Convert slot percentages to pixel positions within usable space
+    // Convert slot percentages to pixel positions within usable space (below top bar)
     var slotPxX = (a.slot.x / 100) * availW;
-    var slotPxY = (a.slot.y / 100) * availH;
+    var slotPxY = TOP_BAR_H + (a.slot.y / 100) * availH;
     var slotPxW = (a.slot.w / 100) * availW;
     var slotPxH = (a.slot.h / 100) * availH;
 
@@ -963,6 +1161,11 @@ function updatePerfIndicator() {
   el.title = 'Performance: ' + tierName + ' (click to cycle, current: ' + perfMode + ')';
 }
 
+function resizeRenderer() {
+  renderer.setSize(window.innerWidth * RENDER_SCALE, window.innerHeight * RENDER_SCALE);
+  renderer.domElement.style.transform = 'scale(' + (1 / RENDER_SCALE) + ')';
+}
+
 function applyPerfTier(tier) {
   var prev = perfTier;
   perfTier = tier;
@@ -975,11 +1178,9 @@ function applyPerfTier(tier) {
     RING.inner.spinSpeed = 0;
     if (shadowGroup) shadowGroup.visible = false;
     document.querySelectorAll('.specular-overlay').forEach(function(e) { e.style.display = 'none'; });
-    if (_savedRenderScale === null && RENDER_SCALE > 1) {
-      _savedRenderScale = RENDER_SCALE;
+    if (RENDER_SCALE > 1) {
       RENDER_SCALE = 1;
-      renderer.setSize(window.innerWidth * RENDER_SCALE, window.innerHeight * RENDER_SCALE);
-      renderer.domElement.style.transform = 'scale(' + (1 / RENDER_SCALE) + ')';
+      resizeRenderer();
     }
   } else {
     if (_savedRingSpeed) {
@@ -989,11 +1190,9 @@ function applyPerfTier(tier) {
     }
     if (shadowGroup) shadowGroup.visible = true;
     document.querySelectorAll('.specular-overlay').forEach(function(e) { e.style.display = ''; });
-    if (_savedRenderScale !== null) {
-      RENDER_SCALE = _savedRenderScale;
-      _savedRenderScale = null;
-      renderer.setSize(window.innerWidth * RENDER_SCALE, window.innerHeight * RENDER_SCALE);
-      renderer.domElement.style.transform = 'scale(' + (1 / RENDER_SCALE) + ')';
+    if (RENDER_SCALE !== RENDER_SCALE_DEFAULT) {
+      RENDER_SCALE = RENDER_SCALE_DEFAULT;
+      resizeRenderer();
     }
   }
 
@@ -1043,13 +1242,12 @@ function init() {
   camera.lookAt(HOME_TARGET);
 
   renderer = new CSS3DRenderer();
-  renderer.setSize(window.innerWidth * RENDER_SCALE, window.innerHeight * RENDER_SCALE);
   renderer.domElement.style.position = 'fixed';
   renderer.domElement.style.top = '0';
   renderer.domElement.style.left = '0';
   renderer.domElement.style.zIndex = '1';
   renderer.domElement.style.transformOrigin = '0 0';
-  renderer.domElement.style.transform = 'scale(' + (1 / RENDER_SCALE) + ')';
+  resizeRenderer();
   document.body.appendChild(renderer.domElement);
 
   terminalGroup = new THREE.Group();
@@ -1155,6 +1353,8 @@ function init() {
       helpControls.appendChild(row);
     }
   }
+
+  wireTopBar();
 
   connectDashboardWs();
   // Keep refreshSessions as fallback for old sessions during transition
@@ -1435,8 +1635,7 @@ function onResize() {
 
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth * RENDER_SCALE, window.innerHeight * RENDER_SCALE);
-  renderer.domElement.style.transform = 'scale(' + (1 / RENDER_SCALE) + ')';
+  resizeRenderer();
   renderer.render(scene, camera);
 
   if (perfMode !== 'auto') {
@@ -2306,13 +2505,6 @@ function createTerminalDOM(sessionName) {
       { label: '⊞', title: 'Fit card to terminal', fn: function() {
         const t = terminals.get(sessionName);
         if (t) optimizeCardToTerm(t);
-      }},
-      { label: '⬜', title: 'Maximize card to layout slot', fn: function() {
-        var t = terminals.get(sessionName);
-        if (t) maximizeCardToSlot(t);
-      }},
-      { label: '▦', title: 'Cycle layout (multi-focus)', fn: function() {
-        if (focusedSessions.size > 0) cycleLayout();
       }}
     ],
     contentEl: obj
@@ -2949,6 +3141,7 @@ function focusTerminal(sessionName) {
   document.getElementById('input-target').textContent = sessionName;
   showTermControls(sessionName);
   sendFocusState();
+  updateTopBarVisibility();
 }
 
 // Add a terminal to the multi-focus set (ctrl+click)
@@ -2959,6 +3152,7 @@ function addToFocus(sessionName) {
 
   if (focusedSessions.has(sessionName)) {
     setActiveInput(sessionName);
+    updateTopBarVisibility();
     return;
   }
   lastAddToFocusTime = performance.now();
@@ -2977,6 +3171,7 @@ function addToFocus(sessionName) {
   document.getElementById('input-bar').classList.add('visible');
   document.getElementById('input-target').textContent = activeInputSession;
   sendFocusState();
+  updateTopBarVisibility();
 }
 
 // Set which focused terminal receives input
@@ -3064,6 +3259,7 @@ function removeFromFocus(sessionName) {
   assignRings(); // reassign ring positions including the restored terminal
   calculateFocusedLayout();
   sendFocusState();
+  updateTopBarVisibility();
 }
 
 // Restore all focused terminals
@@ -3144,6 +3340,7 @@ function unfocusTerminal() {
   if (perfTier >= 2) syncPerfTier2Visibility();
 
   sendFocusState();
+  updateTopBarVisibility();
 }
 
 // === Animation Loop ===

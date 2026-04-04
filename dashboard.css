@@ -236,7 +236,7 @@ html, body {
 /* === Thumbnail Sidebar === */
 .thumbnail-sidebar {
   position: fixed;
-  top: 0;
+  top: 44px; /* below fixed top menu bar */
   right: 0;
   bottom: 0;
   width: 140px;
@@ -395,37 +395,241 @@ html, body {
 .perf-indicator.tier-1 { background: rgba(255, 200, 0, 0.2); color: #ffc800; }
 .perf-indicator.tier-2 { background: rgba(255, 80, 80, 0.2); color: #ff5050; }
 
-/* === Help Button + Panel (frosted glass) === */
-.help-btn {
+/* === Top menu bar (frosted glass — matches help panel) === */
+.top-bar {
   position: fixed;
-  top: 20px;
-  left: 20px;
-  z-index: 300;
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  color: rgba(255, 255, 255, 0.6);
-  font-size: 18px;
-  font-weight: 600;
-  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 44px;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.2s, color 0.2s;
+  align-items: stretch;
+  gap: 0;
+  padding: 0 8px 0 12px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  z-index: 320;
+  font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
 }
 
-.help-btn:hover {
-  background: rgba(255, 255, 255, 0.2);
+.top-bar-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+
+.top-bar-section--right {
+  margin-left: auto;
+}
+
+.top-bar-hamburger {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 6px;
+  line-height: 1;
+}
+.top-bar-hamburger:hover {
+  background: rgba(255, 255, 255, 0.1);
   color: #fff;
+}
+
+.main-menu-dropdown {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 220px;
+  padding: 6px;
+  background: rgba(28, 28, 36, 0.96);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  z-index: 400;
+}
+.main-menu-dropdown.visible {
+  display: block;
+}
+.main-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: none;
+  font-family: inherit;
+}
+.main-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.main-menu-item--btn {
+  border: none;
+}
+.main-menu-sep {
+  display: block;
+  height: 1px;
+  margin: 6px 4px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.top-bar-multi {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding-left: 12px;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.layout-selector-wrap {
+  position: relative;
+}
+.layout-selector-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px 5px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #ccc;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.layout-selector-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+.layout-label-prefix {
+  opacity: 0.65;
+}
+.layout-caret {
+  font-size: 10px;
+  opacity: 0.6;
+  margin-left: 2px;
+}
+
+.layout-dropdown {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 200px;
+  max-height: min(70vh, 360px);
+  overflow-y: auto;
+  padding: 4px;
+  background: rgba(28, 28, 36, 0.96);
+  backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  z-index: 400;
+}
+.layout-dropdown.visible {
+  display: block;
+}
+.layout-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #ccc;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.layout-option:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+.layout-option.active {
+  color: #5c9cff;
+  font-weight: 600;
+}
+
+.top-bar-action {
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #ccc;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.top-bar-action:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.user-pill {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.75);
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Ghost layout preview — slot outlines over viewport */
+.ghost-layout-preview {
+  position: fixed;
+  top: 44px;
+  left: 0;
+  right: 140px;
+  bottom: 50px;
+  pointer-events: none;
+  z-index: 250;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.ghost-layout-preview.visible {
+  opacity: 1;
+}
+.ghost-slot {
+  position: absolute;
+  box-sizing: border-box;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  transition: background 0.6s ease, border-color 0.6s ease, backdrop-filter 0.6s ease;
+}
+.ghost-slot--faded {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 2px solid rgba(120, 120, 130, 0.85);
+}
+
+/* Help: floating ? hidden — use Menu → Help (top bar) */
+.help-btn {
+  display: none !important;
 }
 
 .help-panel {
   position: fixed;
-  top: 66px;
+  top: 56px;
   left: 20px;
   z-index: 300;
   opacity: 0;

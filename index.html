@@ -15,6 +15,50 @@
   </script>
 </head>
 <body>
+  <!-- Top menu bar: session + layout (multi-focus) + identity -->
+  <nav class="top-bar" id="top-bar" aria-label="Main menu">
+    <div class="top-bar-section">
+      <button type="button" class="top-bar-hamburger" id="top-menu-hamburger" title="Menu">☰</button>
+      <div class="main-menu-dropdown" id="main-menu-dropdown" role="menu">
+        <a href="#" class="main-menu-item" id="menu-new-session" role="menuitem">New session…</a>
+        <a href="#" class="main-menu-item" id="menu-restart" role="menuitem">Restart session…</a>
+        <a href="#" class="main-menu-item" id="menu-fork" role="menuitem">Fork session…</a>
+        <span class="main-menu-sep"></span>
+        <a href="#" class="main-menu-item" id="menu-help" role="menuitem">Help</a>
+        <a href="/login" class="main-menu-item" id="menu-login" role="menuitem">Login</a>
+        <button type="button" class="main-menu-item main-menu-item--btn" id="menu-logout" role="menuitem">Log out</button>
+      </div>
+    </div>
+    <div class="top-bar-section top-bar-multi" id="top-bar-multi">
+      <div class="layout-selector-wrap">
+        <button type="button" class="layout-selector-btn" id="layout-selector-btn" title="Choose layout">
+          <span class="layout-label-prefix">Layout:</span>
+          <span id="layout-current-label">Auto</span>
+          <span class="layout-caret">▾</span>
+        </button>
+        <div class="layout-dropdown" id="layout-dropdown" role="listbox">
+          <button type="button" class="layout-option" data-layout-key="auto" role="option">Auto</button>
+          <button type="button" class="layout-option" data-layout-key="2up-h" role="option">2-Up Horizontal</button>
+          <button type="button" class="layout-option" data-layout-key="2up-v" role="option">2-Up Vertical</button>
+          <button type="button" class="layout-option" data-layout-key="1main-2side" role="option">1 Main + 2 Side</button>
+          <button type="button" class="layout-option" data-layout-key="3col" role="option">3 Columns</button>
+          <button type="button" class="layout-option" data-layout-key="2x2" role="option">2×2 Grid</button>
+          <button type="button" class="layout-option" data-layout-key="2top-1bottom" role="option">2 Top + 1 Bottom</button>
+          <button type="button" class="layout-option" data-layout-key="1main-4mini" role="option">1 Main + 4 Mini</button>
+          <button type="button" class="layout-option" data-layout-key="n-stacked" role="option">Stacked Rows</button>
+        </div>
+      </div>
+      <button type="button" class="top-bar-action" id="top-fit-all" title="Fit terminal to card for all focused">⊡ Fit all</button>
+      <button type="button" class="top-bar-action" id="top-max-all" title="Maximize each card to its layout slot">⬜ Max all</button>
+    </div>
+    <div class="top-bar-section top-bar-section--right">
+      <span class="user-pill" id="top-user-pill" title="">…</span>
+    </div>
+  </nav>
+
+  <!-- Ghost layout preview (multi-focus layout hover) -->
+  <div class="ghost-layout-preview" id="ghost-layout-preview" aria-hidden="true"></div>
+
   <!-- Thumbnail sidebar -->
   <div class="thumbnail-sidebar" id="sidebar"></div>
 
