@@ -657,10 +657,15 @@
         try {
           var fe = window.frameElement;
           if (!fe) return;
+          var rootEl = document.documentElement;
           requestAnimationFrame(function() {
-            fe.style.opacity = '0.9999';
-            void fe.offsetHeight;
-            fe.style.opacity = '';
+            requestAnimationFrame(function() {
+              fe.style.opacity = '0.9999';
+              rootEl.setAttribute('data-ts', String(Date.now()));
+              void fe.offsetHeight;
+              fe.style.opacity = '';
+              rootEl.removeAttribute('data-ts');
+            });
           });
         } catch (e) {}
       }

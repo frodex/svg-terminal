@@ -1174,14 +1174,32 @@ function connectDashboardWs() {
 }
 
 // Chrome/CSS3D: embedded <object> SVG often fails to composite updated DOM until scroll
-// or another invalidation. Nudge the object layer after terminal content changes.
-function scheduleEmbeddedSvgRepaint(obj) {
+// or another invalidation. Nudge layers after terminal content changes.
+// Do not touch t.dom.style.transform — CSS3DRenderer owns it every frame.
+function scheduleTerminalSurfaceRepaint(obj, t) {
   if (!obj) return;
   requestAnimationFrame(function() {
     requestAnimationFrame(function() {
-      obj.style.transform = 'translateZ(0)';
-      void obj.offsetHeight;
-      obj.style.transform = '';
+      function bumpTranslateZ(el) {
+        if (!el) return;
+        el.style.transform = 'translateZ(0)';
+        void el.offsetHeight;
+        el.style.transform = '';
+      }
+      function bumpOutline(el) {
+        if (!el) return;
+        var o = el.style.outline;
+        el.style.outline = '1px solid transparent';
+        void el.offsetHeight;
+        el.style.outline = o;
+      }
+      bumpTranslateZ(obj);
+      if (t && t.dom) {
+        bumpOutline(t.dom.querySelector('.terminal-inner'));
+      }
+      if (renderer && scene && camera) {
+        renderer.render(scene, camera);
+      }
     });
   });
 }
@@ -1215,7 +1233,7 @@ function routeDashboardMessage(msg) {
       var obj = t.dom ? t.dom.querySelector('object') : null;
       if (obj && obj.contentWindow && typeof obj.contentWindow.renderMessage === 'function') {
         obj.contentWindow.renderMessage(msg);
-        scheduleEmbeddedSvgRepaint(obj);
+        scheduleTerminalSurfaceRepaint(obj, t);
       } else {
         // SVG not loaded yet — queue the message, flush when object loads
         if (!t._pendingMessages) t._pendingMessages = [];
@@ -2718,7 +2736,7 @@ function addTerminal(sessionName, cols, rows) {
               termObj.contentWindow.renderMessage(pending[p]);
             }
           }
-          scheduleEmbeddedSvgRepaint(termObj);
+          scheduleTerminalSurfaceRepaint(termObj, terminals.get(sessionName));
         }
         // Initial thumbnail snapshot once main SVG has content
         t._thumbDirty = true;
