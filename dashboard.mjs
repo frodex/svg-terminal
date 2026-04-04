@@ -436,7 +436,16 @@ function wireTopBar() {
     clearGhostLayoutPreview();
   });
 
-  var placeholderMenus = ['menu-new-session', 'menu-restart', 'menu-fork'];
+  var newSess = document.getElementById('menu-new-session');
+  if (newSess) {
+    newSess.addEventListener('click', function(e) {
+      e.preventDefault();
+      if (mainMenu) mainMenu.classList.remove('visible');
+      void createNewSessionViaApi();
+    });
+  }
+
+  var placeholderMenus = ['menu-restart', 'menu-fork'];
   for (var pm = 0; pm < placeholderMenus.length; pm++) {
     var pel = document.getElementById(placeholderMenus[pm]);
     if (pel) {
@@ -2722,6 +2731,36 @@ async function refreshSessions() {
       if (focusedSessions.size > 0) calculateFocusedLayout();
     }
   } catch (e) {}
+}
+
+/** Create session via server (claude-proxy or tmux fallback), then refresh cards. */
+async function createNewSessionViaApi() {
+  var name = window.prompt('Session name (leave empty for auto-generated):');
+  if (name === null) return;
+  try {
+    var res = await fetch('/api/sessions/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        name: (name && String(name).trim()) ? String(name).trim() : undefined,
+        launchProfile: 'claude'
+      })
+    });
+    var data = {};
+    try { data = await res.json(); } catch (e) {}
+    if (!res.ok) {
+      window.alert(data.error || ('Failed to create session (' + res.status + ')'));
+      return;
+    }
+    await refreshSessions();
+    var sessionId = (data.session && (data.session.id || data.session.name)) || data.name;
+    if (sessionId && terminals.has(sessionId)) {
+      focusTerminal(sessionId);
+    }
+  } catch (err) {
+    window.alert('Could not create session: ' + (err && err.message ? err.message : err));
+  }
 }
 
 // DEPRECATED (PRD v0.5.0): Titles arrive via WebSocket screen/delta messages

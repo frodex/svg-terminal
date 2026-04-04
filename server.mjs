@@ -547,6 +547,63 @@ async function handleSessions(req, res) {
   sendJson(res, 200, sessions);
 }
 
+/**
+ * Create a new tmux-backed session: try claude-proxy JSON-RPC `createSession` first,
+ * then fall back to local `tmux new-session` if the proxy socket is unavailable.
+ * POST body (optional JSON): { name?: string, launchProfile?: string }
+ */
+async function handleCreateSession(req, res) {
+  const auth = getAuthUser(req);
+  const linuxUser = auth && auth.linux_user ? auth.linux_user : CP_DEFAULT_USER;
+
+  let body = {};
+  try {
+    const raw = await readBody(req);
+    if (raw) body = JSON.parse(raw);
+  } catch (e) {
+    return sendError(res, 400, 'Invalid JSON');
+  }
+
+  const launchProfile = typeof body.launchProfile === 'string' && body.launchProfile.trim()
+    ? body.launchProfile.trim()
+    : 'claude';
+
+  let baseName = typeof body.name === 'string' && body.name.trim()
+    ? body.name.trim().replace(/[^a-zA-Z0-9_.-]/g, '_').substring(0, 64)
+    : '';
+
+  if (!baseName) {
+    baseName = 'svg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  }
+
+  try {
+    const result = await cpRequest(
+      'createSession',
+      { user: linuxUser, body: { name: baseName, launchProfile } },
+      120000
+    );
+    return sendJson(res, 201, { ok: true, source: 'claude-proxy', session: result });
+  } catch (err) {
+    process.stderr.write('[svg-terminal] createSession (cp): ' + (err && err.message ? err.message : err) + '\n');
+  }
+
+  let tmuxName = baseName;
+  try {
+    await tmuxAsync('has-session', '-t', tmuxName);
+    tmuxName = baseName + '-' + Date.now().toString(36);
+  } catch (e) {
+    /* name free */
+  }
+
+  try {
+    await tmuxAsync('new-session', '-d', '-s', tmuxName, '-x', '80', '-y', '24');
+    return sendJson(res, 201, { ok: true, source: 'tmux', name: tmuxName });
+  } catch (err2) {
+    const msg = err2 && err2.message ? err2.message : String(err2);
+    return sendError(res, 500, 'Could not create session: ' + msg);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // WebSocket helpers
 // ---------------------------------------------------------------------------
@@ -1571,6 +1628,10 @@ function router(req, res) {
       sendError(res, 405, 'GET or POST only');
       return;
     }
+    if (pathname === '/api/sessions/create' && req.method === 'POST') {
+      handleCreateSession(req, res).catch(err => sendError(res, 500, err.message));
+      return;
+    }
     if (pathname === '/api/sessions') {
       handleSessions(req, res).catch(err => sendError(res, 500, err.message));
       return;
@@ -1578,6 +1639,9 @@ function router(req, res) {
     if (pathname === '/api/proxy') {
       handleProxy(req, res, url.searchParams);
       return;
+    }
+    if (pathname === '/mockup') {
+      return serveHtml(req, res, 'ui-web/top-menu-bar-mockup.html');
     }
     if (pathname === '/font-test.html') {
       try {
