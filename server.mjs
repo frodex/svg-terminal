@@ -139,6 +139,11 @@ function ensureCpSocket() {
   };
   cpSock.on('close', onDead);
   cpSock.on('error', onDead);
+  cpSock.once('connect', () => {
+    void cpResubscribeAll().catch((err) => {
+      console.warn('[claude-proxy] resubscribe-all failed:', err?.message || err);
+    });
+  });
   return cpSock;
 }
 
@@ -193,6 +198,22 @@ async function cpMaybeUnsub(sessionId) {
     cpSubscribeCounts.delete(sessionId);
     await cpRequest('unsubscribe', { sessionId }).catch(() => {});
   }
+}
+
+// After claude-proxy restarts, the Unix socket reconnects but the proxy process
+// drops all subscribe state. svg-terminal still has cpSubscribeCounts + handlers;
+// without re-sending subscribe, terminal events never arrive and cards look frozen.
+async function cpResubscribeAll() {
+  if (cpSubscribeCounts.size === 0) return;
+  for (const [sessionId, rec] of cpSubscribeCounts) {
+    if (!rec || rec.count <= 0) continue;
+    try {
+      await cpRequest('subscribe', { sessionId, user: rec.user }, 15000);
+    } catch (err) {
+      console.warn(`[claude-proxy] resubscribe ${sessionId} failed:`, err?.message || err);
+    }
+  }
+  await cpPushFullScreensAfterCpResubscribe();
 }
 
 /** Legacy /ws/terminal path: bridge browser WebSocket to claude-proxy via Unix socket */
@@ -708,6 +729,43 @@ function bridgeClaudeProxySession(session, cpUser) {
   });
 
   return watcher;
+}
+
+// After reconnect, claude-proxy often emits incremental deltas before any full screen.
+// Dashboard clients treat the first frame as authoritative only for `type: 'screen'`, so
+// push a full snapshot after resubscribe (same shape as initial discovery).
+async function cpPushFullScreensAfterCpResubscribe() {
+  for (const [sessionId, rec] of cpSubscribeCounts) {
+    if (!rec || rec.count <= 0) continue;
+    const watcher = sessionWatchers.get(sessionId + ':0');
+    if (!watcher || watcher.subscribers.size === 0) continue;
+    try {
+      const state = await cpRequest(
+        'getSessionScreen',
+        { sessionId, user: rec.user },
+        12000,
+      );
+      const msg = JSON.stringify({
+        type: 'screen',
+        session: sessionId,
+        pane: '0',
+        width: state.width,
+        height: state.height,
+        cursor: state.cursor,
+        title: state.title,
+        lines: state.lines,
+        scrollOffset: 0,
+      });
+      for (const ws of watcher.subscribers) {
+        if (ws.readyState === 1) ws.send(msg);
+      }
+    } catch (err) {
+      console.warn(
+        `[claude-proxy] post-resubscribe full screen ${sessionId}:`,
+        err?.message || err,
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

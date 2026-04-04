@@ -422,6 +422,9 @@ test('/ws/dashboard handles claude-proxy sessions gracefully', async () => {
   // This test verifies the dashboard doesn't crash when claude-proxy sessions
   // are discovered but not locally accessible. We just need to confirm the
   // connection succeeds and session-add messages are sent.
+  // (cp Unix resubscribe after proxy restart is server.mjs ensureCpSocket →
+  // cpResubscribeAll; validate that path manually: restart claude-proxy with
+  // the dashboard open — cards should keep updating without a full page reload.)
   const ws = new WebSocket('ws://127.0.0.1:' + TEST_PORT + '/ws/dashboard');
 
   const msgs = await new Promise((resolve, reject) => {

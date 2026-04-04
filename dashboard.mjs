@@ -958,15 +958,11 @@ function updatePerfIndicator() {
   var el = document.getElementById('perf-indicator');
   if (!el) return;
   el.className = 'perf-indicator tier-' + perfTier;
-  if (perfTier === 0) {
-    el.textContent = '';
-  } else if (perfTier === 1) {
-    el.textContent = 'reduced';
-  } else {
-    el.textContent = 'minimal';
-  }
-  el.title = 'Performance: ' + (perfTier === 0 ? 'full' : perfTier === 1 ? 'reduced' : 'minimal')
-    + ' (click to cycle, current: ' + perfMode + ')';
+  // Always show current mode in the input bar — manual GPU/3D tier (click cycles auto→full→reduced→minimal).
+  el.textContent = perfMode === 'minimal' ? 'min' : perfMode;
+  el.title = 'GPU / 3D performance: tier ' + perfTier + ' ('
+    + (perfTier === 0 ? 'full' : perfTier === 1 ? 'reduced' : 'minimal')
+    + '). Click to cycle mode, current: ' + perfMode;
 }
 
 function applyPerfTier(tier) {
@@ -1004,12 +1000,7 @@ function applyPerfTier(tier) {
   }
 
   if (tier >= 2) {
-    for (var [name, t] of terminals) {
-      if (!focusedSessions.has(name)) {
-        t.css3dObject.visible = false;
-        if (t.shadowObject) t.shadowObject.visible = false;
-      }
-    }
+    syncPerfTier2Visibility();
   } else if (prev >= 2 && tier < 2) {
     for (var [name, t] of terminals) {
       t.css3dObject.visible = true;
@@ -1019,6 +1010,22 @@ function applyPerfTier(tier) {
 
   updatePerfIndicator();
   console.log('[perf] tier ' + prev + ' → ' + tier + ' (' + perfMode + ')');
+}
+
+// Tier 2 (minimal): cull unfocused cards only while focus mode is active. In overview
+// (no focus), show the full ring — see docs/research/2026-04-03-v0.1-mobile-css3d-perf-tiers-journal.md
+function tier2CardShouldShow(sessionName) {
+  if (perfTier < 2) return true;
+  return focusedSessions.size === 0 || focusedSessions.has(sessionName);
+}
+
+function syncPerfTier2Visibility() {
+  if (perfTier < 2) return;
+  for (var [name, t] of terminals) {
+    var show = tier2CardShouldShow(name);
+    t.css3dObject.visible = show;
+    if (t.shadowObject) t.shadowObject.visible = show;
+  }
 }
 
 // === Init ===
@@ -1072,6 +1079,9 @@ function init() {
 
   // Events
   window.addEventListener('resize', onResize);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', onResize);
+  }
   document.addEventListener('mousemove', onMouseMove);
   document.addEventListener('mousedown', onMouseDown);
   document.addEventListener('mouseup', onMouseUp);
@@ -1092,7 +1102,13 @@ function init() {
       if (perfMode === 'full') applyPerfTier(0);
       else if (perfMode === 'reduced') applyPerfTier(1);
       else if (perfMode === 'minimal') applyPerfTier(2);
-      else { _perfCheckPhase = 0; _perfFrameTimes = []; }
+      else {
+        _perfCheckPhase = 0;
+        _perfFrameTimes = [];
+        if (_cachedGPU && _cachedGPU.isSoftware) applyPerfTier(1);
+        else applyPerfTier(0);
+      }
+      updatePerfIndicator();
       console.log('[perf] mode set to ' + perfMode);
     });
   }
@@ -1176,6 +1192,22 @@ function connectDashboardWs() {
 // Chrome/CSS3D: embedded <object> SVG often fails to composite updated DOM until scroll
 // or another invalidation. Nudge layers after terminal content changes.
 // Do not touch t.dom.style.transform — CSS3DRenderer owns it every frame.
+// Per-terminal: first full `screen` must reach renderMessage before any `delta`, or the
+// embedded SVG applies partial line updates without initLayout — scrambled/garbage display.
+function routeEmbedMessageToSvg(t, obj, msg, opt) {
+  var skipRepaint = opt && opt.skipRepaint;
+  if (msg.type === 'delta' && !t._screenAppliedToEmbed) {
+    return;
+  }
+  obj.contentWindow.renderMessage(msg);
+  if (msg.type === 'screen') {
+    t._screenAppliedToEmbed = true;
+  }
+  if (!skipRepaint) {
+    scheduleTerminalSurfaceRepaint(obj, t);
+  }
+}
+
 function scheduleTerminalSurfaceRepaint(obj, t) {
   if (!obj) return;
   requestAnimationFrame(function() {
@@ -1232,16 +1264,18 @@ function routeDashboardMessage(msg) {
       // Route to main card SVG
       var obj = t.dom ? t.dom.querySelector('object') : null;
       if (obj && obj.contentWindow && typeof obj.contentWindow.renderMessage === 'function') {
-        obj.contentWindow.renderMessage(msg);
-        scheduleTerminalSurfaceRepaint(obj, t);
+        routeEmbedMessageToSvg(t, obj, msg);
       } else {
         // SVG not loaded yet — queue the message, flush when object loads
         if (!t._pendingMessages) t._pendingMessages = [];
-        // Only keep the latest screen (replaces older), accumulate deltas
         if (msg.type === 'screen') {
           t._pendingMessages = [msg]; // screen replaces everything pending
-        } else {
-          t._pendingMessages.push(msg);
+        } else if (msg.type === 'delta') {
+          // Drop deltas until a full screen is queued (same rule as live path)
+          var hasScreen = t._pendingMessages.some(function(m) { return m.type === 'screen'; });
+          if (hasScreen) {
+            t._pendingMessages.push(msg);
+          }
         }
       }
       // Thumbnail snapshot triggered from _screenCallback (after screenLines populated),
@@ -1338,12 +1372,11 @@ function escapeHtml(text) {
 // Thumbnail sequencer — round-robin, skips clean cards.
 // Faster tick since dirty check means most ticks are no-ops.
 var _thumbSequencerIndex = 0;
-var THUMB_TICK_MS = 50;  // check every 50ms, but only snapshot dirty cards
+var THUMB_TICK_MS = 50;
 
 setInterval(function() {
   var keys = [...terminals.keys()];
   if (keys.length === 0) return;
-  // Walk up to keys.length cards looking for a dirty one
   for (var attempt = 0; attempt < keys.length; attempt++) {
     _thumbSequencerIndex = _thumbSequencerIndex % keys.length;
     var name = keys[_thumbSequencerIndex];
@@ -1352,10 +1385,9 @@ setInterval(function() {
     if (t && t._thumbDirty) {
       t._thumbDirty = false;
       snapshotThumbnail(name);
-      return;  // one per tick
+      return;
     }
   }
-  // All clean — nothing to do
 }, THUMB_TICK_MS);
 
 // scheduleSnapshot kept as no-op for any remaining callers
@@ -1373,10 +1405,20 @@ function sendFocusState() {
   sendDashboardMessage({ type: 'focus', sessions: [...focusedSessions] });
 }
 
+// Mobile browsers: use visualViewport when present (keyboard, safe areas, aspect changes).
+function viewportSize() {
+  var vv = window.visualViewport;
+  if (vv && vv.width > 0 && vv.height > 0) {
+    return { w: vv.width, h: vv.height };
+  }
+  return { w: window.innerWidth, h: window.innerHeight };
+}
+
 function onResize() {
-  camera.aspect = window.innerWidth / window.innerHeight;
+  var v = viewportSize();
+  camera.aspect = v.w / v.h;
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth * RENDER_SCALE, window.innerHeight * RENDER_SCALE);
+  renderer.setSize(v.w * RENDER_SCALE, v.h * RENDER_SCALE);
   renderer.domElement.style.transform = 'scale(' + (1 / RENDER_SCALE) + ')';
 }
 
@@ -2304,10 +2346,8 @@ function addBrowserCard(url) {
   const shadowObj = new CSS3DObject(shadowDiv);
   shadowObj.rotation.x = -Math.PI / 2;
   shadowGroup.add(shadowObj);
-  if (perfTier >= 2) {
-    css3dObj.visible = false;
-    shadowObj.visible = false;
-  }
+  css3dObj.visible = tier2CardShouldShow(cardId);
+  shadowObj.visible = tier2CardShouldShow(cardId);
 
   // Create thumbnail for browser card
   const thumb = document.createElement('div');
@@ -2605,10 +2645,8 @@ function addTerminal(sessionName, cols, rows) {
   const shadowObj = new CSS3DObject(shadowDiv);
   shadowObj.rotation.x = -Math.PI / 2;
   shadowGroup.add(shadowObj);
-  if (perfTier >= 2) {
-    css3dObj.visible = false;
-    shadowObj.visible = false;
-  }
+  css3dObj.visible = tier2CardShouldShow(sessionName);
+  shadowObj.visible = tier2CardShouldShow(sessionName);
 
   sessionOrder.push(sessionName);
   terminals.set(sessionName, {
@@ -2631,6 +2669,7 @@ function addTerminal(sessionName, cols, rows) {
     _thumbDirty: true,  // start dirty so sequencer attempts initial snapshot
     screenCols: cols,
     screenRows: rows,
+    _screenAppliedToEmbed: false,
     sendInput: function(msg) {
       this._thumbDirty = true;  // input = activity, thumbnail should refresh
       // Try shared dashboard WebSocket first (new path)
@@ -2726,17 +2765,15 @@ function addTerminal(sessionName, cols, rows) {
             t._thumbDirty = true;
           }
         };
-        // Flush any messages that arrived before SVG loaded
+        // Flush any messages that arrived before SVG loaded (screen before deltas)
         var t = terminals.get(sessionName);
         if (t && t._pendingMessages && t._pendingMessages.length > 0) {
           var pending = t._pendingMessages;
           t._pendingMessages = null;
           for (var p = 0; p < pending.length; p++) {
-            if (typeof termObj.contentWindow.renderMessage === 'function') {
-              termObj.contentWindow.renderMessage(pending[p]);
-            }
+            routeEmbedMessageToSvg(t, termObj, pending[p], { skipRepaint: true });
           }
-          scheduleTerminalSurfaceRepaint(termObj, terminals.get(sessionName));
+          scheduleTerminalSurfaceRepaint(termObj, t);
         }
         // Initial thumbnail snapshot once main SVG has content
         t._thumbDirty = true;
@@ -2798,14 +2835,6 @@ function focusTerminal(sessionName) {
   // (single-WebSocket architecture — no second connection needed)
 
   updateFocusStyles();
-
-  if (perfTier >= 2) {
-    var ft = terminals.get(sessionName);
-    if (ft) {
-      ft.css3dObject.visible = true;
-      if (ft.shadowObject) ft.shadowObject.visible = true;
-    }
-  }
 
   const now = clock.getElapsedTime();
   t.morphFrom = { ...t.currentPos };
@@ -2877,14 +2906,6 @@ function addToFocus(sessionName) {
   updateFocusStyles();
   calculateFocusedLayout();
 
-  if (perfTier >= 2) {
-    var ft2 = terminals.get(sessionName);
-    if (ft2) {
-      ft2.css3dObject.visible = true;
-      if (ft2.shadowObject) ft2.shadowObject.visible = true;
-    }
-  }
-
   document.getElementById('input-bar').classList.add('visible');
   document.getElementById('input-target').textContent = activeInputSession;
   sendFocusState();
@@ -2931,6 +2952,7 @@ function updateFocusStyles() {
       }
     }
   }
+  if (perfTier >= 2) syncPerfTier2Visibility();
 }
 
 // Restore a single terminal to overview state
@@ -3050,12 +3072,7 @@ function unfocusTerminal() {
   document.getElementById('input-bar').classList.remove('visible');
   hideTermControls();
 
-  if (perfTier >= 2) {
-    for (var [name, t] of terminals) {
-      t.css3dObject.visible = false;
-      if (t.shadowObject) t.shadowObject.visible = false;
-    }
-  }
+  if (perfTier >= 2) syncPerfTier2Visibility();
 
   sendFocusState();
 }
@@ -3082,7 +3099,9 @@ function animate() {
         var times = _perfFrameTimes.slice(Math.floor(_perfFrameTimes.length * 0.33));
         var avg = times.length > 0 ? times.reduce(function(a, b) { return a + b; }, 0) / times.length : 16;
         console.log('[perf] avg frame time: ' + avg.toFixed(1) + 'ms (' + (1000 / avg).toFixed(0) + ' fps)');
-        if (avg > 50) {
+        var coarse = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
+        var tier2Ms = coarse ? 42 : 50;
+        if (avg > tier2Ms) {
           applyPerfTier(2);
         } else if (avg > 33) {
           applyPerfTier(1);
@@ -3113,7 +3132,8 @@ function animate() {
   const ringZTarget = focusedSessions.size > 0 ? RING_Z_BACK : 0;
   ringZOffset += (ringZTarget - ringZOffset) * 0.05;
 
-  // Per-terminal updates
+  // Per-terminal updates — perf tier >= 1 skips float, billboard slerp drift, shadow/specular work (mobile/CSS3D)
+  var lowMotion = perfTier >= 1;
   let idx = 0;
   for (const [name, t] of terminals) {
     let pos;
@@ -3146,9 +3166,8 @@ function animate() {
       pos = t.currentPos;
     }
 
-    // Gentle float
     let floatY = 0, floatX = 0;
-    if (!focusedSessions.has(name)) {
+    if (!lowMotion && !focusedSessions.has(name)) {
       floatY = Math.sin(time * 0.4 + idx * 1.3) * 5;
       floatX = Math.cos(time * 0.3 + idx * 1.7) * 3;
     }
@@ -3182,41 +3201,43 @@ function animate() {
         _targetQuat.multiply(_driftQuat);
       }
 
-      // Gentle lazy drift
-      _driftEuler.set(
-        Math.sin(time * 0.3 + idx * 1.5) * 0.03,
-        Math.cos(time * 0.2 + idx * 1.7) * 0.04,
-        0
-      );
-      _driftQuat.setFromEuler(_driftEuler);
-      _targetQuat.multiply(_driftQuat);
-
-      t.css3dObject.quaternion.slerp(_targetQuat, BILLBOARD_SLERP);
+      if (!lowMotion) {
+        _driftEuler.set(
+          Math.sin(time * 0.3 + idx * 1.5) * 0.03,
+          Math.cos(time * 0.2 + idx * 1.7) * 0.04,
+          0
+        );
+        _driftQuat.setFromEuler(_driftEuler);
+        _targetQuat.multiply(_driftQuat);
+        t.css3dObject.quaternion.slerp(_targetQuat, BILLBOARD_SLERP);
+      } else {
+        t.css3dObject.quaternion.copy(_targetQuat);
+      }
     }
 
-    // === Shadow ===
-    const heightAboveFloor = pos.y + floatY - FLOOR_Y;
-    const absHeight = Math.abs(heightAboveFloor);
-    const shadowScale = 1.5 + absHeight * 0.002;
-    const shadowBlur = 20 + absHeight * 0.05;
-    const shadowOpacity = Math.max(0.4, 1.0 - absHeight * 0.0003);
+    if (perfTier === 0) {
+      const heightAboveFloor = pos.y + floatY - FLOOR_Y;
+      const absHeight = Math.abs(heightAboveFloor);
+      const shadowScale = 1.5 + absHeight * 0.002;
+      const shadowBlur = 20 + absHeight * 0.05;
+      const shadowOpacity = Math.max(0.4, 1.0 - absHeight * 0.0003);
 
-    t.shadowObject.position.set(
-      pos.x + floatX + LIGHT_DIR.x * absHeight * 0.15,
-      FLOOR_Y,
-      pos.z + LIGHT_DIR.z * absHeight * 0.15
-    );
-    t.shadowDiv.style.filter = 'blur(' + shadowBlur.toFixed(0) + 'px)';
-    t.shadowDiv.style.opacity = shadowOpacity.toFixed(3);
-    t.shadowObject.scale.setScalar(shadowScale);
+      t.shadowObject.position.set(
+        pos.x + floatX + LIGHT_DIR.x * absHeight * 0.15,
+        FLOOR_Y,
+        pos.z + LIGHT_DIR.z * absHeight * 0.15
+      );
+      t.shadowDiv.style.filter = 'blur(' + shadowBlur.toFixed(0) + 'px)';
+      t.shadowDiv.style.opacity = shadowOpacity.toFixed(3);
+      t.shadowObject.scale.setScalar(shadowScale);
 
-    // === Specular ===
-    const specular = t.dom.querySelector('.specular-overlay');
-    if (specular) {
-      _panelNormal.set(0, 0, 1).applyQuaternion(t.css3dObject.quaternion);
-      const dot = _panelNormal.dot(LIGHT_DIR);
-      const intensity = Math.max(0, dot) * 0.4;
-      specular.style.background = 'linear-gradient(135deg, rgba(255,255,255,' + intensity.toFixed(3) + ') 0%, transparent 60%)';
+      const specular = t.dom.querySelector('.specular-overlay');
+      if (specular) {
+        _panelNormal.set(0, 0, 1).applyQuaternion(t.css3dObject.quaternion);
+        const dot = _panelNormal.dot(LIGHT_DIR);
+        const intensity = Math.max(0, dot) * 0.4;
+        specular.style.background = 'linear-gradient(135deg, rgba(255,255,255,' + intensity.toFixed(3) + ') 0%, transparent 60%)';
+      }
     }
 
     idx++;

@@ -27,6 +27,8 @@ Key requirement: terminals should be oriented in 3D (not flat/locked), with lazy
 
 ## Operational Conventions
 
+[2026-04-03] **Verify against running code, not stale processes:** After any change to `server.mjs`, `dashboard.mjs`, `terminal.svg`, or claude-proxy, **restart the relevant systemd units before manual testing** — otherwise the browser exercises old bundles / old Node code. Typical: `systemctl restart svg-terminal` after svg-terminal edits; restart `claude-proxy` too when testing proxy↔dashboard integration or subscribe/reconnect behavior. Automated `node --test` spawns its own server and does not replace this.
+
 [2026-03-30] PHAT TOAD system rules (v0.0.1) adopted for all sessions. Source: /srv/PHAT-TOAD-with-Trails/steward/system.md. Core: understanding before action, proposals not declarations, constraint declarations before cross-node work, comprehension tests before integration, no premature GO.
 [2026-03-30] PHAT TOAD agent-handoff protocol (v0.0.1) adopted. Source: /srv/PHAT-TOAD-with-Trails/steward/agent-handoff.md. Core: exchange before propose, comprehension verification via written summaries + diff, break test exchange, scope agreement, architecture only after comprehension gates pass.
 [2026-03-27] Use journaling, sessions, and bibliography skills for all design/research phases.

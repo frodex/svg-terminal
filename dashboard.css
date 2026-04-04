@@ -249,6 +249,9 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* Stable compositor layer on mobile (see mobile-css3d perf journal) */
+  transform: translateZ(0);
+  isolation: isolate;
 }
 
 .thumbnail-sidebar::-webkit-scrollbar {
@@ -377,13 +380,18 @@ html, body {
   padding: 2px 8px;
   border-radius: 4px;
   font-size: 11px;
+  font-family: 'FiraCode Nerd Font Mono', monospace;
   cursor: pointer;
   user-select: none;
-  opacity: 0.7;
-  transition: opacity 0.2s;
+  opacity: 0.85;
+  transition: opacity 0.2s, background 0.2s;
 }
 .perf-indicator:hover { opacity: 1; }
-.perf-indicator.tier-0 { opacity: 0; }
+/* Tier 0 = full 3D/GPU effects — still show mode label (was opacity:0 and empty, looked “lost”) */
+.perf-indicator.tier-0 {
+  background: rgba(255, 255, 255, 0.06);
+  color: #888;
+}
 .perf-indicator.tier-1 { background: rgba(255, 200, 0, 0.2); color: #ffc800; }
 .perf-indicator.tier-2 { background: rgba(255, 80, 80, 0.2); color: #ff5050; }
 
