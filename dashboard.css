@@ -410,7 +410,9 @@ html, body {
   backdrop-filter: blur(20px) saturate(1.4);
   -webkit-backdrop-filter: blur(20px) saturate(1.4);
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-  z-index: 320;
+  /* Above CSS3D terminal layers (can win hit-testing despite lower DOM order). */
+  z-index: 10000;
+  isolation: isolate;
   font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
 }
 
@@ -631,7 +633,7 @@ html, body {
   position: fixed;
   top: 56px;
   left: 20px;
-  z-index: 300;
+  z-index: 10040;
   opacity: 0;
   transform: translateY(8px) scale(0.96);
   pointer-events: none;
@@ -720,22 +722,28 @@ html, body {
   display: none;
   position: fixed;
   inset: 0;
-  z-index: 450;
+  z-index: 10050;
+  isolation: isolate;
   align-items: center;
   justify-content: center;
   padding: 16px;
+  pointer-events: none;
 }
 .session-form-panel.visible {
   display: flex;
+  pointer-events: auto;
 }
 .session-form-backdrop {
-  position: absolute;
+  position: fixed;
   inset: 0;
+  z-index: 0;
   background: rgba(0, 0, 0, 0.55);
   backdrop-filter: blur(4px);
+  pointer-events: auto;
 }
 .session-form-dialog {
   position: relative;
+  z-index: 1;
   width: min(520px, 100%);
   max-height: min(88vh, 720px);
   overflow-y: auto;

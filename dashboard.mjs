@@ -383,6 +383,7 @@ function wireTopBar() {
       var open = mainMenu.classList.toggle('visible');
       if (layoutDd) layoutDd.classList.remove('visible');
       if (open) refreshTopBarUser();
+      syncUiOverlayPointerBlock();
     });
   }
   if (helpMenu) {
@@ -406,6 +407,7 @@ function wireTopBar() {
       e.stopPropagation();
       layoutDd.classList.toggle('visible');
       if (mainMenu) mainMenu.classList.remove('visible');
+      syncUiOverlayPointerBlock();
     });
   }
   if (fitAll) fitAll.addEventListener('click', function() { fitAllFocused(); });
@@ -434,6 +436,7 @@ function wireTopBar() {
     if (mainMenu) mainMenu.classList.remove('visible');
     if (layoutDd) layoutDd.classList.remove('visible');
     clearGhostLayoutPreview();
+    syncUiOverlayPointerBlock();
   });
 
   var newSess = document.getElementById('menu-new-session');
@@ -1365,6 +1368,7 @@ function init() {
 
   wireTopBar();
   wireSessionFormPanel();
+  syncUiOverlayPointerBlock();
 
   connectDashboardWs();
   // Keep refreshSessions as fallback for old sessions during transition
@@ -1700,7 +1704,33 @@ function onResize() {
 }
 
 // === Mouse ===
+/** True while a menu/modal should capture pointer input and block the 3D scene. */
+function isUiOverlayActive() {
+  var sf = document.getElementById('session-form-panel');
+  if (sf && sf.classList.contains('visible')) return true;
+  var mm = document.getElementById('main-menu-dropdown');
+  if (mm && mm.classList.contains('visible')) return true;
+  var ld = document.getElementById('layout-dropdown');
+  if (ld && ld.classList.contains('visible')) return true;
+  var hp = document.getElementById('help-panel');
+  if (hp && hp.classList.contains('visible')) return true;
+  return false;
+}
+
+/** CSS3D layers can steal hits below fixed nav; disable scene hit-testing while overlays are open. */
+function syncUiOverlayPointerBlock() {
+  if (!renderer || !renderer.domElement) return;
+  renderer.domElement.style.pointerEvents = isUiOverlayActive() ? 'none' : '';
+}
+
 function onMouseMove(e) {
+  if (isUiOverlayActive()) {
+    if (isDragging) {
+      isDragging = false;
+      dragMode = null;
+    }
+    return;
+  }
   if (isDragging && dragMode) {
     const dx = e.clientX - dragStart.x;
     const dy = e.clientY - dragStart.y;
@@ -1856,6 +1886,11 @@ function onMouseDown(e) {
   // Reset drag distance on every mousedown — prevents stale values from
   // previous interactions causing wasDrag() to return true on fresh clicks.
   dragDistance = 0;
+  if (e.target.closest && e.target.closest('#top-bar')) return;
+  if (isUiOverlayActive()) {
+    syncUiOverlayPointerBlock();
+    return;
+  }
   // Disable iframe pointer events during drag to prevent iframe from capturing mouseup
   document.querySelectorAll('.terminal-3d iframe').forEach(function(f) { f.style.pointerEvents = 'none'; });
 
@@ -2094,6 +2129,7 @@ function onMouseLeave() {
 function toggleHelp() {
   const panel = document.getElementById('help-panel');
   panel.classList.toggle('visible');
+  syncUiOverlayPointerBlock();
 }
 
 document.addEventListener('keydown', function(e) {
@@ -2162,6 +2198,7 @@ function onKeyDown(e) {
     const panel = document.getElementById('help-panel');
     if (panel.classList.contains('visible')) {
       panel.classList.remove('visible');
+      syncUiOverlayPointerBlock();
     } else if (activeInputSession) {
       // Terminal has input focus — send Escape to the terminal.
       const t = terminals.get(activeInputSession);
@@ -2258,6 +2295,7 @@ function getUrlAtCell(t, row, col) {
 }
 
 function onSceneClick(e) {
+  if (isUiOverlayActive()) return;
   // IMPORTANT: Ctrl+click is handled ENTIRELY in onMouseUp → handleCtrlClick.
   // DO NOT add ctrl+click handling here — it causes double-fire because both
   // onMouseUp and onSceneClick find different terminals via overlapping bounding
@@ -2347,6 +2385,7 @@ function dollyTowardCursor(e, speed) {
 }
 
 function onWheel(e) {
+  if (isUiOverlayActive()) return;
   e.preventDefault();
   const delta = e.deltaY;
   const isFocused = focusedSessions.size > 0;
@@ -2877,6 +2916,7 @@ function closeSessionFormPanel() {
   if (!panel) return;
   panel.classList.remove('visible');
   panel.setAttribute('aria-hidden', 'true');
+  syncUiOverlayPointerBlock();
 }
 
 async function openSessionFormPanel() {
@@ -2921,6 +2961,7 @@ async function openSessionFormPanel() {
   updateSessionFormVisibility();
   panel.classList.add('visible');
   panel.setAttribute('aria-hidden', 'false');
+  syncUiOverlayPointerBlock();
   if (nameEl) nameEl.focus();
 }
 
@@ -4318,6 +4359,8 @@ function fallbackCopy(text) {
 // Alt+drag orbits when focused (swapped).
 document.addEventListener('mousedown', function(e) {
   if (e.button !== 0) return;
+  if (e.target.closest && e.target.closest('#top-bar')) return;
+  if (isUiOverlayActive()) return;
   if (!matchBinding(KEYBINDINGS.selectText, e, focusedSessions.size > 0)) return;
   if (!activeInputSession) return;
   // Don't start text selection on any focused card's header — that's for title bar drag.
@@ -4365,6 +4408,10 @@ document.addEventListener('mousedown', function(e) {
 
 document.addEventListener('mousemove', function(e) {
   if (!selTerminal || !selStart) return;
+  if (isUiOverlayActive()) {
+    clearSel();
+    return;
+  }
   selEnd = screenToCell(e, selTerminal);
   if (selEnd) drawSelHighlight(selTerminal);
 });
