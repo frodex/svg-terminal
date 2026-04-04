@@ -2030,6 +2030,16 @@ _pasteTarget.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0.01;z
 document.body.appendChild(_pasteTarget);
 
 document.addEventListener('contextmenu', function(e) {
+  var t = e.target;
+  // Native cut/copy/paste and spelling UI for real form fields (session form, login, etc.)
+  if (t && t.closest) {
+    if (t.closest('input, textarea, select, label')) {
+      return;
+    }
+  }
+  if (t && t.isContentEditable && t !== _pasteTarget && !_pasteTarget.contains(t)) {
+    return;
+  }
   if (focusedSessions.size > 0) {
     // Position the invisible contenteditable under the cursor for paste menu
     _pasteTarget.style.left = e.clientX + 'px';
