@@ -783,8 +783,19 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
     }
   }
 
-  // Claude-proxy: parallel fetch all at once (~50-200ms total)
+  // Claude-proxy: register event bridges before awaiting getSessionScreen so terminal
+  // traffic can flow while the proxy is still warming up after a restart (otherwise
+  // the client blocks on N parallel RPCs with nothing subscribed).
   const cpSessions = sessions.filter(s => s.source === 'claude-proxy');
+  for (const s of cpSessions) {
+    const watcher = bridgeClaudeProxySession(s.name, cpUser);
+    if (watcher) {
+      watcher.subscribers.add(ws);
+      if (!wsToWatcherKeys.has(ws)) wsToWatcherKeys.set(ws, new Set());
+      wsToWatcherKeys.get(ws).add(s.name + ':0');
+    }
+  }
+
   if (cpSessions.length > 0) {
     const screenPromises = cpSessions.map(async (s) => {
       try {
@@ -804,16 +815,6 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
       }
     });
     await Promise.allSettled(screenPromises);
-  }
-
-  // Phase 3: Set up bridges for ongoing delta updates (after initial screens sent)
-  for (const s of cpSessions) {
-    const watcher = bridgeClaudeProxySession(s.name, cpUser);
-    if (watcher) {
-      watcher.subscribers.add(ws);
-      if (!wsToWatcherKeys.has(ws)) wsToWatcherKeys.set(ws, new Set());
-      wsToWatcherKeys.get(ws).add(s.name + ':0');
-    }
   }
 }
 

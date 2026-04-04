@@ -653,6 +653,17 @@
       // Old ws.onmessage path kept for old sessions during transition.
       // -----------------------------------------------------------------------
       var _sharedWsActive = false;
+      function nudgeObjectRepaint() {
+        try {
+          var fe = window.frameElement;
+          if (!fe) return;
+          requestAnimationFrame(function() {
+            fe.style.opacity = '0.9999';
+            void fe.offsetHeight;
+            fe.style.opacity = '';
+          });
+        } catch (e) {}
+      }
       window.renderMessage = function(msg) {
         _sharedWsActive = true;
         if (msg.type === 'screen') {
@@ -671,6 +682,7 @@
           }
           hideError();
           try { if (window._screenCallback) window._screenCallback(msg); } catch(e) {}
+          nudgeObjectRepaint();
 
         } else if (msg.type === 'delta') {
           var keys = Object.keys(msg.changed);
@@ -689,6 +701,7 @@
           }
           try { if (window._screenCallback) window._screenCallback(msg); } catch(e) {}
           hideError();
+          nudgeObjectRepaint();
 
         } else if (msg.type === 'error') {
           showError();
