@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Proxy — Web UI Prototype</title>
+  <style>
+    /* === Reset & Base === */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e; color: #e0e0e0; font-family: system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+    }
+
+    /* === Screen container === */
+    .screen { display: none; }
+    .screen.active { display: block; }
+
+    /* === Centered card layout (login, pending) === */
+    .center-layout {
+      display: flex; justify-content: center; align-items: center; min-height: 100vh;
+    }
+    .card {
+      background: #16213e; border-radius: 12px; padding: 48px; max-width: 420px; width: 100%;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }
+    .card h1 { font-size: 1.5rem; margin-bottom: 6px; color: #fff; }
+    .card .subtitle { color: #999; margin-bottom: 28px; font-size: 0.9rem; }
+
+    /* === Page layout (lobby, admin, pickers) === */
+    .page-layout { max-width: 720px; margin: 0 auto; padding: 32px 24px; }
+    .page-header {
+      display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;
+    }
+    .page-header h1 { font-size: 1.4rem; color: #fff; }
+    .page-header .meta { color: #767676; font-size: 0.8rem; margin-top: 2px; }
+    .page-header-actions { display: flex; gap: 8px; }
+
+    /* === Sections === */
+    .section {
+      background: #16213e; border-radius: 8px; padding: 20px; margin-bottom: 16px;
+    }
+    .section-label {
+      color: #999; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px;
+      margin-bottom: 12px;
+    }
+
+    /* === Buttons === */
+    .btn {
+      display: inline-block; padding: 10px 20px; border: none; border-radius: 6px;
+      font-size: 0.85rem; cursor: pointer; text-decoration: none; transition: opacity 0.2s;
+      font-family: inherit;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn-primary { background: #4285f4; color: #fff; }
+    .btn-outline { background: transparent; color: #e0e0e0; border: 1px solid #444; }
+    .btn-google { background: #4285f4; color: #fff; display: block; width: 100%; padding: 14px; margin-bottom: 10px; text-align: center; border-radius: 8px; border: none; font-size: 1rem; cursor: pointer; }
+    .btn-github { background: #333; color: #fff; display: block; width: 100%; padding: 14px; margin-bottom: 10px; text-align: center; border-radius: 8px; border: none; font-size: 1rem; cursor: pointer; }
+    .btn-microsoft { background: #00a4ef; color: #fff; display: block; width: 100%; padding: 14px; text-align: center; border-radius: 8px; border: none; font-size: 1rem; cursor: pointer; }
+    .btn-sm { padding: 6px 14px; font-size: 0.78rem; }
+    .btn-approve { background: #2d6a4f; color: #fff; }
+    .btn-deny { background: #6a2d2d; color: #fff; }
+    .btn-group { display: flex; gap: 8px; flex-wrap: wrap; }
+    .btn-pill {
+      background: #16213e; padding: 5px 14px; border-radius: 16px; font-size: 0.78rem;
+      color: #999; cursor: pointer; border: 1px solid #333; text-decoration: none;
+    }
+    .btn-pill:hover { background: #1e3a5f; color: #e0e0e0; }
+
+    /* === Session list items === */
+    .session-item {
+      background: #1a1a2e; border-radius: 6px; padding: 12px 14px; margin-bottom: 6px;
+      cursor: pointer; border: 1px solid transparent; display: flex;
+      justify-content: space-between; align-items: center; transition: border-color 0.15s;
+    }
+    .session-item:hover { border-color: #4285f4; }
+    .session-item .name { color: #fff; font-weight: 600; }
+    .session-item .badges { display: inline; }
+    .badge { font-size: 0.7rem; margin-left: 6px; }
+    .badge-locked { color: #d7d700; }
+    .badge-private { color: #767676; }
+    .badge-viewonly { color: #767676; }
+    .badge-owner { color: #767676; font-size: 0.75rem; }
+    .badge-remote { color: #00cdcd; font-size: 0.75rem; }
+    .session-item .info { color: #767676; font-size: 0.78rem; white-space: nowrap; }
+    .session-item.disabled { opacity: 0.45; cursor: not-allowed; }
+    .session-item.disabled:hover { border-color: transparent; }
+    .session-item .check-icon { color: #2d6a4f; font-size: 0.75rem; }
+    .session-item .no-id { color: #767676; font-size: 0.75rem; }
+
+    /* === Checkbox items (export) === */
+    .check-item {
+      background: #16213e; border-radius: 6px; padding: 12px 14px; margin-bottom: 6px;
+      display: flex; align-items: center; gap: 10px; cursor: pointer;
+    }
+    .check-item input[type="checkbox"] { accent-color: #4285f4; width: 16px; height: 16px; flex-shrink: 0; }
+    .check-item .msg { color: #00cdcd; }
+    .check-item .msg-none { color: #999; }
+    .check-item .detail { color: #767676; font-size: 0.78rem; white-space: nowrap; }
+
+    /* === Forms === */
+    .form-group { margin-bottom: 14px; }
+    .form-row { display: flex; gap: 14px; }
+    .form-row .form-group { flex: 1; }
+    label.field-label {
+      display: block; margin-bottom: 4px; font-size: 0.78rem; color: #ccc;
+    }
+    label.field-label .note { color: #555; font-size: 0.68rem; }
+    .field-input {
+      width: 100%; padding: 10px; background: #16213e; border: 1px solid #333;
+      border-radius: 6px; color: #e0e0e0; font-size: 0.85rem; font-family: inherit;
+    }
+    .field-input:focus { outline: none; border-color: #4285f4; }
+    .field-input:disabled { color: #555; cursor: not-allowed; }
+    .field-input.locked { color: #555; position: relative; }
+    .field-na {
+      padding: 10px; background: #16213e; border: 1px solid #333; border-radius: 6px;
+      color: #555; font-size: 0.85rem;
+    }
+    .checkbox-row {
+      display: flex; gap: 24px; flex-wrap: wrap; padding: 8px 0;
+    }
+    .checkbox-row label {
+      color: #ccc; font-size: 0.85rem; display: flex; align-items: center; gap: 6px; cursor: pointer;
+    }
+    .checkbox-row input[type="checkbox"] { accent-color: #4285f4; }
+    .lock-icon { color: #d7d700; font-size: 0.7rem; margin-left: 4px; }
+    .form-mode-switcher {
+      display: flex; gap: 4px; margin-bottom: 16px;
+    }
+    .form-mode-switcher button {
+      padding: 5px 12px; font-size: 0.75rem; border-radius: 4px; border: 1px solid #333;
+      background: transparent; color: #999; cursor: pointer; font-family: inherit;
+    }
+    .form-mode-switcher button.active { background: #4285f4; color: #fff; border-color: #4285f4; }
+    .field-required { color: #ff6b6b; }
+
+    /* === Tables (admin) === */
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #2a2a4a; font-size: 0.82rem; }
+    th { color: #999; font-weight: 600; }
+    .email-col { color: #4285f4; }
+    textarea.field-input { height: 80px; resize: vertical; font-family: monospace; }
+
+    /* === Modal === */
+    .modal-overlay {
+      display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.7); z-index: 100; justify-content: center; align-items: center;
+    }
+    .modal-overlay.active { display: flex; }
+    .modal {
+      background: #16213e; border-radius: 12px; padding: 32px; max-width: 380px; width: 90%;
+      text-align: center;
+    }
+    .modal h2 { color: #fff; font-size: 1.1rem; margin-bottom: 4px; }
+    .modal .modal-sub { color: #767676; font-size: 0.85rem; margin-bottom: 18px; }
+    .modal .field-input { text-align: center; margin-bottom: 16px; }
+
+    /* === Help menu === */
+    .help-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 0; border-bottom: 1px solid #2a2a4a;
+    }
+    .help-item:last-child { border-bottom: none; }
+    .help-item .key { color: #d7d700; font-family: 'Courier New', monospace; font-size: 0.85rem; white-space: nowrap; }
+    .help-item .desc { color: #e0e0e0; font-size: 0.85rem; }
+    .help-item .hint { color: #767676; font-size: 0.75rem; }
+
+    /* === Dividers === */
+    .divider { border-top: 1px solid #2a2a4a; margin: 16px 0; }
+    .footer-text { color: #767676; font-size: 0.78rem; margin-top: 16px; }
+
+    /* === Error === */
+    .error-box {
+      background: #3d1515; color: #ff6b6b; padding: 10px 14px; border-radius: 6px;
+      margin-bottom: 14px; font-size: 0.82rem; display: none;
+    }
+
+    /* === Pending icon === */
+    .pending-icon { font-size: 3rem; margin-bottom: 14px; }
+    .pending-email { color: #4285f4; font-weight: 600; }
+
+    /* === Toast === */
+    .toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: #2d6a4f; color: #fff; padding: 10px 24px; border-radius: 8px;
+      font-size: 0.85rem; display: none; z-index: 200; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    }
+    .toast.active { display: block; }
+
+    /* === Nav breadcrumb === */
+    .breadcrumb { margin-bottom: 16px; }
+    .breadcrumb a { color: #4285f4; text-decoration: none; font-size: 0.85rem; }
+    .breadcrumb a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+<!-- ============================================================ -->
+<!-- SCREEN 1: LOGIN                                               -->
+<!-- ============================================================ -->
+<div id="screen-login" class="screen active">
+  <div class="center-layout">
+    <div class="card" style="text-align:center">
+      <h1>Claude Proxy</h1>
+      <p class="subtitle">Sign in to access terminal sessions</p>
+      <div id="login-error" class="error-box"></div>
+      <button class="btn-google" onclick="mockLogin('approved')">Sign in with Google</button>
+      <button class="btn-github" onclick="mockLogin('approved')">Sign in with GitHub</button>
+      <button class="btn-microsoft" onclick="mockLogin('pending')">Sign in with Microsoft</button>
+      <p style="color:#555;font-size:0.75rem;margin-top:16px">Microsoft button simulates a new/pending user</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SCREEN 2: PENDING                                             -->
+<!-- ============================================================ -->
+<div id="screen-pending" class="screen">
+  <div class="center-layout">
+    <div class="card" style="text-align:center">
+      <div class="pending-icon">&#x23F3;</div>
+      <h1>Access Requested</h1>
+      <p class="subtitle">Your request to access Claude Proxy has been submitted.</p>
+      <p style="color:#999;font-size:0.85rem;margin-bottom:8px">Signed in as <span class="pending-email">newuser@example.com</span></p>
+      <p style="color:#999;font-size:0.85rem;margin-bottom:20px">An administrator will review your request.</p>
+      <button class="btn btn-outline" onclick="showScreen('lobby')">Simulate Approval</button>
+      <div style="color:#767676;font-size:0.75rem;margin-top:12px">In production this polls /auth/me</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SCREEN 3: ADMIN                                               -->
+<!-- ============================================================ -->
+<div id="screen-admin" class="screen">
+  <div class="page-layout">
+    <div class="breadcrumb"><a href="#" onclick="showScreen('lobby');return false">&larr; Back to Lobby</a></div>
+    <h1 style="color:#fff;margin-bottom:20px">User Management</h1>
+
+    <div class="section">
+      <div class="section-label">Pending Requests</div>
+      <table>
+        <thead><tr><th>Name</th><th>Email</th><th>Provider</th><th>Requested</th><th></th></tr></thead>
+        <tbody>
+          <tr>
+            <td style="color:#fff">Jane Smith</td>
+            <td class="email-col">jane@school.edu</td>
+            <td>Google</td>
+            <td style="color:#767676">Apr 1, 2026</td>
+            <td>
+              <button class="btn btn-sm btn-approve" onclick="toast('Jane approved & provisioned')">Approve</button>
+              <button class="btn btn-sm btn-deny" onclick="toast('Jane denied')">Deny</button>
+            </td>
+          </tr>
+          <tr>
+            <td style="color:#fff">Mike Chen</td>
+            <td class="email-col">mike@company.com</td>
+            <td>GitHub</td>
+            <td style="color:#767676">Apr 1, 2026</td>
+            <td>
+              <button class="btn btn-sm btn-approve" onclick="toast('Mike approved & provisioned')">Approve</button>
+              <button class="btn btn-sm btn-deny" onclick="toast('Mike denied')">Deny</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section">
+      <div class="section-label">Pre-Approve by Email</div>
+      <textarea class="field-input" placeholder="Enter email addresses, one per line&#10;alice@school.edu&#10;bob@school.edu"></textarea>
+      <div style="margin-top:8px"><button class="btn btn-primary btn-sm" onclick="toast('Emails pre-approved')">Pre-Approve</button></div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">All Users</div>
+      <table>
+        <thead><tr><th>Name</th><th>Email</th><th>Linux User</th><th>Status</th><th>Can Approve</th><th>Last Login</th></tr></thead>
+        <tbody>
+          <tr>
+            <td style="color:#fff">Greg Admin</td>
+            <td class="email-col">greg@example.com</td>
+            <td style="color:#767676">greg</td>
+            <td><span style="color:#2d6a4f">approved</span></td>
+            <td><input type="checkbox" checked disabled style="accent-color:#4285f4"> users <input type="checkbox" checked disabled style="accent-color:#4285f4"> admins</td>
+            <td style="color:#767676">Apr 2, 2026</td>
+          </tr>
+          <tr>
+            <td style="color:#fff">Alice Dev</td>
+            <td class="email-col">alice@example.com</td>
+            <td style="color:#767676">alice</td>
+            <td><span style="color:#2d6a4f">approved</span></td>
+            <td><input type="checkbox" style="accent-color:#4285f4"> users</td>
+            <td style="color:#767676">Apr 1, 2026</td>
+          </tr>
+          <tr>
+            <td style="color:#fff">Bob User</td>
+            <td class="email-col">bob@example.com</td>
+            <td style="color:#767676">bob</td>
+            <td><span style="color:#2d6a4f">approved</span></td>
+            <td><input type="checkbox" style="accent-color:#4285f4"> users</td>
+            <td style="color:#767676">Mar 30, 2026</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SCREEN 4: LOBBY                                               -->
+<!-- ============================================================ -->
+<div id="screen-lobby" class="screen">
+  <div class="page-layout">
+    <div class="page-header">
+      <div>
+        <h1>claude-proxy</h1>
+        <div class="meta">Connected as: greg &middot; 3 active sessions</div>
+      </div>
+      <div class="page-header-actions">
+        <a class="btn-pill" href="#" onclick="showScreen('help');return false">Help</a>
+        <a class="btn-pill" href="#" onclick="showScreen('admin');return false">Admin</a>
+        <a class="btn-pill" href="#" onclick="showScreen('login');return false">Logout</a>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">Active Sessions</div>
+      <div class="session-item" onclick="tryJoinSession('my-project', false)">
+        <div>
+          <span class="name">my-project</span>
+          <span class="badge badge-remote">@remote1</span>
+          <span class="badge badge-owner">@greg</span>
+        </div>
+        <div class="info">2 users &middot; greg, alice</div>
+      </div>
+      <div class="session-item" onclick="tryJoinSession('debug-session', true)">
+        <div>
+          <span class="name">debug-session</span>
+          <span class="badge badge-locked">[locked]</span>
+          <span class="badge badge-owner">@greg</span>
+        </div>
+        <div class="info">1 user &middot; greg</div>
+      </div>
+      <div class="session-item" onclick="tryJoinSession('shared-review', false)">
+        <div>
+          <span class="name">shared-review</span>
+          <span class="badge badge-private">(private)</span>
+          <span class="badge badge-viewonly">[view-only]</span>
+          <span class="badge badge-owner">@bob</span>
+        </div>
+        <div class="info">3 users &middot; bob, alice, greg</div>
+      </div>
+    </div>
+
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="showSessionForm('create')">New Session</button>
+      <button class="btn btn-outline" onclick="showScreen('restart-picker')">Restart Previous</button>
+      <button class="btn btn-outline" onclick="showScreen('fork-picker')">Fork Session</button>
+      <button class="btn btn-outline" onclick="showScreen('export-picker')">Export</button>
+    </div>
+
+    <div class="footer-text">Welcome to claude-proxy. Manage your Claude Code terminal sessions.</div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SCREEN 5: SESSION FORM                                        -->
+<!-- ============================================================ -->
+<div id="screen-session-form" class="screen">
+  <div class="page-layout">
+    <div class="breadcrumb"><a href="#" onclick="showScreen('lobby');return false">&larr; Back to Lobby</a></div>
+    <h1 style="color:#fff;margin-bottom:4px" id="form-title">New Session</h1>
+    <p style="color:#767676;font-size:0.82rem;margin-bottom:12px">Fill in session settings. <span class="field-required">*</span> = required</p>
+
+    <div class="form-mode-switcher">
+      <button class="active" onclick="showSessionForm('create')">Create</button>
+      <button onclick="showSessionForm('edit')">Edit</button>
+      <button onclick="showSessionForm('restart')">Restart</button>
+      <button onclick="showSessionForm('fork')">Fork</button>
+    </div>
+
+    <div class="section">
+      <div class="form-group">
+        <label class="field-label">Session name <span class="field-required">*</span></label>
+        <input class="field-input" id="f-name" value="" placeholder="my-project" />
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="field-label">Run as user <span class="note">(admin only)</span></label>
+          <input class="field-input" id="f-runas" value="root" disabled />
+        </div>
+        <div class="form-group">
+          <label class="field-label">Server <span class="note">(admin + remotes)</span></label>
+          <select class="field-input" id="f-server" disabled>
+            <option>local</option><option>remote1</option><option>remote2</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="field-label">Working directory</label>
+        <input class="field-input" id="f-workdir" value="" placeholder="~ (home directory)" />
+      </div>
+
+      <div class="checkbox-row">
+        <label><input type="checkbox" id="f-hidden" onchange="updateFormConditions()"> Hidden session</label>
+        <label><input type="checkbox" id="f-viewonly"> View-only</label>
+        <label><input type="checkbox" id="f-public" checked onchange="updateFormConditions()"> Public session</label>
+      </div>
+
+      <div id="access-fields">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="field-label">Allowed users <span class="note">(private only)</span></label>
+            <div class="field-na" id="f-users-na">N/A &mdash; session is public</div>
+            <select class="field-input" id="f-users" multiple style="display:none;height:80px">
+              <option>alice</option><option>bob</option><option>charlie</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="field-label">Allowed groups <span class="note">(private only)</span></label>
+            <div class="field-na" id="f-groups-na">N/A &mdash; session is public</div>
+            <select class="field-input" id="f-groups" multiple style="display:none;height:80px">
+              <option>cp-users</option><option>cp-admins</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="field-label">Password</label>
+          <input class="field-input" id="f-password" type="password" placeholder="Optional" />
+        </div>
+        <div class="form-group">
+          <label class="field-label">Skip permissions <span class="note">(admin only)</span></label>
+          <div class="checkbox-row" style="padding:10px 0">
+            <label><input type="checkbox" id="f-dangermode" disabled> Enable</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-group" id="claude-id-group" style="display:none">
+        <label class="field-label">Claude session ID</label>
+        <input class="field-input" id="f-claude-id" value="" placeholder="UUID" />
+      </div>
+    </div>
+
+    <div class="btn-group">
+      <button class="btn btn-primary" id="form-submit-btn" onclick="toast('Session created!');showScreen('lobby')">Create Session</button>
+      <button class="btn btn-outline" onclick="showScreen('lobby')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SCREEN 6: RESTART PICKER                                      -->
+<!-- ============================================================ -->
+<div id="screen-restart-picker" class="screen">
+  <div class="page-layout">
+    <div class="breadcrumb"><a href="#" onclick="showScreen('lobby');return false">&larr; Back to Lobby</a></div>
+    <h1 style="color:#fff;margin-bottom:4px">Restart Previous Session</h1>
+    <p style="color:#767676;font-size:0.82rem;margin-bottom:16px">Select a session to restart with its previous settings</p>
+
+    <div class="section">
+      <div class="session-item" onclick="showSessionForm('restart')">
+        <div>
+          <span class="name">my-project</span>
+          <span class="badge badge-owner">@greg</span>
+        </div>
+        <div class="info">3/28/2026 02:15 PM</div>
+      </div>
+      <div class="session-item" onclick="showSessionForm('restart')">
+        <div>
+          <span style="color:#999">resume-abc123</span>
+          <span class="badge badge-viewonly">[view-only]</span>
+          <span class="badge badge-owner">@greg</span>
+        </div>
+        <div class="info">3/27/2026 11:30 AM</div>
+      </div>
+      <div class="session-item" onclick="showSessionForm('restart')">
+        <div>
+          <span class="name">old-debug</span>
+          <span class="badge badge-owner">@greg</span>
+        </div>
+        <div class="info">3/25/2026 09:00 AM</div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+    <button class="btn btn-outline" style="color:#00cdcd;border-color:#333" onclick="toast('Deep scan would browse all past Claude sessions')">Deep Scan &mdash; browse all past Claude sessions</button>
+    <div style="margin-top:12px">
+      <button class="btn btn-outline" onclick="showScreen('lobby')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SCREEN 7: FORK PICKER                                         -->
+<!-- ============================================================ -->
+<div id="screen-fork-picker" class="screen">
+  <div class="page-layout">
+    <div class="breadcrumb"><a href="#" onclick="showScreen('lobby');return false">&larr; Back to Lobby</a></div>
+    <h1 style="color:#fff;margin-bottom:4px">Select Session to Fork</h1>
+    <p style="color:#767676;font-size:0.82rem;margin-bottom:16px">Branch a running session into a new conversation</p>
+
+    <div class="section">
+      <div class="session-item" onclick="showSessionForm('fork')">
+        <div><span class="name">my-project</span></div>
+        <div class="check-icon">&#x2713; has session ID</div>
+      </div>
+      <div class="session-item disabled">
+        <div><span style="color:#999">debug-session</span></div>
+        <div class="no-id">(no session ID)</div>
+      </div>
+      <div class="session-item" onclick="showSessionForm('fork')">
+        <div><span class="name">shared-review</span></div>
+        <div class="check-icon">&#x2713; has session ID</div>
+      </div>
+    </div>
+
+    <div style="margin-top:12px">
+      <button class="btn btn-outline" onclick="showScreen('lobby')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SCREEN 8: EXPORT PICKER                                       -->
+<!-- ============================================================ -->
+<div id="screen-export-picker" class="screen">
+  <div class="page-layout">
+    <div class="breadcrumb"><a href="#" onclick="showScreen('lobby');return false">&larr; Back to Lobby</a></div>
+    <h1 style="color:#fff;margin-bottom:4px">Export Sessions</h1>
+    <p style="color:#767676;font-size:0.82rem;margin-bottom:16px">Select sessions to export as a zip archive</p>
+
+    <div class="section">
+      <label class="check-item">
+        <input type="checkbox" checked class="export-cb" />
+        <div style="flex:1;display:flex;justify-content:space-between;align-items:center">
+          <span class="msg">Fix auth middleware bug</span>
+          <span class="detail">3/28/2026 &middot; 45KB</span>
+        </div>
+      </label>
+      <label class="check-item">
+        <input type="checkbox" class="export-cb" />
+        <div style="flex:1;display:flex;justify-content:space-between;align-items:center">
+          <span class="msg">Implement session form widget</span>
+          <span class="detail">3/27/2026 &middot; 1.2MB</span>
+        </div>
+      </label>
+      <label class="check-item">
+        <input type="checkbox" class="export-cb" />
+        <div style="flex:1;display:flex;justify-content:space-between;align-items:center">
+          <span class="msg-none">(no message)</span>
+          <span class="detail">3/26/2026 &middot; 120KB</span>
+        </div>
+      </label>
+    </div>
+
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="toast('Exported to /tmp/claude-export.zip');showScreen('lobby')">Export Selected</button>
+      <button class="btn btn-outline" onclick="toggleAllExport()">Select All</button>
+      <button class="btn btn-outline" onclick="showScreen('lobby')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SCREEN 9: PASSWORD PROMPT (MODAL)                             -->
+<!-- ============================================================ -->
+<div id="modal-password" class="modal-overlay">
+  <div class="modal">
+    <h2>Session Locked</h2>
+    <p class="modal-sub">Enter password for <span style="color:#fff" id="pw-session-name">debug-session</span></p>
+    <input type="password" class="field-input" placeholder="&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;" id="pw-input" />
+    <div class="btn-group" style="justify-content:center">
+      <button class="btn btn-primary" onclick="toast('Joined session');closeModal()">Join</button>
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SCREEN 10: HELP MENU                                          -->
+<!-- ============================================================ -->
+<div id="screen-help" class="screen">
+  <div class="page-layout">
+    <div class="breadcrumb"><a href="#" onclick="showScreen('lobby');return false">&larr; Back to Lobby</a></div>
+    <h1 style="color:#fff;margin-bottom:20px">Help &mdash; Keyboard Shortcuts</h1>
+
+    <div class="section">
+      <div class="section-label">Session Actions</div>
+      <div class="help-item">
+        <div>
+          <div class="desc">Detach (back to lobby)</div>
+          <div class="hint">Leave session running in background</div>
+        </div>
+        <div class="key">Ctrl+B d</div>
+      </div>
+      <div class="help-item">
+        <div>
+          <div class="desc">Claim size ownership</div>
+          <div class="hint">Terminal resizes to your window</div>
+        </div>
+        <div class="key">Ctrl+B s</div>
+      </div>
+      <div class="help-item">
+        <div>
+          <div class="desc">Redraw screen</div>
+          <div class="hint">Force full screen refresh</div>
+        </div>
+        <div class="key">Ctrl+B r</div>
+      </div>
+      <div class="help-item">
+        <div>
+          <div class="desc">Edit session settings</div>
+          <div class="hint">Owner only &mdash; modify access, visibility</div>
+        </div>
+        <div class="key">Ctrl+B e</div>
+      </div>
+      <div class="help-item">
+        <div>
+          <div class="desc">Fork session</div>
+          <div class="hint">Branch conversation into a new session</div>
+        </div>
+        <div class="key">Ctrl+B f</div>
+      </div>
+      <div class="help-item">
+        <div>
+          <div class="desc">Scrollback viewer</div>
+          <div class="hint">Browse with arrows, PgUp/PgDn, g/G</div>
+        </div>
+        <div class="key">Ctrl+B b</div>
+      </div>
+      <div class="help-item">
+        <div>
+          <div class="desc">Scrollback dump</div>
+          <div class="hint">Use terminal scrollbar to browse</div>
+        </div>
+        <div class="key">Ctrl+B l</div>
+      </div>
+      <div class="help-item">
+        <div>
+          <div class="desc">Show help</div>
+          <div class="hint">This screen</div>
+        </div>
+        <div class="key">Ctrl+B h</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">Info</div>
+      <p style="color:#999;font-size:0.82rem;line-height:1.6">
+        Title bar shows: session name | *owner, users | uptime<br>
+        Sessions persist across proxy restarts (tmux-backed).<br>
+        Press Ctrl+B Ctrl+B to send a literal Ctrl+B to the terminal.
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- TOAST                                                         -->
+<!-- ============================================================ -->
+<div id="toast" class="toast"></div>
+
+<!-- ============================================================ -->
+<!-- SCRIPT                                                        -->
+<!-- ============================================================ -->
+<script>
+// --- Screen Router ---
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  const el = document.getElementById('screen-' + id);
+  if (el) el.classList.add('active');
+}
+
+// --- Mock Login ---
+function mockLogin(status) {
+  if (status === 'pending') {
+    showScreen('pending');
+  } else {
+    showScreen('lobby');
+  }
+}
+
+// --- Password Modal ---
+function tryJoinSession(name, locked) {
+  if (locked) {
+    document.getElementById('pw-session-name').textContent = name;
+    document.getElementById('pw-input').value = '';
+    document.getElementById('modal-password').classList.add('active');
+  } else {
+    toast('Joined session: ' + name + ' (would open dashboard at :3200)');
+  }
+}
+function closeModal() {
+  document.getElementById('modal-password').classList.remove('active');
+}
+
+// --- Session Form ---
+function showSessionForm(mode) {
+  showScreen('session-form');
+  const title = document.getElementById('form-title');
+  const submitBtn = document.getElementById('form-submit-btn');
+  const claudeGroup = document.getElementById('claude-id-group');
+  const nameInput = document.getElementById('f-name');
+  const runasInput = document.getElementById('f-runas');
+  const serverInput = document.getElementById('f-server');
+  const workdirInput = document.getElementById('f-workdir');
+
+  // Reset mode switcher
+  document.querySelectorAll('.form-mode-switcher button').forEach(b => b.classList.remove('active'));
+  document.querySelector(`.form-mode-switcher button:nth-child(${
+    mode === 'create' ? 1 : mode === 'edit' ? 2 : mode === 'restart' ? 3 : 4
+  })`).classList.add('active');
+
+  // Unlock all first
+  [runasInput, serverInput, workdirInput].forEach(el => { el.disabled = false; el.classList.remove('locked'); });
+
+  switch (mode) {
+    case 'create':
+      title.textContent = 'New Session';
+      submitBtn.textContent = 'Create Session';
+      submitBtn.onclick = () => { toast('Session created!'); showScreen('lobby'); };
+      nameInput.value = '';
+      workdirInput.value = '';
+      claudeGroup.style.display = 'none';
+      // admin-only fields stay disabled
+      runasInput.disabled = true;
+      serverInput.disabled = true;
+      document.getElementById('f-dangermode').disabled = true;
+      break;
+
+    case 'edit':
+      title.textContent = 'Edit Session';
+      submitBtn.textContent = 'Save Changes';
+      submitBtn.onclick = () => { toast('Settings saved!'); showScreen('lobby'); };
+      nameInput.value = 'my-project';
+      workdirInput.value = '/home/greg/projects';
+      workdirInput.disabled = true; workdirInput.classList.add('locked');
+      runasInput.disabled = true; runasInput.classList.add('locked');
+      serverInput.disabled = true; serverInput.classList.add('locked');
+      claudeGroup.style.display = 'block';
+      document.getElementById('f-claude-id').value = 'a1b2c3d4-5678-90ab-cdef-1234567890ab';
+      document.getElementById('f-claude-id').disabled = false;
+      document.getElementById('f-dangermode').disabled = true;
+      break;
+
+    case 'restart':
+      title.textContent = 'Restart Session';
+      submitBtn.textContent = 'Restart Session';
+      submitBtn.onclick = () => { toast('Session restarted!'); showScreen('lobby'); };
+      nameInput.value = 'my-project';
+      workdirInput.value = '/home/greg/projects';
+      workdirInput.disabled = true; workdirInput.classList.add('locked');
+      runasInput.disabled = true; runasInput.classList.add('locked');
+      serverInput.disabled = true; serverInput.classList.add('locked');
+      claudeGroup.style.display = 'block';
+      document.getElementById('f-claude-id').value = 'a1b2c3d4-5678-90ab-cdef-1234567890ab';
+      document.getElementById('f-claude-id').disabled = false;
+      document.getElementById('f-dangermode').disabled = true;
+      break;
+
+    case 'fork':
+      title.textContent = 'Fork Session';
+      submitBtn.textContent = 'Create Fork';
+      submitBtn.onclick = () => { toast('Fork created: my-project-fork_01'); showScreen('lobby'); };
+      nameInput.value = 'my-project-fork_01';
+      workdirInput.value = '/home/greg/projects';
+      workdirInput.disabled = false;
+      runasInput.disabled = true; runasInput.classList.add('locked');
+      serverInput.disabled = true; serverInput.classList.add('locked');
+      claudeGroup.style.display = 'block';
+      document.getElementById('f-claude-id').value = 'a1b2c3d4-5678-90ab-cdef-1234567890ab';
+      document.getElementById('f-claude-id').disabled = true;
+      document.getElementById('f-claude-id').classList.add('locked');
+      document.getElementById('f-dangermode').disabled = true;
+      break;
+  }
+  updateFormConditions();
+}
+
+function updateFormConditions() {
+  const hidden = document.getElementById('f-hidden').checked;
+  const pub = document.getElementById('f-public').checked;
+  const usersNa = document.getElementById('f-users-na');
+  const usersSelect = document.getElementById('f-users');
+  const groupsNa = document.getElementById('f-groups-na');
+  const groupsSelect = document.getElementById('f-groups');
+  const publicLabel = document.getElementById('f-public').closest('label');
+
+  // Public hidden when session is hidden
+  if (hidden) {
+    document.getElementById('f-public').checked = false;
+    publicLabel.style.opacity = '0.4';
+    publicLabel.style.pointerEvents = 'none';
+  } else {
+    publicLabel.style.opacity = '1';
+    publicLabel.style.pointerEvents = 'auto';
+  }
+
+  // Users/groups shown when not hidden AND not public
+  const showAccess = !hidden && !document.getElementById('f-public').checked;
+  usersNa.style.display = showAccess ? 'none' : 'block';
+  usersSelect.style.display = showAccess ? 'block' : 'none';
+  groupsNa.style.display = showAccess ? 'none' : 'block';
+  groupsSelect.style.display = showAccess ? 'block' : 'none';
+
+  if (hidden) {
+    usersNa.textContent = 'N/A \u2014 session is hidden';
+    groupsNa.textContent = 'N/A \u2014 session is hidden';
+  } else {
+    usersNa.textContent = 'N/A \u2014 session is public';
+    groupsNa.textContent = 'N/A \u2014 session is public';
+  }
+}
+
+// --- Export ---
+function toggleAllExport() {
+  const cbs = document.querySelectorAll('.export-cb');
+  const allChecked = Array.from(cbs).every(c => c.checked);
+  cbs.forEach(c => c.checked = !allChecked);
+}
+
+// --- Toast ---
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('active');
+  setTimeout(() => el.classList.remove('active'), 2500);
+}
+
+// --- Init ---
+updateFormConditions();
+</script>
+</body>
+</html>
