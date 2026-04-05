@@ -1,5 +1,9 @@
 import Database from 'better-sqlite3';
 import { chmodSync } from 'node:fs';
+import { scrypt, randomBytes, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
+const scryptAsync = promisify(scrypt);
+const SCRYPT_KEYLEN = 64;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -14,6 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
   can_approve_admins INTEGER NOT NULL DEFAULT 0,
   can_approve_sudo INTEGER NOT NULL DEFAULT 0,
   is_superadmin INTEGER NOT NULL DEFAULT 0,
+  admin_pin_hash TEXT,
   created_at TEXT NOT NULL,
   last_login TEXT
 );
@@ -39,6 +44,10 @@ export class UserStore {
     } catch (e) {
       // Column already exists — ignore
     }
+    try {
+      this.db.exec('ALTER TABLE users ADD COLUMN admin_pin_hash TEXT');
+    } catch (e) {}
+
     // Restrict DB file permissions to owner-only (0600)
     try {
       chmodSync(dbPath, 0o600);
@@ -163,6 +172,23 @@ export class UserStore {
   deleteUser(email) {
     this.db.prepare('DELETE FROM provider_links WHERE email = ?').run(email);
     this.db.prepare('DELETE FROM users WHERE email = ?').run(email);
+  }
+
+  async setAdminPin(email, pin) {
+    const salt = randomBytes(16).toString('hex');
+    const hash = await scryptAsync(pin, salt, SCRYPT_KEYLEN);
+    const stored = salt + ':' + hash.toString('hex');
+    this.db.prepare('UPDATE users SET admin_pin_hash = ? WHERE email = ?').run(stored, email);
+  }
+
+  async verifyAdminPin(email, pin) {
+    const user = this.findByEmail(email);
+    if (!user || !user.admin_pin_hash) return false;
+    const [salt, hashHex] = user.admin_pin_hash.split(':');
+    const hash = Buffer.from(hashHex, 'hex');
+    const derived = await scryptAsync(pin, salt, SCRYPT_KEYLEN);
+    if (hash.length !== derived.length) return false;
+    return timingSafeEqual(hash, derived);
   }
 
   close() {

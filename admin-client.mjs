@@ -20,6 +20,60 @@ function csrfFetch(url, opts) {
   return fetch(url, opts);
 }
 
+var _sudoExpires = 0;
+var _pendingSudoAction = null;
+
+function hasSudo() {
+  return Date.now() < _sudoExpires;
+}
+
+function requirePinThen(action) {
+  if (hasSudo()) { action(); return; }
+  _pendingSudoAction = action;
+  var modal = document.getElementById('pin-modal');
+  var input = document.getElementById('pin-input');
+  var error = document.getElementById('pin-error');
+  modal.style.display = 'flex';
+  input.value = '';
+  error.style.display = 'none';
+  input.focus();
+}
+
+document.getElementById('pin-submit').addEventListener('click', async function() {
+  var pin = document.getElementById('pin-input').value;
+  if (!pin) return;
+  var res = await csrfFetch('/api/admin/verify-pin', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pin: pin })
+  });
+  if (!res.ok) {
+    var err = await res.json().catch(function() { return {}; });
+    var errorEl = document.getElementById('pin-error');
+    errorEl.textContent = err.message || 'Invalid PIN';
+    errorEl.style.display = 'block';
+    return;
+  }
+  _sudoExpires = Date.now() + 15 * 60 * 1000;
+  document.getElementById('pin-modal').style.display = 'none';
+  if (_pendingSudoAction) { _pendingSudoAction(); _pendingSudoAction = null; }
+});
+
+document.getElementById('pin-cancel').addEventListener('click', function() {
+  document.getElementById('pin-modal').style.display = 'none';
+  _pendingSudoAction = null;
+});
+
+document.getElementById('set-pin-btn').addEventListener('click', async function() {
+  var pin = document.getElementById('set-pin').value;
+  if (!pin || pin.length < 4) { alert('PIN must be at least 4 characters'); return; }
+  var res = await csrfFetch('/api/admin/set-pin', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pin: pin })
+  });
+  if (res.ok) { alert('PIN set successfully'); document.getElementById('set-pin').value = ''; }
+  else { var err = await res.json().catch(function() { return {}; }); alert('Error: ' + (err.error || 'Failed')); }
+});
+
 async function loadPending() {
   var container = document.getElementById('pending-list');
   try {
@@ -91,6 +145,7 @@ async function loadUsers() {
         flagsHtml + '</td><td>' +
         '<button class="btn btn-merge" onclick="mergeUser(\'' + em + '\')">Merge</button>' +
         '<button class="btn btn-deactivate" onclick="deactivateUser(\'' + em + '\')">Deactivate</button>' +
+        '<button class="btn btn-force-relogin" onclick="forceRelogin(\'' + em + '\')">Force re-login</button>' +
         '</td></tr>';
     }
     html += '</table>';
@@ -210,35 +265,58 @@ document.getElementById('pre-approve-btn').addEventListener('click', async funct
   loadPending(); loadUsers();
 });
 
+window.forceRelogin = async function(email) {
+  requirePinThen(async function() {
+    if (!confirm('Force ' + email + ' to re-authenticate?\n\nAll their active sessions will be disconnected.')) return;
+    var res = await csrfFetch('/api/admin/force-relogin', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email })
+    });
+    if (!res.ok) {
+      var err = await res.json().catch(function() { return {}; });
+      if (err.error === 'sudo-required') { requirePinThen(function() { forceRelogin(email); }); return; }
+      alert('Error: ' + (err.error || 'Failed'));
+      return;
+    }
+    alert(email + ' has been forced to re-authenticate.');
+  });
+};
+
 // Toggle admin flags
 window.toggleFlag = async function(email, flag, value) {
-  var flags = {};
-  flags[flag] = value ? 1 : 0;
-  var res = await csrfFetch('/api/admin/user/' + encodeURIComponent(email) + '/flags', {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(flags)
+  requirePinThen(async function() {
+    var flags = {};
+    flags[flag] = value ? 1 : 0;
+    var res = await csrfFetch('/api/admin/user/' + encodeURIComponent(email) + '/flags', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(flags)
+    });
+    if (!res.ok) {
+      var err = await res.json().catch(function() { return {}; });
+      if (err.error === 'sudo-required') { requirePinThen(function() { toggleFlag(email, flag, value); }); return; }
+      alert('Error: ' + (err.error || 'Failed to update flag'));
+      return;
+    }
+    loadUsers();
   });
-  if (!res.ok) {
-    var err = await res.json().catch(function() { return {}; });
-    alert('Error: ' + (err.error || 'Failed to update flag'));
-    return;
-  }
-  loadUsers();
 };
 
 // Deactivate user (soft delete)
 window.deactivateUser = async function(email) {
-  if (!confirm('Deactivate ' + email + '?\n\nThis will:\n- Remove all login methods\n- Rename their Linux account from cp-* to cpx-*\n- Move their home directory\n\nThey can be reactivated later.')) return;
-  var res = await csrfFetch('/api/admin/deactivate', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: email })
+  requirePinThen(async function() {
+    if (!confirm('Deactivate ' + email + '?\n\nThis will:\n- Remove all login methods\n- Rename their Linux account from cp-* to cpx-*\n- Move their home directory\n\nThey can be reactivated later.')) return;
+    var res = await csrfFetch('/api/admin/deactivate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email })
+    });
+    if (!res.ok) {
+      var err = await res.json().catch(function() { return {}; });
+      if (err.error === 'sudo-required') { requirePinThen(function() { deactivateUser(email); }); return; }
+      alert('Error: ' + (err.error || 'Failed to deactivate'));
+      return;
+    }
+    loadUsers(); loadDeactivated();
   });
-  if (!res.ok) {
-    var err = await res.json().catch(function() { return {}; });
-    alert('Error: ' + (err.error || 'Failed to deactivate'));
-    return;
-  }
-  loadUsers(); loadDeactivated();
 };
 
 // Reactivate user
@@ -258,18 +336,21 @@ window.reactivateUser = async function(email) {
 
 // Purge user (permanent delete)
 window.purgeUser = async function(email, linuxUser) {
-  if (!confirm('PERMANENTLY DELETE ' + email + '?\n\nThis will delete:\n- Database entry\n- Linux account ' + (linuxUser || '') + '\n- Home directory and all files\n\nThis cannot be undone!')) return;
-  if (!confirm('Are you absolutely sure? Type OK to confirm permanent deletion.')) return;
-  var res = await csrfFetch('/api/admin/purge', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: email })
+  requirePinThen(async function() {
+    if (!confirm('PERMANENTLY DELETE ' + email + '?\n\nThis will delete:\n- Database entry\n- Linux account ' + (linuxUser || '') + '\n- Home directory and all files\n\nThis cannot be undone!')) return;
+    if (!confirm('Are you absolutely sure? Type OK to confirm permanent deletion.')) return;
+    var res = await csrfFetch('/api/admin/purge', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email })
+    });
+    if (!res.ok) {
+      var err = await res.json().catch(function() { return {}; });
+      if (err.error === 'sudo-required') { requirePinThen(function() { purgeUser(email, linuxUser); }); return; }
+      alert('Error: ' + (err.error || 'Failed to purge'));
+      return;
+    }
+    loadDeactivated();
   });
-  if (!res.ok) {
-    var err = await res.json().catch(function() { return {}; });
-    alert('Error: ' + (err.error || 'Failed to purge'));
-    return;
-  }
-  loadDeactivated();
 };
 
 // Edit Linux username
@@ -296,19 +377,22 @@ window.editLinuxUser = function(email, currentName) {
 
 // Merge user
 window.mergeUser = async function(sourceEmail) {
-  var targetEmail = prompt('Merge ' + sourceEmail + ' INTO which user?\n\nEnter the email of the target user (the one that will remain):');
-  if (!targetEmail) return;
-  if (!confirm('Merge ' + sourceEmail + ' into ' + targetEmail + '?\n\nProvider links will be moved to ' + targetEmail + '.\n' + sourceEmail + ' will be deleted.')) return;
-  var res = await csrfFetch('/api/admin/merge', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sourceEmail: sourceEmail, targetEmail: targetEmail })
+  requirePinThen(async function() {
+    var targetEmail = prompt('Merge ' + sourceEmail + ' INTO which user?\n\nEnter the email of the target user (the one that will remain):');
+    if (!targetEmail) return;
+    if (!confirm('Merge ' + sourceEmail + ' into ' + targetEmail + '?\n\nProvider links will be moved to ' + targetEmail + '.\n' + sourceEmail + ' will be deleted.')) return;
+    var res = await csrfFetch('/api/admin/merge', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceEmail: sourceEmail, targetEmail: targetEmail })
+    });
+    if (!res.ok) {
+      var err = await res.json().catch(function() { return {}; });
+      if (err.error === 'sudo-required') { requirePinThen(function() { mergeUser(sourceEmail); }); return; }
+      alert('Error: ' + (err.error || 'Merge failed'));
+      return;
+    }
+    loadUsers();
   });
-  if (!res.ok) {
-    var err = await res.json().catch(function() { return {}; });
-    alert('Error: ' + (err.error || 'Merge failed'));
-    return;
-  }
-  loadUsers();
 };
 
 // Add user manually

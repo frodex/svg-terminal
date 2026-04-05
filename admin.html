@@ -75,11 +75,34 @@
                  color: #999; font-size: 0.7rem; text-align: center; line-height: 16px; cursor: help;
                  margin-left: 6px; vertical-align: middle; font-style: italic; }
     .info-icon:hover { background: #3a3a5a; color: #ccc; }
+    .pin-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 99999;
+                 display: flex; align-items: center; justify-content: center; }
+    .pin-modal-backdrop { position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+                          background: rgba(0,0,0,0.5); backdrop-filter: blur(8px); }
+    .pin-modal-dialog { position: relative; background: #16213e; border-radius: 12px; padding: 24px 32px;
+                        min-width: 280px; text-align: center; border: 1px solid #333; }
+    .pin-modal-dialog h3 { color: #fff; margin-bottom: 8px; }
+    .pin-modal-dialog input { background: #1a1a2e; color: #e0e0e0; border: 1px solid #333; border-radius: 4px;
+                              padding: 8px 12px; font-size: 1.1rem; text-align: center; width: 120px;
+                              letter-spacing: 4px; margin: 12px 0; }
+    .pin-modal-dialog input:focus { border-color: #4285f4; outline: none; }
+    .pin-modal-actions { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
+    .btn-force-relogin { background: #6a4a2d; color: #fff; }
+    .btn-force-relogin:hover { background: #8b6a3d; }
   </style>
 </head>
 <body>
   <a class="back" href="/">&#8592; Back to Dashboard</a>
   <h1>User Management</h1>
+  <div class="section">
+    <h2>Your Admin PIN <span class="info-icon" title="Set a PIN to authorize privileged actions like changing flags, deactivating users, or force re-login. Required for sensitive operations.">i</span></h2>
+    <p class="section-info">Privileged actions require PIN confirmation. Set or change your PIN here.</p>
+    <div class="form-row">
+      <label>New PIN</label>
+      <input type="password" id="set-pin" placeholder="4-20 characters" maxlength="20" size="12">
+      <button class="submit" id="set-pin-btn">Set PIN</button>
+    </div>
+  </div>
   <div class="section">
     <h2>Pending Requests <span class="info-icon" title="Users who have signed in via OAuth but have not been approved yet. You can edit the Linux username before approving, check if a name is taken, or merge into an existing account.">i</span></h2>
     <p class="section-info">Approve or deny new sign-in requests. Edit the <code>cp-</code> username before approving. Use <strong>[check existing]</strong> to look up a name, <strong>[auto-generate]</strong> to reset.</p>
@@ -127,6 +150,19 @@
     <h2>Deactivated Users <span class="info-icon" title="Deactivated accounts are soft-deleted: Linux account renamed cp-* → cpx-*, login removed, data preserved. Reactivate restores the account as pending (must re-authenticate). Purge permanently deletes the account and all data.">i</span></h2>
     <p class="section-info"><strong>Reactivate:</strong> restores <code>cpx-</code> → <code>cp-</code>, sets status to pending — user must sign in again and be re-approved. <strong>Purge:</strong> permanently deletes the Linux account, home directory, and all database records. Cannot be undone.</p>
     <div id="deactivated-list"><span class="empty">Loading...</span></div>
+  </div>
+  <div class="pin-modal" id="pin-modal" style="display:none">
+    <div class="pin-modal-backdrop"></div>
+    <div class="pin-modal-dialog">
+      <h3>Admin PIN Required</h3>
+      <p class="note">Enter your PIN to continue with this action.</p>
+      <input type="password" id="pin-input" placeholder="PIN" maxlength="20" autocomplete="off">
+      <div class="pin-modal-actions">
+        <button class="btn btn-approve" id="pin-submit">Confirm</button>
+        <button class="btn btn-deny" id="pin-cancel">Cancel</button>
+      </div>
+      <p class="note" id="pin-error" style="color:#f44; display:none"></p>
+    </div>
   </div>
   <script src="/admin-client.mjs" type="module"></script>
 </body>

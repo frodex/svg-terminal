@@ -981,3 +981,70 @@ html, body {
   opacity: 0;
   transition: opacity 0.3s;
 }
+
+/* === Reconnection overlay === */
+.reconnect-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 99999;
+  background: rgba(10, 10, 30, 0.6);
+  backdrop-filter: blur(30px) saturate(1.4);
+  -webkit-backdrop-filter: blur(30px) saturate(1.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s ease;
+}
+.reconnect-overlay[aria-hidden="false"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+.reconnect-card {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 16px;
+  padding: 40px 48px;
+  text-align: center;
+  font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  color: #e0e0e0;
+  max-width: 360px;
+}
+.reconnect-icon {
+  font-size: 3rem;
+  margin-bottom: 12px;
+}
+.reconnect-card p {
+  margin-bottom: 8px;
+}
+.reconnect-status {
+  color: #ccc;
+  font-size: 0.95rem;
+}
+.reconnect-countdown {
+  font-size: 3rem;
+  font-weight: 700;
+  color: #ff9800;
+  font-variant-numeric: tabular-nums;
+  margin: 8px 0;
+}
+.reconnect-sub {
+  color: #666;
+  font-size: 0.8rem;
+}
+.reconnect-login-link {
+  display: inline-block;
+  margin-top: 16px;
+  padding: 10px 24px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 8px;
+  text-decoration: none;
+  font-size: 0.9rem;
+  transition: background 0.2s;
+}
+.reconnect-login-link:hover {
+  background: rgba(255, 255, 255, 0.2);
+}

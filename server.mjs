@@ -14,6 +14,8 @@ import { createSessionCookie, validateSessionCookie } from './session-cookie.mjs
 import { UserStore } from './user-store.mjs';
 import { getAuthUrlAsync, handleCallback, getSupportedProviders } from './auth.mjs';
 import { createSystemAccount, deleteSystemAccount, addToGroup, generateUsername, ensureCpUsersGroup, userExists, deactivateAccount, reactivateAccount, purgeAccount } from './provisioner.mjs';
+import { ApiKeyStore } from './api-key-store.mjs';
+import { RateLimiter } from './rate-limiter.mjs';
 
 // ---------------------------------------------------------------------------
 // Async tmux helper
@@ -101,6 +103,28 @@ if (AUTH_ENABLED) {
     userStore.setSuperadmin(rootUser.email, true);
     process.stderr.write('[AUTH] Auto-promoted ' + rootUser.email + ' to superadmin (linux_user=root)\n');
   }
+}
+
+const apiKeyStore = AUTH_ENABLED ? new ApiKeyStore({
+  secret: AUTH_SECRET,
+  idleTimeoutMs: 30 * 60 * 1000,
+  absoluteTimeoutMs: 24 * 60 * 60 * 1000,
+  maxKeysPerUser: 10,
+}) : null;
+
+// ---------------------------------------------------------------------------
+// Rate limiters (Task 14)
+// ---------------------------------------------------------------------------
+
+const authRateLimiter = new RateLimiter({ maxAttempts: 5, windowMs: 60000, lockoutMs: 900000, lockoutAfter: 10 });
+const oauthInitRateLimiter = new RateLimiter({ maxAttempts: 10, windowMs: 60000, lockoutMs: 300000, lockoutAfter: 20 });
+const adminMutationRateLimiter = new RateLimiter({ maxAttempts: 10, windowMs: 60000, lockoutMs: 300000, lockoutAfter: 15 });
+const privilegedActionRateLimiter = new RateLimiter({ maxAttempts: 3, windowMs: 60000, lockoutMs: 600000, lockoutAfter: 5 });
+const wsUpgradeRateLimiter = new RateLimiter({ maxAttempts: 20, windowMs: 60000, lockoutMs: 300000, lockoutAfter: 30 });
+const apiKeyRateLimiter = new RateLimiter({ maxAttempts: 30, windowMs: 60000 });
+
+function getClientIp(req) {
+  return req.headers['cf-connecting-ip'] || req.socket.remoteAddress;
 }
 
 const STRICT_SESSION_AUTHZ = process.env.STRICT_SESSION_AUTHZ === '1';
@@ -873,6 +897,7 @@ const CAPTURE_INTERVAL_FOCUSED = Number(process.env.CAPTURE_INTERVAL_FOCUSED) ||
 const CAPTURE_INTERVAL_UNFOCUSED = Number(process.env.CAPTURE_INTERVAL_UNFOCUSED) || 500;
 const sessionWatchers = new Map(); // key = "session:pane", value = watcher
 const dashboardClients = new Set(); // all /ws/dashboard connections
+const sudoWindows = new Map(); // email → expiry timestamp
 // Reverse index: ws → Set of watcher keys (for fast unsubscribe on close)
 const wsToWatcherKeys = new WeakMap();
 
@@ -1241,8 +1266,14 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
 }
 
 async function handleDashboardWs(ws, req) {
-  // Auth check
-  const user = getAuthUser(req);
+  // Auth check — prefer API key identity over session cookie
+  const user = req._apiKeyIdentity
+    ? userStore.findByEmail(req._apiKeyIdentity.email) || {
+        email: req._apiKeyIdentity.email,
+        linux_user: req._apiKeyIdentity.linuxUser,
+        status: 'approved',
+      }
+    : getAuthUser(req);
   if (!user || (AUTH_ENABLED && user.status !== 'approved')) {
     ws.send(JSON.stringify({ type: 'error', message: 'Not authenticated' }));
     ws.close();
@@ -1250,6 +1281,7 @@ async function handleDashboardWs(ws, req) {
   }
 
   dashboardClients.add(ws);
+  ws._userEmail = user.email;  // For force-relogin (Task 13) to find WS by user
   const knownSessions = new Set();
   const cpUserDash = user.linux_user || CP_DEFAULT_USER;
 
@@ -1257,6 +1289,7 @@ async function handleDashboardWs(ws, req) {
   await sendSessionDiscovery(ws, knownSessions, user);
 
   ws.on('message', async (data) => {
+    if (req._apiKey && apiKeyStore) apiKeyStore.touch(req._apiKey);
     try {
       const msg = JSON.parse(data);
 
@@ -1283,6 +1316,80 @@ async function handleDashboardWs(ws, req) {
           } else {
             subscribeToSession(ws, session, '0');
           }
+        }
+        return;
+      }
+
+      // Session lifecycle over WS
+      if (msg.type === 'create-session') {
+        try {
+          const linuxUser = user.linux_user || CP_DEFAULT_USER;
+          const autoName = 'svg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+          const payload = buildCreateSessionPayload(msg.payload || {}, autoName);
+          const launchProfile = payload.launchProfile;
+          try {
+            const result = await cpRequest('createSession', { user: linuxUser, body: payload }, 120000);
+            notifyDashboardCpSessionCreated(result, linuxUser);
+            if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'create-session-result', ok: true, session: result }));
+          } catch (cpErr) {
+            // Fallback to local tmux for shell profile
+            if (launchProfile === 'shell') {
+              let tmuxName = payload.name;
+              try { await tmuxAsync('has-session', '-t', tmuxName); tmuxName = payload.name + '-' + Date.now().toString(36); } catch (e) { /* name free */ }
+              await tmuxAsync('new-session', '-d', '-s', tmuxName, '-x', '80', '-y', '24');
+              if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'create-session-result', ok: true, session: { name: tmuxName, source: 'tmux' } }));
+            } else {
+              throw cpErr;
+            }
+          }
+        } catch (err) {
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'create-session-result', ok: false, error: err.message || String(err) }));
+        }
+        return;
+      }
+
+      if (msg.type === 'restart-session') {
+        try {
+          const linuxUser = user.linux_user || CP_DEFAULT_USER;
+          const p = msg.payload || {};
+          const deadId = p.deadSessionId || p.deadId;
+          if (!deadId || typeof deadId !== 'string') throw new Error('deadSessionId is required');
+          const settings = buildRestartForkSettings(p);
+          const result = await cpRequest('restartSession', { user: linuxUser, sessionId: deadId, settings }, 120000);
+          notifyDashboardCpSessionCreated(result, linuxUser);
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'restart-session-result', ok: true, session: result }));
+        } catch (err) {
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'restart-session-result', ok: false, error: err.message || String(err) }));
+        }
+        return;
+      }
+
+      if (msg.type === 'fork-session') {
+        try {
+          const linuxUser = user.linux_user || CP_DEFAULT_USER;
+          const p = msg.payload || {};
+          const sourceId = p.sourceSessionId || p.sourceId;
+          if (!sourceId || typeof sourceId !== 'string') throw new Error('sourceSessionId is required');
+          const settings = buildRestartForkSettings(p);
+          const result = await cpRequest('forkSession', { user: linuxUser, sessionId: sourceId, settings }, 120000);
+          notifyDashboardCpSessionCreated(result, linuxUser);
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'fork-session-result', ok: true, session: result }));
+        } catch (err) {
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'fork-session-result', ok: false, error: err.message || String(err) }));
+        }
+        return;
+      }
+
+      // Layout save over WS
+      if (msg.type === 'save-layout') {
+        try {
+          const safeKey = user.email.replace(/[^a-zA-Z0-9@._-]/g, '_');
+          const profileDir = staticPath('profiles');
+          if (!existsSync(profileDir)) mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+          writeFileSync(profileDir + '/' + safeKey + '.json', JSON.stringify(msg.layout), { mode: 0o600 });
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'save-layout-result', ok: true }));
+        } catch (err) {
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'save-layout-result', ok: false, error: err.message || String(err) }));
         }
         return;
       }
@@ -1430,10 +1537,12 @@ async function handleDashboardWs(ws, req) {
   });
 
   ws.on('close', () => {
+    if (req._apiKey && apiKeyStore) apiKeyStore.releaseWs(req._apiKey);
     unsubscribeFromAll(ws);
     dashboardClients.delete(ws);
   });
   ws.on('error', () => {
+    if (req._apiKey && apiKeyStore) apiKeyStore.releaseWs(req._apiKey);
     unsubscribeFromAll(ws);
     dashboardClients.delete(ws);
   });
@@ -1793,6 +1902,12 @@ function requireAdmin(req, res) {
   sendError(res, 403, 'Admin access required'); return null;
 }
 
+function requireSudo(user) {
+  if (!user) return false;
+  const expiry = sudoWindows.get(user.email);
+  return expiry && Date.now() < expiry;
+}
+
 const MAX_BODY_SIZE = 1 * 1024 * 1024; // 1MB
 
 function readBody(req) {
@@ -1880,18 +1995,18 @@ function router(req, res) {
   if (pathname === '/login') {
     // Dev mode password login
     if (AUTH_MODE === 'dev' && !hasOAuthProviders && req.method === 'POST') {
+      const ip = getClientIp(req);
+      if (!authRateLimiter.check(ip)) { sendError(res, 429, 'Too many attempts — try again later'); return; }
       (async () => {
         try {
           const body = await readBody(req);
           const { password } = JSON.parse(body);
-          if (password !== DEV_PASSWORD) { sendError(res, 401, 'Invalid password'); return; }
+          if (password !== DEV_PASSWORD) { authRateLimiter.recordFailure(ip); sendError(res, 401, 'Invalid password'); return; }
+          authRateLimiter.recordSuccess(ip);
           const cookie = createSessionCookie({ email: 'dev@localhost', displayName: 'Development' }, AUTH_SECRET, COOKIE_MAX_AGE);
           res.writeHead(200, {
             'Content-Type': 'application/json',
-            'Set-Cookie': [
-              COOKIE_NAME + '=' + cookie + '; HttpOnly; Path=/; Max-Age=' + COOKIE_MAX_AGE + '; SameSite=Lax',
-              'cp_ws_token=' + cookie + '; Path=/; Max-Age=' + COOKIE_MAX_AGE + '; SameSite=Lax',
-            ],
+            'Set-Cookie': COOKIE_NAME + '=' + cookie + '; HttpOnly; Path=/; Max-Age=' + COOKIE_MAX_AGE + '; SameSite=Lax',
           });
           res.end(JSON.stringify({ ok: true }));
         } catch (err) { sendCaughtError(res, err); }
@@ -1902,6 +2017,18 @@ function router(req, res) {
   }
   if (pathname === '/pending') return serveHtml(req, res, 'pending.html');
   // admin-client.mjs moved behind auth gate (Task 8)
+
+  if (pathname === '/auth/api-key') {
+    const ip = getClientIp(req);
+    if (!apiKeyRateLimiter.check(ip)) { sendError(res, 429, 'Too many API key requests'); return; }
+    const user = getAuthUser(req);
+    if (!user) return sendJson(res, 401, { error: 'Not authenticated' });
+    const browserUid = url.searchParams.get('uid') || null;
+    const key = apiKeyStore.issue(user.email, user.linux_user || CP_DEFAULT_USER, browserUid);
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ key }));
+    return;
+  }
 
   if (pathname === '/auth/ws-token') {
     const user = getAuthUser(req);
@@ -1936,10 +2063,7 @@ function router(req, res) {
       const cookie = createSessionCookie({ email: user.email, displayName: user.display_name }, AUTH_SECRET, COOKIE_MAX_AGE);
       res.writeHead(200, {
         'Content-Type': 'application/json',
-        'Set-Cookie': [
-          COOKIE_NAME + '=' + cookie + '; HttpOnly; Path=/; Max-Age=' + COOKIE_MAX_AGE + '; SameSite=Lax',
-          'cp_ws_token=' + cookie + '; Path=/; Max-Age=' + COOKIE_MAX_AGE + '; SameSite=Lax',
-        ],
+        'Set-Cookie': COOKIE_NAME + '=' + cookie + '; HttpOnly; Path=/; Max-Age=' + COOKIE_MAX_AGE + '; SameSite=Lax',
       });
       res.end(JSON.stringify({ status: 'approved' }));
       return;
@@ -1951,10 +2075,7 @@ function router(req, res) {
   }
 
   if (req.method === 'POST' && pathname === '/auth/logout') {
-    res.writeHead(302, { Location: '/login', 'Set-Cookie': [
-      COOKIE_NAME + '=; HttpOnly; Path=/; Max-Age=0',
-      'cp_ws_token=; Path=/; Max-Age=0',
-    ] });
+    res.writeHead(302, { Location: '/login', 'Set-Cookie': COOKIE_NAME + '=; HttpOnly; Path=/; Max-Age=0' });
     res.end(); return;
   }
 
@@ -1990,10 +2111,7 @@ function router(req, res) {
         if (user.status === 'pending') { const checkToken = randomBytes(16).toString('base64url'); pendingCheckTokens.set(checkToken, { email: user.email, expires: Date.now() + 3600000 }); res.writeHead(302, { Location: '/pending?email=' + encodeURIComponent(user.email) + '&check=' + checkToken }); res.end(); return; }
         if (user.status === 'denied') { res.writeHead(302, { Location: '/login?error=Access+denied' }); res.end(); return; }
         const cookie = createSessionCookie({ email: user.email, displayName: user.display_name || identity.displayName }, AUTH_SECRET, COOKIE_MAX_AGE);
-        res.writeHead(302, { Location: '/', 'Set-Cookie': [
-          COOKIE_NAME + '=' + cookie + '; HttpOnly; Path=/; Max-Age=' + COOKIE_MAX_AGE + '; SameSite=Lax',
-          'cp_ws_token=' + cookie + '; Path=/; Max-Age=' + COOKIE_MAX_AGE + '; SameSite=Lax',
-        ] });
+        res.writeHead(302, { Location: '/', 'Set-Cookie': COOKIE_NAME + '=' + cookie + '; HttpOnly; Path=/; Max-Age=' + COOKIE_MAX_AGE + '; SameSite=Lax' });
         res.end();
       } catch (err) {
         console.error('[AUTH] callback error:', err);
@@ -2006,6 +2124,8 @@ function router(req, res) {
   }
 
   if (pathname.startsWith('/auth/')) {
+    const ip = getClientIp(req);
+    if (!oauthInitRateLimiter.check(ip)) { sendError(res, 429, 'Too many attempts'); return; }
     const provider = pathname.split('/')[2];
     (async () => {
       try {
@@ -2181,6 +2301,8 @@ function router(req, res) {
   if (req.method === 'PATCH' && pathname.startsWith('/api/admin/user/') && pathname.endsWith('/flags')) {
     (async () => {
       const u = requireAdmin(req, res); if (!u) return;
+      if (!privilegedActionRateLimiter.check(u.email)) { sendError(res, 429, 'Too many privileged actions'); return; }
+      if (!requireSudo(u)) return sendJson(res, 403, { error: 'sudo-required', message: 'Enter your admin PIN to continue' });
       if (!u.can_approve_admins && !u.can_approve_sudo && u.linux_user !== 'root') return sendError(res, 403, 'Insufficient permissions');
       const email = decodeURIComponent(pathname.split('/')[4]);
       const body = await readBody(req);
@@ -2195,6 +2317,8 @@ function router(req, res) {
   if (req.method === 'POST' && pathname === '/api/admin/deactivate') {
     (async () => {
       const u = requireAdmin(req, res); if (!u) return;
+      if (!privilegedActionRateLimiter.check(u.email)) { sendError(res, 429, 'Too many privileged actions'); return; }
+      if (!requireSudo(u)) return sendJson(res, 403, { error: 'sudo-required', message: 'Enter your admin PIN to continue' });
       const body = await readBody(req);
       const { email } = JSON.parse(body);
       if (email === u.email) return sendError(res, 400, 'Cannot deactivate yourself');
@@ -2236,6 +2360,8 @@ function router(req, res) {
   if (req.method === 'POST' && pathname === '/api/admin/purge') {
     (async () => {
       const u = requireAdmin(req, res); if (!u) return;
+      if (!privilegedActionRateLimiter.check(u.email)) { sendError(res, 429, 'Too many privileged actions'); return; }
+      if (!requireSudo(u)) return sendJson(res, 403, { error: 'sudo-required', message: 'Enter your admin PIN to continue' });
       const body = await readBody(req);
       const { email } = JSON.parse(body);
       const target = userStore.findByEmail(email);
@@ -2273,6 +2399,8 @@ function router(req, res) {
   if (req.method === 'POST' && pathname === '/api/admin/merge') {
     (async () => {
       const u = requireAdmin(req, res); if (!u) return;
+      if (!privilegedActionRateLimiter.check(u.email)) { sendError(res, 429, 'Too many privileged actions'); return; }
+      if (!requireSudo(u)) return sendJson(res, 403, { error: 'sudo-required', message: 'Enter your admin PIN to continue' });
       const body = await readBody(req);
       const { sourceEmail, targetEmail } = JSON.parse(body);
       if (!sourceEmail || !targetEmail) return sendError(res, 400, 'sourceEmail and targetEmail required');
@@ -2282,6 +2410,50 @@ function router(req, res) {
       if (!source) return sendError(res, 404, 'Source user not found');
       if (!target) return sendError(res, 404, 'Target user not found');
       userStore.mergeUser(sourceEmail, targetEmail);
+      sendJson(res, 200, { ok: true });
+    })().catch(err => sendCaughtError(res, err));
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/admin/set-pin') {
+    (async () => {
+      const u = requireAdmin(req, res); if (!u) return;
+      const body = await readBody(req);
+      const { pin } = JSON.parse(body);
+      if (!pin || pin.length < 4 || pin.length > 20) return sendError(res, 400, 'PIN must be 4-20 characters');
+      await userStore.setAdminPin(u.email, pin);
+      sendJson(res, 200, { ok: true });
+    })().catch(err => sendCaughtError(res, err));
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/admin/verify-pin') {
+    (async () => {
+      const u = requireAdmin(req, res); if (!u) return;
+      const body = await readBody(req);
+      const { pin } = JSON.parse(body);
+      const valid = await userStore.verifyAdminPin(u.email, pin);
+      if (!valid) return sendError(res, 403, 'Invalid PIN');
+      sudoWindows.set(u.email, Date.now() + 15 * 60 * 1000);
+      sendJson(res, 200, { ok: true });
+    })().catch(err => sendCaughtError(res, err));
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/admin/force-relogin') {
+    (async () => {
+      const u = requireAdmin(req, res); if (!u) return;
+      if (!privilegedActionRateLimiter.check(u.email)) { sendError(res, 429, 'Too many privileged actions'); return; }
+      if (!requireSudo(u)) return sendJson(res, 403, { error: 'sudo-required', message: 'Enter your admin PIN to continue' });
+      const body = await readBody(req);
+      const { email } = JSON.parse(body);
+      if (!email) return sendError(res, 400, 'Missing email');
+      if (apiKeyStore) apiKeyStore.revokeAllForUser(email);
+      for (const ws of dashboardClients) {
+        if (ws._userEmail === email && ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'reauth-required', reason: 'admin-revoked' }));
+        }
+      }
       sendJson(res, 200, { ok: true });
     })().catch(err => sendCaughtError(res, err));
     return;
@@ -2513,17 +2685,44 @@ server.on('upgrade', async (req, socket, head) => {
   const remoteIp = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   process.stderr.write(`[WS] ${remoteIp} UPGRADE ${url.pathname}\n`);
 
-  // WebSocket auth: token-based (Origin check removed — Cloudflare tunnel rewrites Origin to internal IP)
-  // WebSocket auth check: parse session cookie or query string token
-  if (AUTH_ENABLED) {
+  // Rate limit WS upgrades
+  const wsIp = req.headers['cf-connecting-ip'] || req.socket.remoteAddress;
+  if (!wsUpgradeRateLimiter.check(wsIp)) {
+    socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  // WebSocket auth: API key (preferred) or session cookie/query token (fallback)
+  const apiKey = url.searchParams.get('key');
+  if (apiKey && apiKeyStore) {
+    const identity = apiKeyStore.validate(apiKey);
+    if (!identity) {
+      wsUpgradeRateLimiter.recordFailure(wsIp);
+      process.stderr.write(`[WS] ${remoteIp} Invalid API key for ${url.pathname}\n`);
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    if (!apiKeyStore.claimWs(apiKey)) {
+      process.stderr.write(`[WS] ${remoteIp} Duplicate WS connection for ${url.pathname}\n`);
+      socket.write('HTTP/1.1 409 Conflict\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    req._apiKey = apiKey;
+    req._apiKeyIdentity = identity;
+    // Skip cookie check — API key is sufficient
+  } else if (AUTH_ENABLED) {
+    // Cookie/token fallback (backwards compat)
     const cookieHeader = req.headers.cookie || '';
     const match = cookieHeader.match(new RegExp(COOKIE_NAME + '=([^;]+)'));
-    const wsTokenMatch = cookieHeader.match(/cp_ws_token=([^;]+)/);
     const queryToken = url.searchParams.get('token');
-    const token = match ? match[1] : (wsTokenMatch ? wsTokenMatch[1] : (queryToken || null));
+    const token = match ? match[1] : (queryToken || null);
     const payload = token ? validateSessionCookie(token, AUTH_SECRET) : null;
     if (!payload) {
-      process.stderr.write(`[WS] ${remoteIp} Unauthorized for ${url.pathname} | cookie: ${!!match} | wsToken: ${!!wsTokenMatch} | queryToken: ${!!queryToken} | url: ${url.search}\n`);
+      wsUpgradeRateLimiter.recordFailure(wsIp);
+      process.stderr.write(`[WS] ${remoteIp} Unauthorized for ${url.pathname} | cookie: ${!!match} | queryToken: ${!!queryToken} | url: ${url.search}\n`);
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;
@@ -2535,6 +2734,7 @@ server.on('upgrade', async (req, socket, head) => {
       return;
     }
   }
+  wsUpgradeRateLimiter.recordSuccess(wsIp);
 
   if (url.pathname === '/ws/dashboard') {
     wss.handleUpgrade(req, socket, head, (ws) => {

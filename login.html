@@ -41,6 +41,51 @@
       el.textContent = err.replace(/<[^>]*>/g, '').slice(0, 200);
       el.style.display = 'block';
     }
+
+    // Dev mode: show password form if no OAuth providers are configured
+    (function() {
+      var btns = document.querySelectorAll('.provider-btn, .oauth-btn, .btn-google, .btn-github, .btn-microsoft');
+      var hasVisibleBtn = false;
+      for (var i = 0; i < btns.length; i++) {
+        if (btns[i].offsetParent !== null) hasVisibleBtn = true;
+      }
+      if (!hasVisibleBtn) {
+        var card = document.querySelector('.card') || document.querySelector('.login-card') || document.body;
+        var devDiv = document.createElement('div');
+        devDiv.style.marginTop = '20px';
+        devDiv.style.textAlign = 'center';
+        devDiv.innerHTML = '<h3 style="color:#fff;margin-bottom:12px">Development Mode</h3>' +
+          '<input type="password" id="dev-password" placeholder="Dev password" style="background:#1a1a2e;color:#e0e0e0;border:1px solid #333;border-radius:4px;padding:8px 12px;font-size:0.9rem;width:200px;text-align:center">' +
+          '<br><button onclick="devLogin()" style="margin-top:12px;padding:8px 20px;background:#4285f4;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.9rem">Sign in</button>' +
+          '<p id="dev-error" style="color:#f44;font-size:0.8rem;margin-top:8px;display:none"></p>';
+        card.appendChild(devDiv);
+      }
+    })();
+
+    function devLogin() {
+      var pw = document.getElementById('dev-password');
+      if (!pw) return;
+      fetch('/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw.value })
+      }).then(function(r) {
+        if (r.ok) { location.href = '/'; }
+        else {
+          var err = document.getElementById('dev-error');
+          if (err) { err.textContent = 'Invalid password'; err.style.display = 'block'; }
+        }
+      }).catch(function() {
+        var err = document.getElementById('dev-error');
+        if (err) { err.textContent = 'Connection error'; err.style.display = 'block'; }
+      });
+    }
+
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' && document.getElementById('dev-password') === document.activeElement) {
+        devLogin();
+      }
+    });
   </script>
 </body>
 </html>

@@ -1423,17 +1423,17 @@ function init() {
       }
       var adminLink = document.getElementById('menu-admin');
       if (adminLink && u.canApprove) adminLink.style.display = '';
-      // Fetch WS token (Cloudflare strips cookies from WS upgrades)
-      return fetch('/auth/ws-token', { credentials: 'same-origin' });
+      // Fetch API key for WebSocket auth (Cloudflare strips cookies from WS upgrades)
+      return fetch('/auth/api-key', { credentials: 'same-origin' });
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
-      _wsAuthToken = data.token;
+      _apiKey = data.key;
       connectDashboardWs();
     })
     .catch(function(e) {
       if (e.message !== 'not authenticated') {
-        // WS token fetch failed but we're authenticated — try without token
+        // API key fetch failed but we're authenticated — try without key
         connectDashboardWs();
       }
     });
@@ -1444,23 +1444,78 @@ function init() {
   syncUiOverlayPointerBlock();
   // Keep refreshSessions as fallback for old sessions during transition
   refreshSessions();
-  setInterval(refreshSessions, 5000);
+  setInterval(refreshSessions, 30000); // fallback only, WS handles real-time discovery
   // DEPRECATED: titles arrive via WebSocket screen/delta messages
   // setInterval(refreshTitles, 10000);
   animate();
 }
 
 // === Shared Dashboard WebSocket ===
-var _wsAuthToken = null;
+var _apiKey = null;
 var _dashWsAuthFailures = 0;
+
+var _reconnectAttempt = 0;
+var _reconnectTimer = null;
+var _reconnectTimeoutSec = 30;
+
+function showReconnectOverlay(secondsLeft) {
+  _reconnectAttempt++;
+  var overlay = document.getElementById('reconnect-overlay');
+  var statusEl = document.getElementById('reconnect-status');
+  var countdownEl = document.getElementById('reconnect-countdown');
+  var subEl = document.getElementById('reconnect-sub');
+  var loginLink = document.getElementById('reconnect-login-link');
+  if (!overlay) return;
+
+  overlay.setAttribute('aria-hidden', 'false');
+  if (loginLink) loginLink.style.display = 'none';
+  if (subEl) subEl.textContent = 'Re-establishing connection to server';
+
+  var remaining = secondsLeft;
+  if (statusEl) statusEl.textContent = 'Retrying (attempt ' + _reconnectAttempt + ')... ' + remaining;
+  if (countdownEl) countdownEl.textContent = remaining;
+
+  if (_reconnectTimer) clearInterval(_reconnectTimer);
+
+  if (remaining <= 0) {
+    if (countdownEl) countdownEl.textContent = '!';
+    if (statusEl) statusEl.textContent = 'Connection to server lost';
+    if (subEl) subEl.textContent = 'Re-authentication required';
+    if (loginLink) loginLink.style.display = 'inline-block';
+    return;
+  }
+
+  _reconnectTimer = setInterval(function() {
+    remaining--;
+    if (countdownEl) countdownEl.textContent = remaining;
+    if (statusEl) statusEl.textContent = 'Retrying (attempt ' + _reconnectAttempt + ')... ' + remaining;
+    if (remaining <= 0) {
+      clearInterval(_reconnectTimer);
+      _reconnectTimer = null;
+      if (countdownEl) countdownEl.textContent = '!';
+      if (statusEl) statusEl.textContent = 'Connection to server lost';
+      if (subEl) subEl.textContent = 'Re-authentication required';
+      if (loginLink) loginLink.style.display = 'inline-block';
+    }
+  }, 1000);
+}
+
+function hideReconnectOverlay() {
+  _reconnectAttempt = 0;
+  if (_reconnectTimer) { clearInterval(_reconnectTimer); _reconnectTimer = null; }
+  var overlay = document.getElementById('reconnect-overlay');
+  if (overlay) overlay.setAttribute('aria-hidden', 'true');
+}
+
 function connectDashboardWs() {
   var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  var tokenParam = _wsAuthToken ? '?token=' + encodeURIComponent(_wsAuthToken) : '';
-  var url = proto + '//' + location.host + '/ws/dashboard' + tokenParam;
+  var keyParam = _apiKey ? '?key=' + encodeURIComponent(_apiKey) : '';
+  var url = proto + '//' + location.host + '/ws/dashboard' + keyParam;
   var ws = new WebSocket(url);
   ws.onopen = function() {
     console.log('[Dashboard WS] connected');
     _dashWsAuthFailures = 0;
+    hideReconnectOverlay();
     dashboardWs = ws;
     // Send current focus state so server adjusts capture rates
     if (focusedSessions.size > 0) {
@@ -1477,22 +1532,32 @@ function connectDashboardWs() {
   };
   ws.onclose = function(ev) {
     dashboardWs = null;
-    // 1006 = abnormal close (connection rejected before open), likely auth failure
-    if (ev.code === 1006) {
-      _dashWsAuthFailures++;
-      if (_dashWsAuthFailures >= 3) {
-        console.warn('[Dashboard WS] repeated auth failures, redirecting to login');
-        location.href = '/login?error=' + encodeURIComponent('Session expired — please sign in again');
-        return;
-      }
+    // 1006 = abnormal close (connection rejected), likely auth failure
+    if (ev.code === 1006) _dashWsAuthFailures++;
+
+    if (_dashWsAuthFailures >= 3) {
+      showReconnectOverlay(0); // immediate — show login link
+      return;
     }
-    console.log('[Dashboard WS] disconnected, reconnecting in 2s');
-    // Refresh WS token before reconnecting (may have expired)
+
+    showReconnectOverlay(_reconnectTimeoutSec);
+
+    // Reconnect after delay — refresh API key first
     setTimeout(function() {
-      fetch('/auth/ws-token', { credentials: 'same-origin' })
+      fetch('/auth/api-key', { credentials: 'same-origin' })
         .then(function(r) { return r.ok ? r.json() : null; })
-        .then(function(data) { if (data) _wsAuthToken = data.token; })
-        .finally(connectDashboardWs);
+        .then(function(data) {
+          if (data) { _apiKey = data.key; _dashWsAuthFailures = 0; }
+          connectDashboardWs();
+        })
+        .catch(function() {
+          _dashWsAuthFailures++;
+          if (_dashWsAuthFailures >= 3) {
+            showReconnectOverlay(0);
+          } else {
+            connectDashboardWs();
+          }
+        });
     }, 2000);
   };
   ws.onerror = function() {
@@ -1566,6 +1631,12 @@ function scheduleTerminalSurfaceRepaint(obj, t) {
 }
 
 function routeDashboardMessage(msg) {
+  if (msg.type === 'reauth-required') {
+    // Save UI state before redirect
+    if (window._saveLayout) window._saveLayout();
+    showReconnectOverlay(0); // immediate — show login link
+    return;
+  }
   if (msg.type === 'session-add') {
     if (!terminals.has(msg.session) && !msg.session.startsWith('browser-')) {
       addTerminal(msg.session, msg.cols, msg.rows);
@@ -1584,6 +1655,35 @@ function routeDashboardMessage(msg) {
       removeTerminal(msg.session);
       assignRings();
     }
+    return;
+  }
+  // Session lifecycle WS results
+  if (msg.type === 'create-session-result') {
+    if (msg.ok) {
+      console.log('[WS] Session created:', msg.session);
+    } else {
+      window.alert('Failed to create session: ' + (msg.error || 'Unknown error'));
+    }
+    return;
+  }
+  if (msg.type === 'restart-session-result') {
+    if (msg.ok) {
+      console.log('[WS] Session restarted:', msg.session);
+    } else {
+      window.alert('Failed to restart session: ' + (msg.error || 'Unknown error'));
+    }
+    return;
+  }
+  if (msg.type === 'fork-session-result') {
+    if (msg.ok) {
+      console.log('[WS] Session forked:', msg.session);
+    } else {
+      window.alert('Failed to fork session: ' + (msg.error || 'Unknown error'));
+    }
+    return;
+  }
+  if (msg.type === 'save-layout-result') {
+    if (!msg.ok) console.warn('[WS] Layout save failed:', msg.error);
     return;
   }
   if (msg.type === 'error' && !msg.session) {
@@ -3173,30 +3273,8 @@ async function submitSessionFormFromPanel() {
     }
   }
 
-  try {
-    var res = await csrfFetch('/api/sessions/create', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify(payload)
-    });
-    var data = {};
-    try {
-      data = await res.json();
-    } catch (e) {}
-    if (!res.ok) {
-      window.alert(data.error || ('Failed to create session (' + res.status + ')'));
-      return;
-    }
-    closeSessionFormPanel();
-    await refreshSessions();
-    var sessionId = (data.session && (data.session.id || data.session.name)) || data.name;
-    if (sessionId && terminals.has(sessionId)) {
-      focusTerminal(sessionId);
-    }
-  } catch (err) {
-    window.alert('Could not create session: ' + (err && err.message ? err.message : err));
-  }
+  sendDashboardMessage({ type: 'create-session', payload: payload });
+  closeSessionFormPanel();
 }
 
 function wireSessionFormPanel() {
@@ -3483,30 +3561,8 @@ async function submitRestartFromPanel() {
   var body = buildRestartForkPayloadFrom('rs');
   body.deadSessionId = deadSel.value;
 
-  try {
-    var res = await csrfFetch('/api/sessions/restart', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify(body)
-    });
-    var data = {};
-    try {
-      data = await res.json();
-    } catch (e) {}
-    if (!res.ok) {
-      window.alert(data.error || ('Restart failed (' + res.status + ')'));
-      return;
-    }
-    closeRestartSessionPanel();
-    await refreshSessions();
-    var sessionId = (data.session && (data.session.id || data.session.name)) || null;
-    if (sessionId && terminals.has(sessionId)) {
-      focusTerminal(sessionId);
-    }
-  } catch (err) {
-    window.alert('Could not restart session: ' + (err && err.message ? err.message : err));
-  }
+  sendDashboardMessage({ type: 'restart-session', payload: body });
+  closeRestartSessionPanel();
 }
 
 async function submitForkFromPanel() {
@@ -3518,30 +3574,8 @@ async function submitForkFromPanel() {
   var body = buildRestartForkPayloadFrom('fk');
   body.sourceSessionId = srcSel.value;
 
-  try {
-    var res = await csrfFetch('/api/sessions/fork', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify(body)
-    });
-    var data = {};
-    try {
-      data = await res.json();
-    } catch (e) {}
-    if (!res.ok) {
-      window.alert(data.error || ('Fork failed (' + res.status + ')'));
-      return;
-    }
-    closeForkSessionPanel();
-    await refreshSessions();
-    var sessionId = (data.session && (data.session.id || data.session.name)) || null;
-    if (sessionId && terminals.has(sessionId)) {
-      focusTerminal(sessionId);
-    }
-  } catch (err) {
-    window.alert('Could not fork session: ' + (err && err.message ? err.message : err));
-  }
+  sendDashboardMessage({ type: 'fork-session', payload: body });
+  closeForkSessionPanel();
 }
 
 function wireRestartForkPanels() {
@@ -5117,11 +5151,7 @@ init();
 
   window._saveLayout = function() {
     const state = window._getLayoutState();
-    csrfFetch('/api/layout?uid=' + encodeURIComponent(activeUid), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(state)
-    }).then(r => r.json()).then(d => console.log('Layout saved:', activeUid));
+    sendDashboardMessage({ type: 'save-layout', layout: state });
     return state;
   };
 

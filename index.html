@@ -269,6 +269,17 @@
     </div>
   </div>
 
+  <!-- Reconnection overlay — frosted glass with countdown -->
+  <div class="reconnect-overlay" id="reconnect-overlay" aria-hidden="true">
+    <div class="reconnect-card">
+      <div class="reconnect-icon">&#x26A0;</div>
+      <p class="reconnect-status" id="reconnect-status">Retrying (attempt 1)... 30</p>
+      <div class="reconnect-countdown" id="reconnect-countdown">30</div>
+      <p class="reconnect-sub" id="reconnect-sub">Re-establishing connection to server</p>
+      <a href="/login" class="reconnect-login-link" id="reconnect-login-link" style="display:none">Sign in again</a>
+    </div>
+  </div>
+
   <!-- Input status bar (keystrokes captured at document level) -->
   <div class="input-bar" id="input-bar">
     <span class="status-dot" id="ws-status"></span>
