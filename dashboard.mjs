@@ -3023,7 +3023,14 @@ window._activeInputSession = function() { return activeInputSession; };
 // Kept as fallback during transition for old sessions not yet on shared WebSocket
 async function refreshSessions() {
   try {
-    const res = await fetch('/api/sessions');
+    var headers = {};
+    if (_apiKey) headers['X-Api-Key'] = _apiKey;
+    const res = await fetch('/api/sessions', { headers: headers });
+    if (res.status === 403) {
+      // API key required — force reload to get fresh JS
+      location.reload(true);
+      return;
+    }
     if (!res.ok) return;
     const sessions = await res.json();
     const currentNames = new Set(sessions.map(function (s) { return s.name; }));

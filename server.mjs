@@ -2054,13 +2054,7 @@ function router(req, res) {
     return;
   }
 
-  if (pathname === '/auth/ws-token') {
-    const user = getAuthUser(req);
-    if (!user) return sendJson(res, 401, { error: 'Not authenticated' });
-    // Short-lived token (5 min) for WebSocket auth — Cloudflare strips cookies from WS upgrades
-    const wsToken = createSessionCookie({ email: user.email, displayName: user.display_name }, AUTH_SECRET, 300);
-    return sendJson(res, 200, { token: wsToken });
-  }
+  // /auth/ws-token REMOVED — replaced by /auth/api-key in Phase 2
 
   if (pathname === '/auth/me') {
     const user = getAuthUser(req);
@@ -2513,9 +2507,25 @@ function router(req, res) {
   }
 
   // Auth middleware — protect all remaining routes
+  // Cookie auth is sufficient for: /, static files, admin panel
+  // API data endpoints require an active API key (or cookie for admin panel)
   if (AUTH_ENABLED) {
     const user = requireAuth(req, res);
     if (!user) return;
+
+    // Session data endpoints require an active API key — cookie alone is not sufficient
+    // This prevents stale browsers with valid cookies from seeing session data
+    // without having the current JS loaded (which fetches an API key)
+    const isSessionDataEndpoint = pathname === '/api/sessions' || pathname === '/api/pane' ||
+      pathname === '/api/cp/dead-sessions' || pathname.startsWith('/api/sessions/');
+    if (isSessionDataEndpoint && apiKeyStore) {
+      const apiKeyHeader = req.headers['x-api-key'];
+      if (!apiKeyHeader || !apiKeyStore.validate(apiKeyHeader)) {
+        // No valid API key — redirect to force page reload with fresh JS
+        sendJson(res, 403, { error: 'api-key-required', message: 'Reload page to continue' });
+        return;
+      }
+    }
   }
 
   if (pathname === '/admin-client.mjs') return serveJs(req, res, 'admin-client.mjs');
