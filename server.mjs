@@ -2693,9 +2693,17 @@ server.on('upgrade', async (req, socket, head) => {
     return;
   }
 
-  // WebSocket auth: API key (preferred) or session cookie/query token (fallback)
-  const apiKey = url.searchParams.get('key');
-  if (apiKey && apiKeyStore) {
+  // WebSocket auth: API key REQUIRED — no cookie/token fallback
+  // Clients must fetch GET /auth/api-key first, then pass ?key= on WS URL
+  if (AUTH_ENABLED) {
+    const apiKey = url.searchParams.get('key');
+    if (!apiKey || !apiKeyStore) {
+      wsUpgradeRateLimiter.recordFailure(wsIp);
+      process.stderr.write(`[WS] ${remoteIp} No API key for ${url.pathname}\n`);
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     const identity = apiKeyStore.validate(apiKey);
     if (!identity) {
       wsUpgradeRateLimiter.recordFailure(wsIp);
@@ -2712,27 +2720,6 @@ server.on('upgrade', async (req, socket, head) => {
     }
     req._apiKey = apiKey;
     req._apiKeyIdentity = identity;
-    // Skip cookie check — API key is sufficient
-  } else if (AUTH_ENABLED) {
-    // Cookie/token fallback (backwards compat)
-    const cookieHeader = req.headers.cookie || '';
-    const match = cookieHeader.match(new RegExp(COOKIE_NAME + '=([^;]+)'));
-    const queryToken = url.searchParams.get('token');
-    const token = match ? match[1] : (queryToken || null);
-    const payload = token ? validateSessionCookie(token, AUTH_SECRET) : null;
-    if (!payload) {
-      wsUpgradeRateLimiter.recordFailure(wsIp);
-      process.stderr.write(`[WS] ${remoteIp} Unauthorized for ${url.pathname} | cookie: ${!!match} | queryToken: ${!!queryToken} | url: ${url.search}\n`);
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-    const user = userStore.findByEmail(payload.email);
-    if (!user || user.status !== 'approved') {
-      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
-      socket.destroy();
-      return;
-    }
   }
   wsUpgradeRateLimiter.recordSuccess(wsIp);
 
