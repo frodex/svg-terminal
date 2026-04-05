@@ -4,8 +4,25 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>svg-terminal</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" id="favicon">
   <link rel="stylesheet" href="/dashboard.css">
+  <script>
+    (function() {
+      var opacity = 1, direction = -1;
+      setInterval(function() {
+        var step = direction === 1 ? 0.35 : 0.06; // fast pop on, slow fade out
+        opacity += direction * step;
+        if (opacity <= 0) { opacity = 0; direction = 1; }
+        else if (opacity >= 1) { opacity = 1; direction = -1; }
+        var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +
+          '<text x="1" y="22" font-family="monospace" font-weight="bold" font-size="24" fill="%23222">&gt;</text>' +
+          '<rect x="17" y="7" width="11" height="17" rx="1" fill="%23888" opacity="' + opacity.toFixed(2) + '"/>' +
+          '</svg>';
+        var link = document.getElementById('favicon');
+        if (link) link.href = 'data:image/svg+xml,' + svg;
+      }, 40); // faster cycle
+    })();
+  </script>
   <script type="importmap">
   {
     "imports": {

@@ -2017,9 +2017,10 @@ function router(req, res) {
   ensureCsrfCookie(req, res);
 
   // Favicon (public)
-  if (pathname === '/favicon.ico' || pathname === '/favicon.svg') {
+  if (pathname === '/favicon.ico' || pathname === '/favicon.svg' || pathname === '/favicon-nocursor.svg') {
     try {
-      const content = readFileSync(staticPath('favicon.svg'));
+      const fname = pathname === '/favicon-nocursor.svg' ? 'favicon-nocursor.svg' : 'favicon.svg';
+      const content = readFileSync(staticPath(fname));
       res.setHeader('Content-Type', 'image/svg+xml');
       res.setHeader('Cache-Control', 'public, max-age=86400');
       res.writeHead(200);
