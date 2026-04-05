@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Top Menu Bar — Mockup</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      background: linear-gradient(180deg, #a5a5ae 0%, #b5b5bc 50%, #c2c2c8 100%);
+      font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+      color: #e0e0e0;
+    }
+
+    /* === Top Menu Bar === */
+    .top-bar {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 44px;
+      background: rgba(0, 0, 0, 0.55);
+      backdrop-filter: blur(20px) saturate(1.4);
+      -webkit-backdrop-filter: blur(20px) saturate(1.4);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      z-index: 300;
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 0;
+      transition: opacity 0.3s;
+    }
+
+    .top-bar-section {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px;
+      height: 100%;
+    }
+    .top-bar-section + .top-bar-section {
+      border-left: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .top-bar-section.right {
+      margin-left: auto;
+    }
+
+    /* Hamburger */
+    .hamburger {
+      background: none; border: none; color: rgba(255,255,255,0.7);
+      font-size: 20px; cursor: pointer; padding: 4px 8px; border-radius: 6px;
+      transition: background 0.15s, color 0.15s;
+    }
+    .hamburger:hover { background: rgba(255,255,255,0.1); color: #fff; }
+
+    /* Layout selector */
+    .layout-selector {
+      position: relative;
+    }
+    .layout-current {
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 6px;
+      padding: 5px 28px 5px 10px;
+      color: #ccc;
+      font-size: 12px;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.15s;
+    }
+    .layout-current:hover { background: rgba(255,255,255,0.14); color: #fff; }
+    .layout-current::after {
+      content: '▾';
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 10px;
+      color: #888;
+    }
+    .layout-dropdown {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      background: rgba(30, 30, 40, 0.95);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 8px;
+      min-width: 180px;
+      padding: 4px;
+      z-index: 400;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    }
+    .layout-option {
+      display: flex; align-items: center; gap: 10px;
+      padding: 7px 10px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 12px;
+      color: #ccc;
+      transition: background 0.1s;
+    }
+    .layout-option:hover { background: rgba(255,255,255,0.1); color: #fff; }
+    .layout-option.active { color: #5c9cff; }
+    .layout-option .layout-icon {
+      width: 24px; height: 16px;
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 3px;
+      display: flex; flex-wrap: wrap; gap: 1px; padding: 1px;
+      align-content: flex-start;
+    }
+    .layout-icon .slot {
+      background: rgba(255,255,255,0.25);
+      border-radius: 1px;
+    }
+    .layout-icon.grid-2x2 .slot { width: 10px; height: 6px; }
+    .layout-icon.cols-3 .slot { width: 6px; height: 12px; }
+    .layout-icon.stack .slot { width: 20px; height: 4px; }
+    .layout-icon.focus-1 .slot:first-child { width: 15px; height: 12px; }
+    .layout-icon.focus-1 .slot:not(:first-child) { width: 5px; height: 5px; }
+
+    /* Group mutation buttons */
+    .top-btn {
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 5px;
+      padding: 4px 10px;
+      color: #aaa;
+      font-size: 11px;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+    .top-btn:hover { background: rgba(255,255,255,0.15); color: #fff; }
+
+    /* User section */
+    .user-pill {
+      display: flex; align-items: center; gap: 6px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 14px;
+      padding: 3px 12px 3px 4px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .user-pill:hover { background: rgba(255,255,255,0.12); }
+    .user-avatar {
+      width: 24px; height: 24px; border-radius: 50%;
+      background: #4285f4; color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 600;
+    }
+    .user-name { font-size: 12px; color: #ccc; }
+
+    /* === Hamburger Dropdown === */
+    .hamburger-menu {
+      position: fixed;
+      top: 50px; left: 16px;
+      background: rgba(30, 30, 40, 0.95);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 10px;
+      min-width: 200px;
+      padding: 6px;
+      z-index: 400;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    }
+    .menu-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      color: #ccc;
+      transition: background 0.1s;
+    }
+    .menu-item:hover { background: rgba(255,255,255,0.08); color: #fff; }
+    .menu-item .icon { width: 18px; text-align: center; font-size: 14px; }
+    .menu-divider {
+      height: 1px;
+      background: rgba(255,255,255,0.08);
+      margin: 4px 8px;
+    }
+    .menu-item.danger { color: #ff6b6b; }
+    .menu-item.danger:hover { background: rgba(255, 80, 80, 0.1); }
+
+    /* === Ghost Layout Preview === */
+    .ghost-overlay {
+      position: fixed;
+      top: 44px; left: 0; right: 140px; bottom: 0;
+      z-index: 200;
+      pointer-events: none;
+    }
+    .ghost-slot {
+      position: absolute;
+      background: rgba(255, 255, 255, 0.06);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 2px solid rgba(255, 255, 255, 0.2);
+      border-radius: 12px;
+      transition: opacity 1.5s ease, border-color 1.5s ease, background 1.5s ease;
+    }
+    .ghost-slot.fading {
+      background: transparent;
+      backdrop-filter: none;
+      border-color: rgba(255, 255, 255, 0.08);
+    }
+    .ghost-slot-label {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 11px;
+      color: rgba(255,255,255,0.3);
+      font-weight: 500;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    /* === Bottom Input Bar (existing) === */
+    .input-bar {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      background: rgba(0, 0, 0, 0.8);
+      backdrop-filter: blur(10px);
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 8px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      z-index: 100;
+    }
+    .input-bar .status-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #28c840;
+      display: inline-block; flex-shrink: 0;
+    }
+    .input-bar .target { color: #5c5cff; font-size: 12px; font-family: 'FiraCode Nerd Font Mono', monospace; }
+    .input-bar .hint { color: #555; font-size: 11px; }
+    .perf-indicator {
+      margin-left: auto;
+      padding: 2px 8px; border-radius: 4px; font-size: 11px;
+      font-family: 'FiraCode Nerd Font Mono', monospace;
+      background: rgba(255,255,255,0.06); color: #888;
+      cursor: pointer;
+    }
+
+    /* === Sidebar placeholder === */
+    .sidebar-placeholder {
+      position: fixed;
+      top: 0; right: 0; bottom: 0; width: 140px;
+      background: rgba(0, 0, 0, 0.03);
+      border-left: 1px solid rgba(0, 0, 0, 0.06);
+      z-index: 100;
+      display: flex; flex-direction: column; gap: 8px; padding: 52px 8px 8px;
+    }
+    .thumb-placeholder {
+      background: rgba(0,0,0,0.15); border-radius: 6px; height: 80px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 9px; color: rgba(255,255,255,0.3);
+    }
+
+    /* === Card placeholders (3D scene stand-in) === */
+    .card-placeholder {
+      position: absolute;
+      background: #2e2e32;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    }
+    .card-header {
+      background: #3a3a3e;
+      padding: 6px 10px;
+      font-size: 11px;
+      color: #aaa;
+      display: flex;
+      justify-content: space-between;
+    }
+    .card-header .name { color: #ccc; }
+    .card-body {
+      padding: 8px;
+      font-family: monospace;
+      font-size: 10px;
+      color: #888;
+      line-height: 1.4;
+    }
+
+    /* === State buttons (bottom of mockup) === */
+    .mockup-controls {
+      position: fixed;
+      bottom: 50px; left: 50%;
+      transform: translateX(-50%);
+      z-index: 500;
+      display: flex; gap: 8px;
+    }
+    .mockup-controls button {
+      padding: 8px 16px;
+      background: rgba(66, 133, 244, 0.9);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .mockup-controls button:hover { opacity: 0.85; }
+    .mockup-controls button.active { outline: 2px solid #fff; }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+<!-- ============ TOP MENU BAR ============ -->
+<div class="top-bar" id="topBar">
+  <!-- Hamburger -->
+  <div class="top-bar-section">
+    <button class="hamburger" id="hamburgerBtn" title="Menu">☰</button>
+  </div>
+
+  <!-- Layout selector (shown when multi-focus) -->
+  <div class="top-bar-section" id="layoutSection">
+    <div class="layout-selector">
+      <div class="layout-current" id="layoutBtn">grid-2×2</div>
+      <div class="layout-dropdown hidden" id="layoutDropdown">
+        <div class="layout-option active" data-layout="grid-2x2">
+          <div class="layout-icon grid-2x2"><div class="slot"></div><div class="slot"></div><div class="slot"></div><div class="slot"></div></div>
+          grid-2×2
+        </div>
+        <div class="layout-option" data-layout="cols-3">
+          <div class="layout-icon cols-3"><div class="slot"></div><div class="slot"></div><div class="slot"></div></div>
+          columns-3
+        </div>
+        <div class="layout-option" data-layout="stack">
+          <div class="layout-icon stack"><div class="slot"></div><div class="slot"></div><div class="slot"></div></div>
+          stack
+        </div>
+        <div class="layout-option" data-layout="focus-1">
+          <div class="layout-icon focus-1"><div class="slot"></div><div class="slot"></div><div class="slot"></div></div>
+          focus+sidebar
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Group mutation buttons (shown when multi-focus) -->
+  <div class="top-bar-section" id="mutationSection">
+    <button class="top-btn" title="Fit all terminals to their cards">⊡ Fit All</button>
+    <button class="top-btn" title="Maximize all cards to layout slots">⬜ Max All</button>
+  </div>
+
+  <!-- User (right-aligned) -->
+  <div class="top-bar-section right">
+    <div class="user-pill" id="userPill">
+      <div class="user-avatar">JD</div>
+      <span class="user-name">john@example.com</span>
+    </div>
+  </div>
+</div>
+
+<!-- ============ HAMBURGER MENU ============ -->
+<div class="hamburger-menu hidden" id="hamburgerMenu">
+  <div class="menu-item"><span class="icon">+</span> New session</div>
+  <div class="menu-item"><span class="icon">↺</span> Restart session</div>
+  <div class="menu-item"><span class="icon">⑂</span> Fork session</div>
+  <div class="menu-divider"></div>
+  <div class="menu-item"><span class="icon">?</span> Help & Controls</div>
+  <div class="menu-item"><span class="icon">⚙</span> Settings</div>
+  <div class="menu-divider"></div>
+  <div class="menu-item danger"><span class="icon">⏻</span> Logout</div>
+</div>
+
+<!-- ============ GHOST LAYOUT PREVIEW ============ -->
+<div class="ghost-overlay hidden" id="ghostOverlay">
+  <div class="ghost-slot" id="ghost0" style="top:5%;left:2%;width:47%;height:44%;">
+    <span class="ghost-slot-label">slot 1</span>
+  </div>
+  <div class="ghost-slot" id="ghost1" style="top:5%;left:51%;width:47%;height:44%;">
+    <span class="ghost-slot-label">slot 2</span>
+  </div>
+  <div class="ghost-slot" id="ghost2" style="top:52%;left:2%;width:47%;height:44%;">
+    <span class="ghost-slot-label">slot 3</span>
+  </div>
+  <div class="ghost-slot" id="ghost3" style="top:52%;left:51%;width:47%;height:44%;">
+    <span class="ghost-slot-label">slot 4</span>
+  </div>
+</div>
+
+<!-- ============ SIDEBAR (placeholder) ============ -->
+<div class="sidebar-placeholder">
+  <div class="thumb-placeholder">session-1</div>
+  <div class="thumb-placeholder">session-2</div>
+  <div class="thumb-placeholder">session-3</div>
+  <div class="thumb-placeholder">session-4</div>
+</div>
+
+<!-- ============ CARD PLACEHOLDERS (stand-in for 3D scene) ============ -->
+<div class="card-placeholder" style="top:80px;left:40px;width:340px;height:250px;">
+  <div class="card-header"><span class="name">session-1</span><span>80×24</span></div>
+  <div class="card-body">$ ls -la<br>total 64<br>drwxr-xr-x 13 root root 389<br>-rw-r--r--  1 root root 4038<br>$ _</div>
+</div>
+<div class="card-placeholder" style="top:80px;left:420px;width:340px;height:250px;">
+  <div class="card-header"><span class="name">session-2</span><span>80×24</span></div>
+  <div class="card-body">$ npm test<br><br>  ✓ auth middleware (4ms)<br>  ✓ session store (12ms)<br>  ✓ socket server (8ms)<br><br>  3 passing (24ms)</div>
+</div>
+<div class="card-placeholder" style="top:350px;left:40px;width:340px;height:250px;">
+  <div class="card-header"><span class="name">session-3</span><span>120×35</span></div>
+  <div class="card-body">$ htop<br>  CPU: ██████░░░░ 62%<br>  Mem: ████░░░░░░ 41%<br>  Tasks: 142, running: 3</div>
+</div>
+<div class="card-placeholder" style="top:350px;left:420px;width:340px;height:250px;">
+  <div class="card-header"><span class="name">session-4</span><span>80×24</span></div>
+  <div class="card-body">$ git log --oneline -5<br>24aedd9 docs: top menu bar plan<br>461b05d docs: commit all untracked<br>9fede18 fix: mobile perf degradation<br>f97ef79 feat: mobile viewport</div>
+</div>
+
+<!-- ============ BOTTOM INPUT BAR ============ -->
+<div class="input-bar">
+  <span class="status-dot"></span>
+  <span class="target">session-1</span>
+  <span class="hint">Keys go to terminal</span>
+  <span class="perf-indicator">full (auto)</span>
+</div>
+
+<!-- ============ INTERACTIVE CONTROLS ============ -->
+<div class="mockup-controls">
+  <button onclick="toggleHamburger()">☰ Menu</button>
+  <button onclick="toggleLayout()">Layout ▾</button>
+  <button onclick="showGhost()">Ghost Preview</button>
+  <button onclick="toggleMultiFocus()">Toggle Multi-Focus</button>
+</div>
+
+<script>
+  var menuOpen = false;
+  var layoutOpen = false;
+
+  function toggleHamburger() {
+    menuOpen = !menuOpen;
+    document.getElementById('hamburgerMenu').classList.toggle('hidden', !menuOpen);
+    if (menuOpen) { layoutOpen = false; document.getElementById('layoutDropdown').classList.add('hidden'); }
+  }
+
+  function toggleLayout() {
+    layoutOpen = !layoutOpen;
+    document.getElementById('layoutDropdown').classList.toggle('hidden', !layoutOpen);
+    if (layoutOpen) { menuOpen = false; document.getElementById('hamburgerMenu').classList.add('hidden'); }
+  }
+
+  function showGhost() {
+    var overlay = document.getElementById('ghostOverlay');
+    overlay.classList.remove('hidden');
+    var slots = overlay.querySelectorAll('.ghost-slot');
+    for (var s of slots) s.classList.remove('fading');
+    setTimeout(function() {
+      for (var s of slots) s.classList.add('fading');
+    }, 1200);
+    setTimeout(function() {
+      overlay.classList.add('hidden');
+      for (var s of slots) s.classList.remove('fading');
+    }, 4000);
+  }
+
+  function toggleMultiFocus() {
+    var ls = document.getElementById('layoutSection');
+    var ms = document.getElementById('mutationSection');
+    var showing = !ls.classList.contains('hidden');
+    ls.classList.toggle('hidden', showing);
+    ms.classList.toggle('hidden', showing);
+  }
+
+  document.addEventListener('click', function(e) {
+    if (!e.target.closest('#hamburgerBtn') && !e.target.closest('#hamburgerMenu')) {
+      menuOpen = false;
+      document.getElementById('hamburgerMenu').classList.add('hidden');
+    }
+    if (!e.target.closest('.layout-selector')) {
+      layoutOpen = false;
+      document.getElementById('layoutDropdown').classList.add('hidden');
+    }
+  });
+</script>
+</body>
+</html>

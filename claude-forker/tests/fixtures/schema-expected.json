@@ -1,0 +1,302 @@
+{
+  "tool": "claude-fork",
+  "version": "0.2.0",
+  "commands": {
+    "list": {
+      "description": "List available sessions",
+      "response": {
+        "type": "object",
+        "required": [
+          "command",
+          "user",
+          "sessions"
+        ],
+        "properties": {
+          "command": {
+            "const": "list"
+          },
+          "user": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Filter user; null when --all-users"
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "sessionId",
+                "project",
+                "status"
+              ],
+              "properties": {
+                "sessionId": {
+                  "type": "string"
+                },
+                "user": {
+                  "type": "string"
+                },
+                "project": {
+                  "type": "string",
+                  "description": "Original CWD read from JSONL records (not decoded from directory name)"
+                },
+                "encodedCwd": {
+                  "type": "string"
+                },
+                "jsonlPath": {
+                  "type": "string"
+                },
+                "sizeBytes": {
+                  "type": "integer"
+                },
+                "sizeHuman": {
+                  "type": "string"
+                },
+                "records": {
+                  "type": "integer"
+                },
+                "status": {
+                  "enum": [
+                    "active",
+                    "idle",
+                    "compacted"
+                  ]
+                },
+                "pid": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "compacted": {
+                  "type": "boolean"
+                },
+                "hasCompanion": {
+                  "type": "boolean"
+                },
+                "companionFiles": {
+                  "type": "integer"
+                },
+                "lastModified": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "age": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "fork": {
+      "description": "Fork a session to a target directory",
+      "response": {
+        "oneOf": [
+          {
+            "description": "Success",
+            "type": "object",
+            "required": [
+              "command",
+              "status",
+              "source",
+              "fork",
+              "chain",
+              "resume"
+            ],
+            "properties": {
+              "command": {
+                "const": "fork"
+              },
+              "status": {
+                "const": "success"
+              },
+              "source": {
+                "type": "object"
+              },
+              "fork": {
+                "type": "object",
+                "required": [
+                  "sessionId",
+                  "project",
+                  "user",
+                  "jsonlPath",
+                  "sizeBytes",
+                  "recordsWritten",
+                  "chainRecords",
+                  "nonChainRecords",
+                  "cwdFieldsRewritten",
+                  "sessionIdFieldsRewritten",
+                  "companionFilesCopied",
+                  "lastRecordCleaned"
+                ],
+                "properties": {
+                  "sessionId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "project": {
+                    "type": "string"
+                  },
+                  "user": {
+                    "type": "string"
+                  },
+                  "jsonlPath": {
+                    "type": "string"
+                  },
+                  "sizeBytes": {
+                    "type": "integer"
+                  },
+                  "recordsWritten": {
+                    "type": "integer"
+                  },
+                  "chainRecords": {
+                    "type": "integer"
+                  },
+                  "nonChainRecords": {
+                    "type": "integer"
+                  },
+                  "cwdFieldsRewritten": {
+                    "type": "integer"
+                  },
+                  "sessionIdFieldsRewritten": {
+                    "type": "integer"
+                  },
+                  "companionFilesCopied": {
+                    "type": "integer"
+                  },
+                  "lastRecordCleaned": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "chain": {
+                "type": "object",
+                "required": [
+                  "entries",
+                  "nonChainEntries",
+                  "roots",
+                  "leaves",
+                  "branches",
+                  "broken"
+                ],
+                "properties": {
+                  "entries": {
+                    "type": "integer"
+                  },
+                  "nonChainEntries": {
+                    "type": "integer"
+                  },
+                  "roots": {
+                    "type": "integer"
+                  },
+                  "leaves": {
+                    "type": "integer"
+                  },
+                  "branches": {
+                    "type": "integer"
+                  },
+                  "broken": {
+                    "type": "integer"
+                  },
+                  "warnings": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "badLines": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "resume": {
+                "type": "string"
+              },
+              "warnings": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "description": "Error",
+            "type": "object",
+            "required": [
+              "command",
+              "status",
+              "exitCode",
+              "error"
+            ],
+            "properties": {
+              "command": {
+                "const": "fork"
+              },
+              "status": {
+                "const": "error"
+              },
+              "exitCode": {
+                "type": "integer"
+              },
+              "error": {
+                "type": "string"
+              },
+              "detail": {
+                "type": "string"
+              },
+              "suggestions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "description": "Dry run",
+            "type": "object",
+            "required": [
+              "command",
+              "status",
+              "wouldDo",
+              "checks"
+            ],
+            "properties": {
+              "command": {
+                "const": "fork"
+              },
+              "status": {
+                "const": "dry-run"
+              },
+              "wouldDo": {
+                "type": "object"
+              },
+              "checks": {
+                "type": "object"
+              },
+              "warnings": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

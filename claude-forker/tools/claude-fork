@@ -4,45 +4,78 @@
 See SPEC.md for full documentation.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
+
+MAX_SANITIZED_LENGTH = 200
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def encode_cwd(path: str) -> str:
-    """Encode a directory path the way Claude Code does: / → -"""
-    return path.replace("/", "-")
+    """Encode a directory path the way Claude Code does (sanitizePath).
+
+    Every non-alphanumeric character becomes '-' (per-character, no run
+    collapsing). Paths > 200 chars are truncated + djb2 hash suffix.
+    """
+    sanitized = re.sub(r"[^a-zA-Z0-9]", "-", path)
+    if len(sanitized) <= MAX_SANITIZED_LENGTH:
+        return sanitized
+    hash_val = _djb2_hash(path)
+    return f"{sanitized[:MAX_SANITIZED_LENGTH]}-{hash_val}"
 
 
-def decode_cwd(encoded: str) -> str:
-    """Decode an encoded CWD back to a path. First - becomes /."""
-    if not encoded.startswith("-"):
-        return encoded
-    return "/" + encoded[1:].replace("-", "/")
+def _int_to_base36(n: int) -> str:
+    """Non-negative integer to base-36 (matching JS Number.toString(36))."""
+    if n == 0:
+        return "0"
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    result = []
+    while n > 0:
+        result.append(digits[n % 36])
+        n //= 36
+    return "".join(reversed(result))
 
 
-def get_home(user: str = None) -> Path:
+def _djb2_hash(s: str) -> str:
+    """djb2 hash matching Claude Code simpleHash() fallback (signed 32-bit)."""
+    h = 0
+    for c in s:
+        h = (h << 5) - h + ord(c)
+        h = h & 0xFFFFFFFF
+        if h >= 0x80000000:
+            h -= 0x100000000
+    return _int_to_base36(abs(h))
+
+
+def get_home(user: str = None) -> Optional[Path]:
     """Get a user's home directory."""
     if user is None or user == os.getenv("USER", "root"):
         return Path.home()
     import pwd
+
     try:
         return Path(pwd.getpwnam(user).pw_dir)
     except KeyError:
         return None
 
 
-def get_projects_dir(user: str = None) -> Path:
+def get_projects_dir(user: str = None) -> Optional[Path]:
     """Get the .claude/projects directory for a user."""
     home = get_home(user)
     if home is None:
@@ -98,6 +131,33 @@ def is_compacted(jsonl_path: Path) -> bool:
     return False
 
 
+def read_first_cwd_from_jsonl(jsonl_path: Path, max_lines: int = 50) -> str:
+    """First cwd from the first JSONL record that has cwd set (up to max_lines)."""
+    with open(jsonl_path) as f:
+        for i, line in enumerate(f):
+            if i >= max_lines:
+                break
+            try:
+                obj = json.loads(line)
+                cwd = obj.get("cwd")
+                if cwd:
+                    return cwd
+            except json.JSONDecodeError:
+                continue
+    return ""
+
+
+_read_first_cwd_cache: dict[str, str] = {}
+
+
+def read_first_cwd_cached(jsonl_path: Path) -> str:
+    """Process-lifetime cache over read_first_cwd_from_jsonl."""
+    key = str(jsonl_path.resolve())
+    if key not in _read_first_cwd_cache:
+        _read_first_cwd_cache[key] = read_first_cwd_from_jsonl(jsonl_path)
+    return _read_first_cwd_cache[key]
+
+
 def read_cwds_from_jsonl(jsonl_path: Path) -> dict:
     """Read all unique CWD values from a JSONL and their counts."""
     cwds = {}
@@ -113,19 +173,116 @@ def read_cwds_from_jsonl(jsonl_path: Path) -> dict:
     return cwds
 
 
+def find_project_dir(project_path: str, user: str = None) -> Optional[Path]:
+    """Resolve existing ~/.claude/projects/<encoded-cwd> directory if present."""
+    projects = get_projects_dir(user)
+    if projects is None or not projects.exists():
+        return None
+
+    exact = projects / encode_cwd(project_path)
+    if exact.is_dir():
+        return exact
+
+    legacy = projects / project_path.replace("/", "-")
+    if legacy.is_dir():
+        return legacy
+
+    sanitized = re.sub(r"[^a-zA-Z0-9]", "-", project_path)
+    if len(sanitized) <= MAX_SANITIZED_LENGTH:
+        return None
+
+    prefix = sanitized[:MAX_SANITIZED_LENGTH] + "-"
+    matches = [d for d in projects.iterdir() if d.is_dir() and d.name.startswith(prefix)]
+
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(f"Ambiguous prefix match for '{project_path}': {[m.name for m in matches]}")
+    return None
+
+
+def infer_encoding_method(project_path: str, resolved: Path) -> str:
+    """How find_project_dir matched (for dry-run / checks)."""
+    if resolved.name == encode_cwd(project_path):
+        return "current"
+    if resolved.name == project_path.replace("/", "-"):
+        return "legacy-compat"
+    return "prefix-fallback"
+
+
+CHAIN_PARTICIPANT_TYPES = frozenset({"user", "assistant", "system", "attachment"})
+
+
+def is_chain_participant(obj: dict) -> bool:
+    """Transcript messages that participate in the parentUuid chain."""
+    if obj.get("type") in CHAIN_PARTICIPANT_TYPES:
+        return True
+    if obj.get("uuid") is not None and "parentUuid" in obj:
+        return True
+    return False
+
+
+def fork_record(obj: dict, target_cwd: str, fork_id: str) -> dict:
+    """Process one JSONL record during fork. Returns a new dict."""
+    result = {**obj}
+    if "sessionId" not in result:
+        return result
+    result["sessionId"] = fork_id
+    if is_chain_participant(result):
+        if result.get("cwd") and result["cwd"] != target_cwd:
+            result["cwd"] = target_cwd
+    return result
+
+
+def count_chain_kinds(jsonl_path: Path) -> tuple[int, int]:
+    """Count chain vs non-chain JSONL records (parseable lines only)."""
+    chain = non_chain = 0
+    with open(jsonl_path) as f:
+        for line in f:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if is_chain_participant(obj):
+                chain += 1
+            else:
+                non_chain += 1
+    return chain, non_chain
+
+
+def list_git_worktree_paths(repo_cwd: str) -> list[str]:
+    """Absolute paths of all git worktrees (including main checkout)."""
+    try:
+        result = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=repo_cwd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+        return [
+            line[len("worktree ") :]
+            for line in result.stdout.split("\n")
+            if line.startswith("worktree ")
+        ]
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return []
+
+
 def find_session(session_id: str, user: str = None) -> tuple:
-    """Find a session JSONL by full or partial ID.
-    Returns (jsonl_path, source_cwds_dict, suggestions).
-    source_cwds_dict maps each CWD found in the file to its count.
-    """
+    """Find a session JSONL by full or partial ID."""
     projects = get_projects_dir(user)
     if projects is None or not projects.exists():
         return None, None, []
 
     matches = []
+    scanned_dirs: set[str] = set()
     for proj_dir in sorted(projects.iterdir()):
         if not proj_dir.is_dir():
             continue
+        scanned_dirs.add(proj_dir.name)
         for jsonl in proj_dir.glob("*.jsonl"):
             stem = jsonl.stem
             if stem == session_id:
@@ -137,19 +294,43 @@ def find_session(session_id: str, user: str = None) -> tuple:
     if len(matches) == 1:
         cwds = read_cwds_from_jsonl(matches[0][0])
         return matches[0][0], cwds, []
-    elif len(matches) > 1:
+    if len(matches) > 1:
         return None, None, matches
 
-    # No matches — collect suggestions
+    cwd = os.getcwd()
+    for wt_path in list_git_worktree_paths(cwd):
+        encoded = encode_cwd(wt_path)
+        if encoded in scanned_dirs:
+            continue
+        wt_proj_dir = projects / encoded
+        if not wt_proj_dir.is_dir():
+            legacy = wt_path.replace("/", "-")
+            if legacy in scanned_dirs:
+                continue
+            wt_proj_dir = projects / legacy
+            if not wt_proj_dir.is_dir():
+                continue
+        for jsonl in wt_proj_dir.glob("*.jsonl"):
+            stem = jsonl.stem
+            if stem == session_id or stem.startswith(session_id):
+                matches.append((jsonl, wt_proj_dir, stem))
+
+    if len(matches) == 1:
+        cwds = read_cwds_from_jsonl(matches[0][0])
+        return matches[0][0], cwds, []
+    if len(matches) > 1:
+        return None, None, matches
+
     suggestions = []
     for proj_dir in sorted(projects.iterdir()):
         if not proj_dir.is_dir():
             continue
         for jsonl in proj_dir.glob("*.jsonl"):
-            cwd = decode_cwd(proj_dir.name)
+            cwd_val = read_first_cwd_from_jsonl(jsonl)
+            display = cwd_val if cwd_val else f"(dir: {proj_dir.name})"
             size = jsonl.stat().st_size
             mtime = datetime.fromtimestamp(jsonl.stat().st_mtime).strftime("%b %d")
-            suggestions.append(f"{jsonl.stem} ({cwd}, {size // 1024}KB, {mtime})")
+            suggestions.append(f"{jsonl.stem} ({display}, {size // 1024}KB, {mtime})")
     return None, None, suggestions[:10]
 
 
@@ -196,52 +377,68 @@ def clean_last_record(jsonl_path: Path):
 
 
 def verify_chain(jsonl_path: Path) -> dict:
-    """Verify parentUuid chain integrity."""
-    entries = {}
+    """Verify parentUuid chain integrity (single pass over chain participants)."""
+    entries: set = set()
+    parent_refs = {}
     children = {}
     roots = 0
+    non_chain = 0
+    warnings = []
+    bad_lines = 0
+
     with open(jsonl_path) as f:
-        for line in f:
+        for line_num, line in enumerate(f, 1):
             try:
                 obj = json.loads(line)
-                uid = obj.get("uuid")
-                if not uid:
-                    continue
-                entries[uid] = True
-                parent = obj.get("parentUuid")
-                if parent is None:
-                    roots += 1
-                else:
-                    children.setdefault(parent, []).append(uid)
             except json.JSONDecodeError:
-                pass
+                bad_lines += 1
+                continue
 
-    has_children = set(children.keys())
-    leaves = [uid for uid in entries if uid not in has_children]
-    broken = 0
-    with open(jsonl_path) as f:
-        for line in f:
-            try:
-                obj = json.loads(line)
-                parent = obj.get("parentUuid")
-                if parent and parent not in entries:
-                    broken += 1
-            except json.JSONDecodeError:
-                pass
+            if not is_chain_participant(obj):
+                non_chain += 1
+                continue
 
+            uid = obj.get("uuid")
+            if not uid:
+                warnings.append(f"Line {line_num}: {obj.get('type', '?')} missing uuid")
+                continue
+
+            entries.add(uid)
+            parent = obj.get("parentUuid")
+            parent_refs[uid] = parent
+
+            if parent is None:
+                roots += 1
+            else:
+                children.setdefault(parent, []).append(uid)
+
+    broken_parents = []
+    for uid, parent in parent_refs.items():
+        if parent is not None and parent not in entries:
+            broken_parents.append(parent[:12])
+    broken = len(broken_parents)
+
+    referenced_as_parent = set(children.keys())
+    leaves = [uid for uid in entries if uid not in referenced_as_parent]
     branches = sum(1 for kids in children.values() if len(kids) > 1)
+
     return {
         "entries": len(entries),
+        "nonChainEntries": non_chain,
         "roots": roots,
         "leaves": len(leaves),
         "branches": branches,
         "broken": broken,
+        "brokenParents": broken_parents[:5],
+        "warnings": warnings,
+        "badLines": bad_lines,
     }
 
 
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+
 
 def cmd_list(args):
     """List available sessions."""
@@ -265,10 +462,15 @@ def cmd_list(args):
         for proj_dir in sorted(projects.iterdir()):
             if not proj_dir.is_dir():
                 continue
-            project_cwd = decode_cwd(proj_dir.name)
+            jsonl_files = sorted(proj_dir.glob("*.jsonl"))
+            if not jsonl_files:
+                continue
+            project_cwd = read_first_cwd_cached(jsonl_files[0])
+            if not project_cwd:
+                project_cwd = f"(dir: {proj_dir.name})"
             if args.project and project_cwd != args.project:
                 continue
-            for jsonl in sorted(proj_dir.glob("*.jsonl")):
+            for jsonl in jsonl_files:
                 stat = jsonl.stat()
                 sid = jsonl.stem
                 pids = active_pids.get(sid, [])
@@ -281,9 +483,13 @@ def cmd_list(args):
                     status = "idle"
 
                 companion_dir = jsonl.parent / sid
-                companion_count = sum(1 for _ in companion_dir.rglob("*") if _.is_file()) if companion_dir.is_dir() else 0
+                companion_count = (
+                    sum(1 for _ in companion_dir.rglob("*") if _.is_file()) if companion_dir.is_dir() else 0
+                )
 
-                age_seconds = (datetime.now(timezone.utc) - datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)).total_seconds()
+                age_seconds = (
+                    datetime.now(timezone.utc) - datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+                ).total_seconds()
                 if age_seconds < 3600:
                     age = f"{int(age_seconds // 60)}m"
                 elif age_seconds < 86400:
@@ -298,7 +504,9 @@ def cmd_list(args):
                     "encodedCwd": proj_dir.name,
                     "jsonlPath": str(jsonl),
                     "sizeBytes": stat.st_size,
-                    "sizeHuman": f"{stat.st_size / 1048576:.1f}MB" if stat.st_size > 1048576 else f"{stat.st_size // 1024}KB",
+                    "sizeHuman": f"{stat.st_size / 1048576:.1f}MB"
+                    if stat.st_size > 1048576
+                    else f"{stat.st_size // 1024}KB",
                     "records": count_records(jsonl) if stat.st_size < 50_000_000 else -1,
                     "status": status,
                     "pid": pids[0] if pids else None,
@@ -313,13 +521,20 @@ def cmd_list(args):
 
     all_sessions.sort(key=lambda s: s["lastModified"], reverse=True)
 
+    list_user = None if args.all_users else (args.user or os.getenv("USER", "root"))
+
     if args.json:
-        print(json.dumps({
-            "command": "list",
-            "user": args.user or os.getenv("USER", "root"),
-            "sessions": all_sessions,
-            "warnings": [],
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "command": "list",
+                    "user": list_user,
+                    "sessions": all_sessions,
+                    "warnings": [],
+                },
+                indent=2,
+            )
+        )
     else:
         if not all_sessions:
             print("No sessions found.")
@@ -328,31 +543,46 @@ def cmd_list(args):
         print("-" * 100)
         for s in all_sessions:
             records = str(s["records"]) if s["records"] >= 0 else "?"
-            print(f"{s['sessionId'][:36]:<40} {s['project'][:24]:<25} {s['sizeHuman']:>7} {records:>8} {s['status']:>10} {s['age']:>5}")
+            print(
+                f"{s['sessionId'][:36]:<40} {s['project'][:24]:<25} {s['sizeHuman']:>7} {records:>8} {s['status']:>10} {s['age']:>5}"
+            )
         print(f"\n{len(all_sessions)} sessions found")
 
 
 def cmd_fork(args):
     """Fork a session to a target directory."""
-    source_user = args.user or os.getenv("USER", "root")
     jsonl_path, source_cwds, suggestions = find_session(args.session_id)
 
     if jsonl_path is None:
         if args.json:
             if suggestions and any(isinstance(s, tuple) for s in suggestions):
-                print(json.dumps({
-                    "command": "fork", "status": "error", "exitCode": 1,
-                    "error": "Ambiguous session ID",
-                    "detail": f"Multiple sessions match prefix '{args.session_id}'",
-                    "suggestions": [f"{s[2]} ({s[1]})" for s in suggestions],
-                }, indent=2))
+                print(
+                    json.dumps(
+                        {
+                            "command": "fork",
+                            "status": "error",
+                            "exitCode": 1,
+                            "error": "Ambiguous session ID",
+                            "detail": f"Multiple sessions match prefix '{args.session_id}'",
+                            "suggestions": [f"{s[2]} ({s[1]})" for s in suggestions],
+                        },
+                        indent=2,
+                    )
+                )
             else:
-                print(json.dumps({
-                    "command": "fork", "status": "error", "exitCode": 1,
-                    "error": "Source session not found",
-                    "detail": f"No JSONL matching '{args.session_id}'",
-                    "suggestions": suggestions if suggestions else [],
-                }, indent=2))
+                print(
+                    json.dumps(
+                        {
+                            "command": "fork",
+                            "status": "error",
+                            "exitCode": 1,
+                            "error": "Source session not found",
+                            "detail": f"No JSONL matching '{args.session_id}'",
+                            "suggestions": suggestions if suggestions else [],
+                        },
+                        indent=2,
+                    )
+                )
         else:
             if suggestions and any(isinstance(s, tuple) for s in suggestions):
                 print(f"Ambiguous session ID '{args.session_id}'. Did you mean:")
@@ -366,14 +596,11 @@ def cmd_fork(args):
                         print(f"  {s}")
         sys.exit(1)
 
-    # source_cwds is a dict of {cwd: count} — all CWDs found in the JSONL
-    # The "primary" source CWD is the most common one
     source_cwd = max(source_cwds, key=source_cwds.get) if source_cwds else ""
     source_id = jsonl_path.stem
     source_size = jsonl_path.stat().st_size
     warnings = []
 
-    # Report if multiple CWDs found (indicates previous forks)
     if len(source_cwds) > 1:
         cwd_list = ", ".join(f"{c} ({n})" for c, n in sorted(source_cwds.items(), key=lambda x: -x[1]))
         warnings.append(f"Source has multiple CWDs (prior forks?): {cwd_list} — ALL will be rewritten to target")
@@ -391,8 +618,8 @@ def cmd_fork(args):
         warnings.append(f"Large session ({source_size // 1048576}MB) — fork may take a moment")
 
     source_records = count_records(jsonl_path) if source_size < 50_000_000 else -1
+    source_chain_n, source_non_chain_n = count_chain_kinds(jsonl_path)
 
-    # Resolve target
     target_cwd = os.path.abspath(args.target)
     target_user = args.user or os.getenv("USER", "root")
     target_home = get_home(target_user)
@@ -400,24 +627,62 @@ def cmd_fork(args):
     if target_home is None:
         msg = f"User '{target_user}' not found"
         if args.json:
-            print(json.dumps({"command": "fork", "status": "error", "exitCode": 2, "error": msg, "detail": "", "suggestions": []}, indent=2))
+            print(
+                json.dumps(
+                    {"command": "fork", "status": "error", "exitCode": 2, "error": msg, "detail": "", "suggestions": []},
+                    indent=2,
+                )
+            )
         else:
             print(msg)
         sys.exit(2)
 
-    target_encoded = encode_cwd(target_cwd)
-    target_projects_dir = target_home / ".claude" / "projects" / target_encoded
+    projects_base = get_projects_dir(target_user)
+    encoding_method = "new-directory"
+    target_projects_dir: Optional[Path] = None
+    try:
+        found_dir = find_project_dir(target_cwd, target_user)
+    except ValueError as e:
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "command": "fork",
+                        "status": "error",
+                        "exitCode": 3,
+                        "error": "Ambiguous project directory",
+                        "detail": str(e),
+                        "suggestions": [],
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            print(f"Error: {e}")
+        sys.exit(3)
+
+    if found_dir is not None:
+        target_projects_dir = found_dir
+        encoding_method = infer_encoding_method(target_cwd, found_dir)
+    else:
+        target_projects_dir = projects_base / encode_cwd(target_cwd)
+        encoding_method = "new-directory"
+
     target_dir_exists = os.path.isdir(target_cwd)
 
     if not target_dir_exists and args.no_create:
         msg = f"Target directory does not exist: {target_cwd}. Run without --no-create to auto-create."
         if args.json:
-            print(json.dumps({"command": "fork", "status": "error", "exitCode": 3, "error": msg, "detail": "", "suggestions": []}, indent=2))
+            print(
+                json.dumps(
+                    {"command": "fork", "status": "error", "exitCode": 3, "error": msg, "detail": "", "suggestions": []},
+                    indent=2,
+                )
+            )
         else:
             print(msg)
         sys.exit(3)
 
-    # Target checks
     target_claude_dir = target_home / ".claude"
     target_has_claude = (target_home / ".local" / "bin" / "claude").exists() or shutil.which("claude") is not None
     if not target_has_claude:
@@ -440,39 +705,50 @@ def cmd_fork(args):
         warnings.append("No CLAUDE.md at target")
 
     source_companion = jsonl_path.parent / source_id
-    companion_count = sum(1 for _ in source_companion.rglob("*") if _.is_file()) if source_companion.is_dir() else 0
+    companion_count = (
+        sum(1 for _ in source_companion.rglob("*") if _.is_file()) if source_companion.is_dir() else 0
+    )
 
-    # New UUID
     fork_id = str(uuid.uuid4())
     while (target_projects_dir / f"{fork_id}.jsonl").exists():
         fork_id = str(uuid.uuid4())
 
-    # Determine which CWDs need rewriting
     cwds_to_rewrite = {c: n for c, n in source_cwds.items() if c != target_cwd}
     needs_cwd_rewrite = bool(cwds_to_rewrite)
     user_change = target_user if target_user != os.getenv("USER", "root") else None
 
-    # Dry run
     if args.dry_run:
         result = {
-            "command": "fork", "status": "dry-run",
+            "command": "fork",
+            "status": "dry-run",
             "wouldDo": {
                 "source": str(jsonl_path),
                 "target": str(target_projects_dir / f"{fork_id}.jsonl"),
-                "cwdRewrite": {"from": list(cwds_to_rewrite.keys()), "to": target_cwd, "recordsAffected": sum(cwds_to_rewrite.values())} if needs_cwd_rewrite else None,
+                "cwdRewrite": {
+                    "from": list(cwds_to_rewrite.keys()),
+                    "to": target_cwd,
+                    "recordsAffected": sum(cwds_to_rewrite.values()),
+                }
+                if needs_cwd_rewrite
+                else None,
                 "userChange": user_change,
                 "createDir": not target_dir_exists,
                 "companionFiles": companion_count,
             },
             "checks": {
-                "sourceExists": True, "sourceActive": bool(pids),
+                "sourceExists": True,
+                "sourceActive": bool(pids),
                 "sourceActivePid": pids[0] if pids else None,
-                "sourceCompacted": compacted, "sourceRecords": source_records,
+                "sourceCompacted": compacted,
+                "sourceRecords": source_records,
+                "sourceChainRecords": source_chain_n,
+                "sourceNonChainRecords": source_non_chain_n,
                 "sourceSizeHuman": f"{source_size // 1048576}MB" if source_size > 1048576 else f"{source_size // 1024}KB",
                 "targetDirExists": target_dir_exists,
                 "targetHasClaudeMd": target_has_claude_md,
                 "targetUserHasClaude": target_has_claude,
                 "targetCleanupProtected": cleanup_protected,
+                "encodingMethod": encoding_method,
             },
             "warnings": warnings,
         }
@@ -482,30 +758,35 @@ def cmd_fork(args):
             print("DRY RUN — no changes made\n")
             print(f"Source:  {jsonl_path}")
             print(f"         {source_cwd}, {source_size // 1024}KB, {source_records} records")
-            if compacted: print("         ⚠ COMPACTED")
-            if pids: print(f"         ⚠ ACTIVE (PID {pids[0]})")
+            if compacted:
+                print("         ⚠ COMPACTED")
+            if pids:
+                print(f"         ⚠ ACTIVE (PID {pids[0]})")
             print(f"\nTarget:  {target_projects_dir / f'{fork_id}.jsonl'}")
             print(f"         {target_cwd} (as {target_user})")
-            if needs_cwd_rewrite: print(f"         CWD rewrite: {source_cwd} → {target_cwd}")
-            if not target_dir_exists: print(f"         Would create: {target_cwd}")
-            if companion_count: print(f"         {companion_count} companion files")
+            if needs_cwd_rewrite:
+                print(f"         CWD rewrite: {source_cwd} → {target_cwd}")
+            if not target_dir_exists:
+                print(f"         Would create: {target_cwd}")
+            if companion_count:
+                print(f"         {companion_count} companion files")
             if warnings:
                 print("\nWarnings:")
-                for w in warnings: print(f"  ⚠ {w}")
+                for w in warnings:
+                    print(f"  ⚠ {w}")
             print(f"\nResume: cd {target_cwd} && claude --resume {fork_id}")
         return
 
-    # Confirm (interactive mode only)
     if not args.json:
         print(f"Source:  {source_id[:12]}... ({source_cwd}, {source_size // 1024}KB)")
         print(f"Target:  {target_cwd} (as {target_user})")
-        for w in warnings: print(f"  ⚠ {w}")
+        for w in warnings:
+            print(f"  ⚠ {w}")
         response = input("\nProceed? [y/n] ")
         if response.lower() != "y":
             print("Aborted.")
             return
 
-    # Execute
     if not target_dir_exists:
         os.makedirs(target_cwd, exist_ok=True)
     os.makedirs(target_projects_dir, exist_ok=True)
@@ -513,18 +794,28 @@ def cmd_fork(args):
 
     target_jsonl = target_projects_dir / f"{fork_id}.jsonl"
     cwd_rewritten = 0
+    session_id_rewritten = 0
     records_written = 0
+    chain_records = 0
+    non_chain_records = 0
     pre_copy_size = jsonl_path.stat().st_size
 
     with open(jsonl_path) as src, open(target_jsonl, "w") as dst:
         for line in src:
             try:
                 obj = json.loads(line)
-                record_cwd = obj.get("cwd", "")
-                if record_cwd and record_cwd != target_cwd:
-                    obj["cwd"] = target_cwd
+                original_cwd = obj.get("cwd")
+                original_sid = obj.get("sessionId")
+                result = fork_record(obj, target_cwd, fork_id)
+                if is_chain_participant(obj):
+                    chain_records += 1
+                else:
+                    non_chain_records += 1
+                if result.get("cwd") != original_cwd:
                     cwd_rewritten += 1
-                dst.write(json.dumps(obj) + "\n")
+                if result.get("sessionId") != original_sid:
+                    session_id_rewritten += 1
+                dst.write(json.dumps(result) + "\n")
                 records_written += 1
             except json.JSONDecodeError:
                 dst.write(line)
@@ -534,71 +825,118 @@ def cmd_fork(args):
     if post_copy_size != pre_copy_size:
         warnings.append(f"Source grew by {post_copy_size - pre_copy_size} bytes during copy")
 
-    # Clean last record
     last_cleaned = False
     if not args.no_session_cleanup:
         if not validate_last_record(target_jsonl):
             clean_last_record(target_jsonl)
             last_cleaned = True
 
-    # Companion files
     companion_copied = 0
     if not args.no_companion and source_companion.is_dir():
         target_companion = target_projects_dir / fork_id
         shutil.copytree(source_companion, target_companion)
         companion_copied = sum(1 for _ in target_companion.rglob("*") if _.is_file())
 
-    # Chown if user changed
     if user_change:
         import pwd
+
         try:
             pw = pwd.getpwnam(target_user)
             os.chown(target_jsonl, pw.pw_uid, pw.pw_gid)
             if (target_projects_dir / fork_id).is_dir():
                 for root, dirs, files in os.walk(target_projects_dir / fork_id):
-                    for d in dirs: os.chown(os.path.join(root, d), pw.pw_uid, pw.pw_gid)
-                    for f in files: os.chown(os.path.join(root, f), pw.pw_uid, pw.pw_gid)
+                    for d in dirs:
+                        os.chown(os.path.join(root, d), pw.pw_uid, pw.pw_gid)
+                    for f in files:
+                        os.chown(os.path.join(root, f), pw.pw_uid, pw.pw_gid)
         except (KeyError, PermissionError) as e:
             warnings.append(f"Failed to chown: {e}")
 
-    # Verify chain
     chain = verify_chain(target_jsonl)
     if chain["broken"] > 0:
         if args.json:
-            print(json.dumps({"command": "fork", "status": "error", "exitCode": 5,
-                "error": "Chain integrity failed", "detail": f"{chain['broken']} broken links", "suggestions": []}, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "command": "fork",
+                        "status": "error",
+                        "exitCode": 5,
+                        "error": "Chain integrity failed",
+                        "detail": f"{chain['broken']} broken links",
+                        "suggestions": [],
+                    },
+                    indent=2,
+                )
+            )
         else:
             print(f"ERROR: Chain integrity failed — {chain['broken']} broken links")
         sys.exit(5)
 
-    # Output
     target_size = target_jsonl.stat().st_size
     resume_cmd = f"cd {target_cwd} && claude --resume {fork_id}"
     if user_change:
         resume_cmd = f"su - {target_user} -c '{resume_cmd}'"
 
     if args.json:
-        print(json.dumps({
-            "command": "fork", "status": "success",
-            "source": {"sessionId": source_id, "project": source_cwd, "sizeBytes": source_size, "records": source_records, "compacted": compacted},
-            "fork": {"sessionId": fork_id, "project": target_cwd, "user": target_user, "jsonlPath": str(target_jsonl),
-                "sizeBytes": target_size, "recordsWritten": records_written, "cwdFieldsRewritten": cwd_rewritten,
-                "companionFilesCopied": companion_copied, "lastRecordCleaned": last_cleaned},
-            "resume": resume_cmd,
-            "warnings": warnings,
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "command": "fork",
+                    "status": "success",
+                    "source": {
+                        "sessionId": source_id,
+                        "project": source_cwd,
+                        "sizeBytes": source_size,
+                        "records": source_records,
+                        "compacted": compacted,
+                    },
+                    "fork": {
+                        "sessionId": fork_id,
+                        "project": target_cwd,
+                        "user": target_user,
+                        "jsonlPath": str(target_jsonl),
+                        "sizeBytes": target_size,
+                        "recordsWritten": records_written,
+                        "chainRecords": chain_records,
+                        "nonChainRecords": non_chain_records,
+                        "cwdFieldsRewritten": cwd_rewritten,
+                        "sessionIdFieldsRewritten": session_id_rewritten,
+                        "companionFilesCopied": companion_copied,
+                        "lastRecordCleaned": last_cleaned,
+                    },
+                    "chain": {
+                        "entries": chain["entries"],
+                        "nonChainEntries": chain["nonChainEntries"],
+                        "roots": chain["roots"],
+                        "leaves": chain["leaves"],
+                        "branches": chain["branches"],
+                        "broken": chain["broken"],
+                        "warnings": chain["warnings"],
+                        "badLines": chain["badLines"],
+                    },
+                    "resume": resume_cmd,
+                    "warnings": warnings,
+                },
+                indent=2,
+            )
+        )
     else:
-        print(f"\nFork complete.")
+        print("\nFork complete.")
         print(f"  Source:     {source_id[:12]}... ({source_cwd})")
         print(f"  Fork:       {fork_id}")
-        print(f"  Written:    {records_written} records ({target_size // 1024}KB)")
-        print(f"  CWD fields: {cwd_rewritten} rewritten")
-        if companion_copied: print(f"  Companion:  {companion_copied} files")
-        if last_cleaned: print(f"  Cleanup:    corrupted last record removed")
-        print(f"  Chain:      {chain['entries']} entries, {chain['roots']} roots, {chain['leaves']} leaves")
+        print(f"  Written:    {records_written} records ({chain_records} chain + {non_chain_records} metadata) ({target_size // 1024}KB)")
+        print(f"  Re-stamped: {session_id_rewritten} sessionId, {cwd_rewritten} cwd")
+        if companion_copied:
+            print(f"  Companion:  {companion_copied} files")
+        if last_cleaned:
+            print("  Cleanup:    corrupted last record removed")
+        print(
+            f"  Chain:      {chain['entries']} entries, {chain['roots']} roots, {chain['leaves']} leaves, {chain['broken']} broken"
+        )
         if warnings:
             print("\nWarnings:")
-            for w in warnings: print(f"  ⚠ {w}")
+            for w in warnings:
+                print(f"  ⚠ {w}")
         print(f"\nTo resume:\n  {resume_cmd}")
 
 
@@ -611,39 +949,138 @@ def cmd_schema(args):
             "list": {
                 "description": "List available sessions",
                 "response": {
-                    "type": "object", "required": ["command", "user", "sessions"],
+                    "type": "object",
+                    "required": ["command", "user", "sessions"],
                     "properties": {
-                        "command": {"const": "list"}, "user": {"type": "string"},
-                        "sessions": {"type": "array", "items": {"type": "object", "required": ["sessionId", "project", "status"],
-                            "properties": {
-                                "sessionId": {"type": "string"}, "project": {"type": "string"},
-                                "encodedCwd": {"type": "string"}, "jsonlPath": {"type": "string"},
-                                "sizeBytes": {"type": "integer"}, "sizeHuman": {"type": "string"},
-                                "records": {"type": "integer"}, "status": {"enum": ["active", "idle", "compacted"]},
-                                "pid": {"type": ["integer", "null"]}, "compacted": {"type": "boolean"},
-                                "hasCompanion": {"type": "boolean"}, "companionFiles": {"type": "integer"},
-                                "lastModified": {"type": "string"}, "createdAt": {"type": "string"}, "age": {"type": "string"},
-                            }}},
+                        "command": {"const": "list"},
+                        "user": {"type": ["string", "null"], "description": "Filter user; null when --all-users"},
+                        "sessions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["sessionId", "project", "status"],
+                                "properties": {
+                                    "sessionId": {"type": "string"},
+                                    "user": {"type": "string"},
+                                    "project": {
+                                        "type": "string",
+                                        "description": "Original CWD read from JSONL records (not decoded from directory name)",
+                                    },
+                                    "encodedCwd": {"type": "string"},
+                                    "jsonlPath": {"type": "string"},
+                                    "sizeBytes": {"type": "integer"},
+                                    "sizeHuman": {"type": "string"},
+                                    "records": {"type": "integer"},
+                                    "status": {"enum": ["active", "idle", "compacted"]},
+                                    "pid": {"type": ["integer", "null"]},
+                                    "compacted": {"type": "boolean"},
+                                    "hasCompanion": {"type": "boolean"},
+                                    "companionFiles": {"type": "integer"},
+                                    "lastModified": {"type": "string"},
+                                    "createdAt": {"type": "string"},
+                                    "age": {"type": "string"},
+                                },
+                            },
+                        },
                         "warnings": {"type": "array", "items": {"type": "string"}},
                     },
                 },
             },
             "fork": {
                 "description": "Fork a session to a target directory",
-                "response": {"oneOf": [
-                    {"description": "Success", "type": "object", "required": ["command", "status", "source", "fork", "resume"],
-                        "properties": {"command": {"const": "fork"}, "status": {"const": "success"},
-                            "source": {"type": "object"}, "fork": {"type": "object"},
-                            "resume": {"type": "string"}, "warnings": {"type": "array", "items": {"type": "string"}}}},
-                    {"description": "Error", "type": "object", "required": ["command", "status", "exitCode", "error"],
-                        "properties": {"command": {"const": "fork"}, "status": {"const": "error"},
-                            "exitCode": {"type": "integer"}, "error": {"type": "string"},
-                            "detail": {"type": "string"}, "suggestions": {"type": "array", "items": {"type": "string"}}}},
-                    {"description": "Dry run", "type": "object", "required": ["command", "status", "wouldDo", "checks"],
-                        "properties": {"command": {"const": "fork"}, "status": {"const": "dry-run"},
-                            "wouldDo": {"type": "object"}, "checks": {"type": "object"},
-                            "warnings": {"type": "array", "items": {"type": "string"}}}},
-                ]},
+                "response": {
+                    "oneOf": [
+                        {
+                            "description": "Success",
+                            "type": "object",
+                            "required": ["command", "status", "source", "fork", "chain", "resume"],
+                            "properties": {
+                                "command": {"const": "fork"},
+                                "status": {"const": "success"},
+                                "source": {"type": "object"},
+                                "fork": {
+                                    "type": "object",
+                                    "required": [
+                                        "sessionId",
+                                        "project",
+                                        "user",
+                                        "jsonlPath",
+                                        "sizeBytes",
+                                        "recordsWritten",
+                                        "chainRecords",
+                                        "nonChainRecords",
+                                        "cwdFieldsRewritten",
+                                        "sessionIdFieldsRewritten",
+                                        "companionFilesCopied",
+                                        "lastRecordCleaned",
+                                    ],
+                                    "properties": {
+                                        "sessionId": {"type": "string", "format": "uuid"},
+                                        "project": {"type": "string"},
+                                        "user": {"type": "string"},
+                                        "jsonlPath": {"type": "string"},
+                                        "sizeBytes": {"type": "integer"},
+                                        "recordsWritten": {"type": "integer"},
+                                        "chainRecords": {"type": "integer"},
+                                        "nonChainRecords": {"type": "integer"},
+                                        "cwdFieldsRewritten": {"type": "integer"},
+                                        "sessionIdFieldsRewritten": {"type": "integer"},
+                                        "companionFilesCopied": {"type": "integer"},
+                                        "lastRecordCleaned": {"type": "boolean"},
+                                    },
+                                },
+                                "chain": {
+                                    "type": "object",
+                                    "required": [
+                                        "entries",
+                                        "nonChainEntries",
+                                        "roots",
+                                        "leaves",
+                                        "branches",
+                                        "broken",
+                                    ],
+                                    "properties": {
+                                        "entries": {"type": "integer"},
+                                        "nonChainEntries": {"type": "integer"},
+                                        "roots": {"type": "integer"},
+                                        "leaves": {"type": "integer"},
+                                        "branches": {"type": "integer"},
+                                        "broken": {"type": "integer"},
+                                        "warnings": {"type": "array", "items": {"type": "string"}},
+                                        "badLines": {"type": "integer"},
+                                    },
+                                },
+                                "resume": {"type": "string"},
+                                "warnings": {"type": "array", "items": {"type": "string"}},
+                            },
+                        },
+                        {
+                            "description": "Error",
+                            "type": "object",
+                            "required": ["command", "status", "exitCode", "error"],
+                            "properties": {
+                                "command": {"const": "fork"},
+                                "status": {"const": "error"},
+                                "exitCode": {"type": "integer"},
+                                "error": {"type": "string"},
+                                "detail": {"type": "string"},
+                                "suggestions": {"type": "array", "items": {"type": "string"}},
+                            },
+                        },
+                        {
+                            "description": "Dry run",
+                            "type": "object",
+                            "required": ["command", "status", "wouldDo", "checks"],
+                            "properties": {
+                                "command": {"const": "fork"},
+                                "status": {"const": "dry-run"},
+                                "wouldDo": {"type": "object"},
+                                "checks": {"type": "object"},
+                                "warnings": {"type": "array", "items": {"type": "string"}},
+                            },
+                        },
+                    ]
+                },
             },
         },
     }
@@ -709,11 +1146,16 @@ EXAMPLES
   cd /srv/proj && claude --resume $NEW
 
 HOW IT WORKS
-  1. Finds the source JSONL by scanning ~/.claude/projects/
-  2. Copies it with a new UUID to the target project directory
-  3. Rewrites the 'cwd' field in every record to match the target
-  4. Copies subagent and tool-result companion files
-  5. The forked session resumes with full conversation history
+  1. Finds the source JSONL by scanning all ~/.claude/projects/ directories
+     (also checks sibling git worktrees if session not found)
+  2. Resolves the target project directory
+     (checks current encoding, legacy encoding, and prefix fallback)
+  3. Copies the JSONL with a new UUID to the target
+  4. Re-stamps sessionId and cwd on conversation records
+     (metadata entries get sessionId only — cwd is provenance)
+  5. Copies subagent and tool-result companion files
+  6. Verifies parentUuid chain integrity
+  7. The forked session resumes with full conversation history
 
   The source session is never modified.
 
@@ -721,8 +1163,7 @@ EXIT CODES
   0  Success
   1  Source session not found
   2  Target user invalid
-  3  Target directory creation failed
-  4  CWD rewrite failed
+  3  Target directory / ambiguous project directory
   5  Chain integrity check failed
 
 VERSION
@@ -748,6 +1189,7 @@ VERSION
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main():
     parser = argparse.ArgumentParser(prog="claude-fork", add_help=False)

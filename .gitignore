@@ -6,3 +6,7 @@ pp-*
 font-test.html
 terminal.html
 /tmp/
+
+data/
+profiles/
+__pycache__/

@@ -1457,6 +1457,14 @@ function init() {
   animate();
 }
 
+// Authenticated fetch — adds API key header to session data requests
+function authFetch(url, opts) {
+  opts = opts || {};
+  opts.headers = opts.headers || {};
+  if (_apiKey) opts.headers['X-Api-Key'] = _apiKey;
+  return fetch(url, opts);
+}
+
 // === Shared Dashboard WebSocket ===
 var _apiKey = null;
 var _dashWsAuthFailures = 0;
@@ -1582,7 +1590,7 @@ function routeEmbedMessageToSvg(t, obj, msg, opt) {
   if (msg.type === 'delta' && !t._screenAppliedToEmbed) {
     if (!t._screenHealRequested) {
       t._screenHealRequested = true;
-      fetch('/api/pane?session=' + encodeURIComponent(msg.session) + '&pane=0')
+      authFetch('/api/pane?session=' + encodeURIComponent(msg.session) + '&pane=0')
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(state) {
           if (!state || !state.lines) return;
@@ -3025,14 +3033,7 @@ window._activeInputSession = function() { return activeInputSession; };
 // Kept as fallback during transition for old sessions not yet on shared WebSocket
 async function refreshSessions() {
   try {
-    var headers = {};
-    if (_apiKey) headers['X-Api-Key'] = _apiKey;
-    const res = await fetch('/api/sessions', { headers: headers });
-    if (res.status === 403) {
-      // API key required — force reload to get fresh JS
-      location.reload(true);
-      return;
-    }
+    const res = await authFetch('/api/sessions');
     if (!res.ok) return;
     const sessions = await res.json();
     const currentNames = new Set(sessions.map(function (s) { return s.name; }));
@@ -3511,7 +3512,7 @@ async function openForkSessionPanel() {
   if (srcSel) {
     srcSel.innerHTML = '';
     try {
-      var r = await fetch('/api/sessions', { credentials: 'same-origin' });
+      var r = await authFetch('/api/sessions');
       var list = r.ok ? await r.json() : [];
       if (!Array.isArray(list)) list = [];
       var cpOnly = list.filter(function(s) {
@@ -3681,7 +3682,7 @@ async function refreshTitles() {
 // DEPRECATED (PRD v0.5.0): Titles arrive via WebSocket screen/delta messages
 async function fetchTitle(sessionName) {
   try {
-    const res = await fetch('/api/pane?session=' + encodeURIComponent(sessionName) + '&pane=0');
+    const res = await authFetch('/api/pane?session=' + encodeURIComponent(sessionName) + '&pane=0');
     if (!res.ok) return null;
     const data = await res.json();
     return data.title || null;
@@ -3981,7 +3982,7 @@ function addTerminal(sessionName, cols, rows) {
           scheduleTerminalSurfaceRepaint(termObj, t);
         } else if (t && !t._screenAppliedToEmbed) {
           // Self-heal: SVG loaded but no screen arrived — fetch current screen
-          fetch('/api/pane?session=' + encodeURIComponent(sessionName) + '&pane=0')
+          authFetch('/api/pane?session=' + encodeURIComponent(sessionName) + '&pane=0')
             .then(function(r) { return r.ok ? r.json() : null; })
             .then(function(state) {
               if (!state || !state.lines) return;

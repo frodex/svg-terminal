@@ -1,7 +1,10 @@
 # Claude Forker — Specification
 
-**Status:** Draft — needs Greg's review and comments
-**Date:** 2026-04-01
+**SPEC version:** v0.0.9  
+**Tool (`claude-fork`) version:** 0.2.0  
+
+**Status:** Draft — needs Greg's review and comments  
+**Date:** 2026-04-01 (SPEC); implementation stepped 2026-04-05  
 **Context:** Sub-project of svg-terminal / claude-proxy
 
 ---
@@ -9,6 +12,8 @@
 ## What This Is
 
 A CLI tool that forks an existing Claude Code session into a new or existing project directory, optionally under a different user. Called by claude-proxy's session creation UI, which collects parameters and validates inputs before invoking.
+
+It resolves project storage paths using the same directory-name rules as Claude Code (`encode_cwd` / legacy compat; see `docs/migration.md`), scans for source sessions including optional git-worktree fallback, re-stamps **`sessionId`** on forked transcript lines, rewrites **`cwd`** on **chain** records, verifies **`parentUuid`** integrity on the output file, and copies companion artifacts.
 
 ---
 
@@ -32,16 +37,24 @@ A CLI tool that forks an existing Claude Code session into a new or existing pro
 ┌─────────────────────────────────┐
 │  claude-fork (CLI)              │
 │                                 │
-│  1. Reads source JSONL          │
-│  2. Generates new UUID          │
-│  3. Rewrites CWD in records     │
-│  4. Writes to target dir        │
-│  5. Copies companion files      │
-│  6. Chowns if user changed      │
-│  7. Returns new UUID on stdout  │
+│  1. Find source JSONL (scan      │
+│     ~/.claude/projects; optional │
+│     git worktree fallback)      │
+│  2. Resolve target project dir  │
+│     (sanitizePath-style encode +│
+│     legacy + long-path prefix)   │
+│  3. New UUID for forked file     │
+│  4. Copy JSONL: re-stamp         │
+│     sessionId; rewrite cwd on    │
+│     chain records only           │
+│  5. Copy companion dir           │
+│  6. Optional chown for --user    │
+│  7. verify_chain (parentUuid)    │
+│  8. Emit JSON or human summary   │
+│     + resume shell line          │
 └──────────┬──────────────────────┘
            │
-           │ exit 0 + UUID on stdout
+           │ exit 0 (+ JSON on stdout in --json mode)
            │
            ▼
 ┌─────────────────────────────────┐
@@ -69,9 +82,12 @@ Commands:
   fork <id> <target>    Fork a session to a target directory
 
 Global options:
-  --json                Machine-readable JSON on stdout. No prompts, no color.
-                        Warnings/errors go to stderr. Implies no confirmation prompts.
-                        Contract: stdout is ALWAYS valid JSON or empty.
+  --json                Machine-readable JSON on stdout for list/fork. No prompts, no color.
+                        For `fork --json`, warnings are inside the JSON object. Implies no
+                        confirmation prompt for fork.
+                        The `schema` subcommand always prints JSON (it does not use `--json`).
+
+Contract: For `list --json` and `fork --json`, stdout is a single JSON object.
 
 List options:
   --user <username>     List sessions for a specific user (default: current user)
@@ -89,8 +105,7 @@ Exit codes:
   0  Success
   1  Source session not found
   2  Target user invalid or missing ~/.claude/
-  3  Target directory creation failed
-  4  CWD rewrite failed
+  3  Target directory missing (--no-create), ambiguous project directory, or related resolution failure
   5  Chain integrity check failed after write
 ```
 
@@ -150,11 +165,16 @@ EXAMPLES
   cd /srv/proj && claude --resume $NEW
 
 HOW IT WORKS
-  1. Finds the source JSONL by scanning ~/.claude/projects/
-  2. Copies it with a new UUID to the target project directory
-  3. Rewrites the 'cwd' field in every record to match the target
-  4. Copies subagent and tool-result companion files
-  5. The forked session resumes with full conversation history
+  1. Finds the source JSONL by scanning all ~/.claude/projects/ directories
+     (also checks sibling git worktrees if session not found)
+  2. Resolves the target project directory
+     (checks current encoding, legacy encoding, and prefix fallback)
+  3. Copies the JSONL with a new UUID to the target
+  4. Re-stamps sessionId and cwd on conversation records
+     (metadata entries get sessionId only — cwd is provenance)
+  5. Copies subagent and tool-result companion files
+  6. Verifies parentUuid chain integrity
+  7. The forked session resumes with full conversation history
 
   The source session is never modified.
 
@@ -162,12 +182,11 @@ EXIT CODES
   0  Success
   1  Source session not found
   2  Target user invalid
-  3  Target directory creation failed
-  4  CWD rewrite failed
+  3  Target directory / ambiguous project directory
   5  Chain integrity check failed
 
 VERSION
-  claude-fork 0.1.0
+  claude-fork 0.2.0
   Docs: /srv/svg-terminal/claude-forker/SPEC.md
 ```
 
@@ -177,353 +196,28 @@ VERSION
 
 ## Schema Discovery
 
-```bash
-# All schemas
-claude-fork schema
-# Output: { "commands": { "list": { ... }, "fork": { ... }, "schema": { ... } } }
+Authoritative JSON for response shapes is emitted by **`claude-fork schema`** (stdout). It includes `tool`, `version` (`0.2.0`), and `commands.list` / `commands.fork` with nested JSON Schema–style objects. There is **no** `--examples` flag; embed fixtures in the UI or load the checked golden file:
 
-# Schema for a specific command
-claude-fork schema list
-# Output: JSON Schema for the list response
-
-claude-fork schema fork
-# Output: JSON Schema for the fork response (success + error variants)
-```
-
-The schema command always outputs JSON regardless of `--json` flag. It returns standard JSON Schema (draft 2020-12) so the calling UI can validate responses at runtime.
-
-```json
-{
-  "tool": "claude-fork",
-  "version": "0.1.0",
-  "commands": {
-    "schema": {
-      "description": "Output JSON schema for command responses",
-      "args": "[command]",
-      "response": "This object"
-    },
-    "list": {
-      "description": "List available sessions",
-      "args": "[--user <name>] [--all-users] [--project <path>]",
-      "response": {
-        "type": "object",
-        "properties": {
-          "command": { "const": "list" },
-          "user": { "type": "string" },
-          "sessions": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "required": ["sessionId", "project", "status"],
-              "properties": {
-                "sessionId": { "type": "string", "format": "uuid" },
-                "project": { "type": "string", "description": "Decoded CWD path" },
-                "encodedCwd": { "type": "string" },
-                "jsonlPath": { "type": "string" },
-                "sizeBytes": { "type": "integer" },
-                "sizeHuman": { "type": "string" },
-                "records": { "type": "integer" },
-                "status": { "enum": ["active", "idle", "compacted"] },
-                "pid": { "type": ["integer", "null"] },
-                "compacted": { "type": "boolean" },
-                "hasCompanion": { "type": "boolean" },
-                "companionFiles": { "type": "integer" },
-                "lastModified": { "type": "string", "format": "date-time" },
-                "createdAt": { "type": "string", "format": "date-time" }
-              }
-            }
-          },
-          "warnings": { "type": "array", "items": { "type": "string" } }
-        }
-      }
-    },
-    "fork": {
-      "description": "Fork a session to a target directory",
-      "args": "<session-id> <target-cwd> [--user <name>] [--dry-run] [--no-companion] [--no-create] [--no-session-cleanup]",
-      "response": {
-        "oneOf": [
-          {
-            "description": "Success",
-            "type": "object",
-            "required": ["command", "status", "source", "fork", "resume"],
-            "properties": {
-              "command": { "const": "fork" },
-              "status": { "const": "success" },
-              "source": {
-                "type": "object",
-                "properties": {
-                  "sessionId": { "type": "string" },
-                  "project": { "type": "string" },
-                  "sizeBytes": { "type": "integer" },
-                  "records": { "type": "integer" },
-                  "compacted": { "type": "boolean" }
-                }
-              },
-              "fork": {
-                "type": "object",
-                "properties": {
-                  "sessionId": { "type": "string", "format": "uuid" },
-                  "project": { "type": "string" },
-                  "user": { "type": "string" },
-                  "jsonlPath": { "type": "string" },
-                  "sizeBytes": { "type": "integer" },
-                  "recordsWritten": { "type": "integer" },
-                  "cwdFieldsRewritten": { "type": "integer" },
-                  "companionFilesCopied": { "type": "integer" },
-                  "lastRecordCleaned": { "type": "boolean" }
-                }
-              },
-              "resume": { "type": "string", "description": "Exact shell command to resume the fork" },
-              "warnings": { "type": "array", "items": { "type": "string" } }
-            }
-          },
-          {
-            "description": "Error",
-            "type": "object",
-            "required": ["command", "status", "exitCode", "error"],
-            "properties": {
-              "command": { "const": "fork" },
-              "status": { "const": "error" },
-              "exitCode": { "type": "integer", "minimum": 1, "maximum": 5 },
-              "error": { "type": "string" },
-              "detail": { "type": "string" },
-              "suggestions": { "type": "array", "items": { "type": "string" } }
-            }
-          },
-          {
-            "description": "Dry run",
-            "type": "object",
-            "required": ["command", "status", "wouldDo", "checks"],
-            "properties": {
-              "command": { "const": "fork" },
-              "status": { "const": "dry-run" },
-              "wouldDo": { "type": "object" },
-              "checks": { "type": "object" },
-              "warnings": { "type": "array", "items": { "type": "string" } }
-            }
-          }
-        ]
-      }
-    }
-  }
-}
-```
-
-The schema also includes examples for every response variant:
+- **`tests/fixtures/schema-expected.json`** — byte-for-byte match with `claude-fork schema` (see `tests/test-fork.sh`).
 
 ```bash
-# Get example responses
-claude-fork schema list --examples
-claude-fork schema fork --examples
+claude-fork schema              # full document
+claude-fork schema list         # list response schema only
+claude-fork schema fork         # fork oneOf: success | error | dry-run
 ```
 
-Returns the schema with `examples` arrays populated from real test data. The UI can use these for:
-- Development/testing without a live session
-- Rendering a preview of what the UI will display
-- Validating the UI's parser against known-good responses
+**List (high level):** Top-level `user` is `null` when using `list --all-users`; otherwise the filter user or current user. Each session’s `project` is the original CWD from JSONL (first record with `cwd`), not a decode of `encodedCwd`.
 
-```json
-{
-  "tool": "claude-fork",
-  "version": "0.1.0",
-  "commands": {
-    "list": {
-      "response": { "...schema..." },
-      "examples": [
-        {
-          "description": "Two sessions, one active, one idle",
-          "value": {
-            "command": "list",
-            "user": "root",
-            "sessions": [
-              {
-                "sessionId": "6a76ff6f-ca1e-4be9-b596-b2c0ae588d91",
-                "project": "/root",
-                "encodedCwd": "-root",
-                "jsonlPath": "/root/.claude/projects/-root/6a76ff6f-ca1e-4be9-b596-b2c0ae588d91.jsonl",
-                "sizeBytes": 4200000,
-                "sizeHuman": "4.2MB",
-                "records": 1200,
-                "status": "active",
-                "pid": 3352832,
-                "compacted": false,
-                "hasCompanion": true,
-                "companionFiles": 12,
-                "lastModified": "2026-04-01T12:45:00Z",
-                "createdAt": "2026-03-28T15:57:38Z"
-              },
-              {
-                "sessionId": "0317c840-f331-4eac-add0-a6f53550c517",
-                "project": "/root",
-                "encodedCwd": "-root",
-                "jsonlPath": "/root/.claude/projects/-root/0317c840-f331-4eac-add0-a6f53550c517.jsonl",
-                "sizeBytes": 17500000,
-                "sizeHuman": "17MB",
-                "records": 2800,
-                "status": "idle",
-                "pid": null,
-                "compacted": false,
-                "hasCompanion": true,
-                "companionFiles": 48,
-                "lastModified": "2026-03-28T21:35:00Z",
-                "createdAt": "2026-03-26T15:06:10Z"
-              }
-            ],
-            "warnings": []
-          }
-        },
-        {
-          "description": "Compacted session with no companion files",
-          "value": {
-            "command": "list",
-            "user": "root",
-            "sessions": [
-              {
-                "sessionId": "00ff1988-2890-4b90-a0bd-6ab0b055fe88",
-                "project": "/root",
-                "encodedCwd": "-root",
-                "jsonlPath": "/root/.claude/projects/-root/00ff1988-2890-4b90-a0bd-6ab0b055fe88.jsonl",
-                "sizeBytes": 890000,
-                "sizeHuman": "890KB",
-                "records": 3518,
-                "status": "compacted",
-                "pid": null,
-                "compacted": true,
-                "hasCompanion": false,
-                "companionFiles": 0,
-                "lastModified": "2026-03-28T05:12:03Z",
-                "createdAt": "2026-03-24T00:30:00Z"
-              }
-            ],
-            "warnings": []
-          }
-        }
-      ]
-    },
-    "fork": {
-      "response": { "...schema..." },
-      "examples": [
-        {
-          "description": "Successful fork to different project",
-          "value": {
-            "command": "fork",
-            "status": "success",
-            "source": {
-              "sessionId": "6a76ff6f-ca1e-4be9-b596-b2c0ae588d91",
-              "project": "/root",
-              "sizeBytes": 4200000,
-              "records": 1200,
-              "compacted": false
-            },
-            "fork": {
-              "sessionId": "a7da9a5d-8424-453b-84a5-05e2e36a0fa7",
-              "project": "/srv/svg-terminal",
-              "user": "root",
-              "jsonlPath": "/root/.claude/projects/-srv-svg-terminal/a7da9a5d-8424-453b-84a5-05e2e36a0fa7.jsonl",
-              "sizeBytes": 4200000,
-              "recordsWritten": 1200,
-              "cwdFieldsRewritten": 1180,
-              "companionFilesCopied": 12,
-              "lastRecordCleaned": false
-            },
-            "resume": "cd /srv/svg-terminal && claude --resume a7da9a5d-8424-453b-84a5-05e2e36a0fa7",
-            "warnings": []
-          }
-        },
-        {
-          "description": "Successful fork from active compacted session with warnings",
-          "value": {
-            "command": "fork",
-            "status": "success",
-            "source": {
-              "sessionId": "00ff1988-2890-4b90-a0bd-6ab0b055fe88",
-              "project": "/root",
-              "sizeBytes": 890000,
-              "records": 3518,
-              "compacted": true
-            },
-            "fork": {
-              "sessionId": "c4e21f88-9912-4a3b-b012-8de44a1f9c02",
-              "project": "/srv/new-project",
-              "user": "greg",
-              "jsonlPath": "/home/greg/.claude/projects/-srv-new-project/c4e21f88-9912-4a3b-b012-8de44a1f9c02.jsonl",
-              "sizeBytes": 890000,
-              "recordsWritten": 3518,
-              "cwdFieldsRewritten": 3400,
-              "companionFilesCopied": 0,
-              "lastRecordCleaned": false
-            },
-            "resume": "su - greg -c 'cd /srv/new-project && claude --resume c4e21f88-9912-4a3b-b012-8de44a1f9c02'",
-            "warnings": [
-              "Source session has been COMPACTED — fork gets summary context only",
-              "Target user greg has default cleanupPeriodDays (30-day auto-delete risk)"
-            ]
-          }
-        },
-        {
-          "description": "Session not found with suggestions",
-          "value": {
-            "command": "fork",
-            "status": "error",
-            "exitCode": 1,
-            "error": "Source session not found",
-            "detail": "No JSONL matching '6a76' in any project directory for user root",
-            "suggestions": [
-              "6a76ff6f-ca1e-4be9-b596-b2c0ae588d91 (/root, 4.2MB, Apr 01)",
-              "6a73ab12-de09-4a1c-b3f2-1198ca4e5d00 (/srv, 1.1MB, Mar 28)"
-            ]
-          }
-        },
-        {
-          "description": "Dry run showing what would happen",
-          "value": {
-            "command": "fork",
-            "status": "dry-run",
-            "wouldDo": {
-              "source": "/root/.claude/projects/-root/6a76ff6f-ca1e-4be9-b596-b2c0ae588d91.jsonl",
-              "target": "/root/.claude/projects/-srv-svg-terminal/{new-uuid}.jsonl",
-              "cwdRewrite": { "from": "/root", "to": "/srv/svg-terminal" },
-              "userChange": null,
-              "createDir": false,
-              "companionFiles": 12
-            },
-            "checks": {
-              "sourceExists": true,
-              "sourceActive": true,
-              "sourceActivePid": 3352832,
-              "sourceCompacted": false,
-              "sourceRecords": 1200,
-              "sourceSizeHuman": "4.2MB",
-              "targetDirExists": true,
-              "targetHasClaudeMd": true,
-              "targetHasSettings": true,
-              "targetUserHasClaude": true,
-              "targetCleanupProtected": true
-            },
-            "warnings": [
-              "Source session is ACTIVE (PID 3352832)"
-            ]
-          }
-        }
-      ]
-    }
-  }
-}
-```
+**Fork success (high level):** `source`, `fork`, **`chain`**, `resume`, `warnings`. The `fork` object includes `chainRecords`, `nonChainRecords`, `cwdFieldsRewritten`, `sessionIdFieldsRewritten`, etc. The `chain` object reports `verify_chain` statistics (`entries`, `nonChainEntries`, `roots`, `leaves`, `branches`, `broken`, `warnings`, `badLines`).
+
+**Fork dry-run:** `wouldDo.cwdRewrite` is either `null` or `{ "from": [string, ...], "to": string, "recordsAffected": number }` (one entry per distinct source CWD when prior forks mixed paths). `checks.encodingMethod` is one of `current`, `legacy-compat`, `prefix-fallback`, `new-directory`.
 
 The UI integration pattern:
 
 ```javascript
-// On startup — discover schema + examples
-const schema = JSON.parse(execSync('claude-fork schema --examples'));
-
-// Use examples for development/testing
-const mockList = schema.commands.list.examples[0].value;
-renderSessionPicker(mockList.sessions);  // test UI without live data
-
-// In production — validate live responses against schema
-const listResult = JSON.parse(execSync('claude-fork list --json'));
-validate(listResult, schema.commands.list.response);
+const schema = JSON.parse(execSync('claude-fork schema', { encoding: 'utf8' }));
+const listResult = JSON.parse(execSync('claude-fork list --json', { encoding: 'utf8' }));
+// validate(listResult, schema.commands.list.response);
 ```
 
 ---
@@ -532,6 +226,8 @@ validate(listResult, schema.commands.list.response);
 
 ### `claude-fork list --json`
 
+Top-level `user` is `null` when `--all-users` is used (sessions carry their own `user` field). Otherwise it is the filter user or the current user.
+
 ```json
 {
   "command": "list",
@@ -539,6 +235,7 @@ validate(listResult, schema.commands.list.response);
   "sessions": [
     {
       "sessionId": "6a76ff6f-ca1e-4be9-b596-b2c0ae588d91",
+      "user": "root",
       "project": "/root",
       "encodedCwd": "-root",
       "jsonlPath": "/root/.claude/projects/-root/6a76ff6f-ca1e-4be9-b596-b2c0ae588d91.jsonl",
@@ -550,19 +247,19 @@ validate(listResult, schema.commands.list.response);
       "compacted": false,
       "hasCompanion": true,
       "companionFiles": 12,
-      "lastModified": "2026-04-01T12:45:00Z",
-      "createdAt": "2026-03-28T15:57:38Z"
+      "lastModified": "2026-04-01T12:45:00+00:00",
+      "createdAt": "2026-03-28T15:57:38+00:00",
+      "age": "4d"
     }
   ],
-  "warnings": [
-    "User greg has default cleanupPeriodDays (30 days)"
-  ]
+  "warnings": []
 }
 ```
 
 ### `claude-fork fork <id> <target> --json`
 
 Success:
+
 ```json
 {
   "command": "fork",
@@ -581,9 +278,22 @@ Success:
     "jsonlPath": "/root/.claude/projects/-srv-svg-terminal/a7da9a5d-8424-453b-84a5-05e2e36a0fa7.jsonl",
     "sizeBytes": 4200000,
     "recordsWritten": 1200,
-    "cwdFieldsRewritten": 1180,
+    "chainRecords": 1150,
+    "nonChainRecords": 50,
+    "cwdFieldsRewritten": 1130,
+    "sessionIdFieldsRewritten": 1200,
     "companionFilesCopied": 12,
     "lastRecordCleaned": false
+  },
+  "chain": {
+    "entries": 1150,
+    "nonChainEntries": 50,
+    "roots": 1,
+    "leaves": 1,
+    "branches": 0,
+    "broken": 0,
+    "warnings": [],
+    "badLines": 0
   },
   "resume": "cd /srv/svg-terminal && claude --resume a7da9a5d-8424-453b-84a5-05e2e36a0fa7",
   "warnings": [
@@ -592,22 +302,26 @@ Success:
 }
 ```
 
-Failure:
+Failure (stdout JSON; typical):
+
 ```json
 {
   "command": "fork",
   "status": "error",
   "exitCode": 1,
   "error": "Source session not found",
-  "detail": "No JSONL matching 6a76ff6f in any project directory",
+  "detail": "No JSONL matching 'deadbeef'",
   "suggestions": [
-    "6a73ab12-de09-4a1c-b3f2-... (/root, 1.1MB, Mar 28)",
-    "6a76ff6f-ca1e-4be9-b596-... found in /root but CWD encoded as -root"
+    "6a76ff6f-ca1e-4be9-b596-b2c0ae588d91 (/root, 4096KB, Apr 01)"
   ]
 }
 ```
 
+Exit **3** is used for missing target directory with `--no-create`, **ambiguous project directory** (`find_project_dir` prefix collision), and related resolution failures.
+
 ### `claude-fork fork <id> <target> --dry-run --json`
+
+`wouldDo.target` is a concrete path (a new UUID is chosen for the dry run). `cwdRewrite.from` is always an array of source CWD strings (possibly one element).
 
 ```json
 {
@@ -615,8 +329,12 @@ Failure:
   "status": "dry-run",
   "wouldDo": {
     "source": "/root/.claude/projects/-root/6a76ff6f-ca1e-4be9-b596-b2c0ae588d91.jsonl",
-    "target": "/root/.claude/projects/-srv-svg-terminal/{new-uuid}.jsonl",
-    "cwdRewrite": { "from": "/root", "to": "/srv/svg-terminal" },
+    "target": "/root/.claude/projects/-srv-svg-terminal/a7da9a5d-8424-453b-84a5-05e2e36a0fa7.jsonl",
+    "cwdRewrite": {
+      "from": ["/root"],
+      "to": "/srv/svg-terminal",
+      "recordsAffected": 1180
+    },
     "userChange": null,
     "createDir": false,
     "companionFiles": 12
@@ -624,11 +342,17 @@ Failure:
   "checks": {
     "sourceExists": true,
     "sourceActive": true,
+    "sourceActivePid": 3352832,
     "sourceCompacted": false,
+    "sourceRecords": 1200,
+    "sourceChainRecords": 1150,
+    "sourceNonChainRecords": 50,
+    "sourceSizeHuman": "4096KB",
     "targetDirExists": true,
     "targetHasClaudeMd": true,
     "targetUserHasClaude": true,
-    "targetCleanupProtected": true
+    "targetCleanupProtected": true,
+    "encodingMethod": "current"
   },
   "warnings": [
     "Source session is ACTIVE (PID 3352832)"
@@ -636,12 +360,13 @@ Failure:
 }
 ```
 
-**Contract:** In `--json` mode:
-- **stdout** is always valid JSON (or empty on exit code > 0 with no structured error)
-- **stderr** gets human-readable diagnostics (progress messages, warnings during execution)
-- **Exit code** is the same as non-json mode (0=success, 1-5=specific failures)
-- **No interactive prompts** — all confirmation is skipped (the calling UI handles user confirmation before invoking)
-- **No ANSI color codes** on stdout
+**Contract:** In `--json` mode for `list` and `fork --json` / `fork --dry-run --json`:
+
+- **stdout** is a single JSON object (errors included in the object when the tool emits structured errors).
+- **Warnings** for fork are included in the JSON `warnings` array (not only on stderr).
+- **Exit code:** `0` success; `1` source not found / ambiguous ID; `2` target user invalid; `3` target path / ambiguous project dir; `5` chain broken after write. There is **no** exit code `4`.
+- **`fork` without `--json`** still prompts for confirmation unless combined with `--json` or `--dry-run` (dry-run never writes).
+- **No ANSI color codes** on stdout.
 
 ---
 
@@ -653,16 +378,16 @@ claude-fork list
 
 # Output:
 #   SESSION ID                             PROJECT           SIZE    RECORDS  STATUS      AGE
-#   6a76ff6f-ca1e-4be9-b596-b2c0ae588d91   /root             4.2MB   1200     ACTIVE      4d
-#   e3af93f5-13f3-470c-a5ba-94823a102b75   /root             20MB    3400     ACTIVE      4d
+#   6a76ff6f-ca1e-4be9-b596-b2c0ae588d91   /root             4.2MB   1200     active      4d
+#   e3af93f5-13f3-470c-a5ba-94823a102b75   /root             20MB    3400     active      4d
 #   0317c840-f331-4eac-add0-a6f53550c517   /root             17MB    2800     idle        4d
 #   72fd1d06-5e87-46fe-ad8a-8cb596b2c0e7   /srv/svg-terminal 1.2MB   340      idle        2d
 #   c3c486aa-28dc-4010-9351-69f68a654e3b   /srv/marktext     0.8MB   210      idle        2d
 #   ...
 #
-#   STATUS: ACTIVE = running PID found in ~/.claude/sessions/
+#   STATUS: active = running PID found in ~/.claude/sessions/
 #           idle   = JSONL exists, no running PID
-#           COMPACTED = compact_boundary found in JSONL
+#           compacted = compact_boundary found in JSONL
 
 # List sessions for a different user
 claude-fork list --user greg
@@ -673,25 +398,8 @@ claude-fork list --project /srv/svg-terminal
 # List across all users (requires root)
 claude-fork list --all-users
 
-# JSON output for UI consumption
+# JSON output for UI consumption (object with command, user, sessions, warnings)
 claude-fork list --json
-# [
-#   {
-#     "sessionId": "6a76ff6f-ca1e-4be9-b596-b2c0ae588d91",
-#     "project": "/root",
-#     "encodedCwd": "-root",
-#     "size": "4.2MB",
-#     "records": 1200,
-#     "status": "ACTIVE",
-#     "pid": 3352832,
-#     "compacted": false,
-#     "age": "4d",
-#     "lastModified": "2026-04-01T12:45:00Z",
-#     "hasCompanion": true,
-#     "companionFiles": 12
-#   },
-#   ...
-# ]
 ```
 
 **Forking — source is auto-resolved from session ID:**
@@ -706,8 +414,8 @@ claude-fork fork 6a76ff6f-ca1e-4be9-b596-b2c0ae588d91 /srv/svg-terminal --user g
 # Dry run
 claude-fork fork 6a76ff6f-ca1e-4be9-b596-b2c0ae588d91 /srv/new-project --dry-run
 
-# Script mode (just the new UUID)
-NEW_ID=$(claude-fork fork 6a76ff6f /srv/proj --quiet)
+# Script: new session id (parse JSON)
+NEW_ID=$(claude-fork fork 6a76ff6f /srv/proj --json | jq -r '.fork.sessionId')
 
 # Short ID works — tool finds the match
 claude-fork fork 6a76 /srv/svg-terminal
@@ -722,82 +430,75 @@ claude-fork fork 6a76 /srv/svg-terminal
 ### Step 1 — Resolve source
 
 ```
-Input:  source-session-id (full or prefix)
-Action: Scan all directories under ~{user}/.claude/projects/*/
-        for a JSONL matching the session ID (or prefix).
-        Derive source-cwd from the encoded directory name (- → /).
-Match:  Full UUID     → exact match
-        Partial prefix → scan all projects dirs, list matches if ambiguous
-        No match       → list similar IDs (levenshtein or prefix), exit 1
-Check:  File exists? → exit 1 if not
-Check:  Is source session currently running? → warn (not block)
-Check:  Has source been compacted? → warn ("fork will have summary context only")
-Report: Source path, CWD (derived), size, record count, compaction status
+Input:  source-session-id (full or prefix); search is under current user's
+        ~/.claude/projects/ (see multi-user note in repo docs).
+Action: Scan each project subdirectory for *.jsonl; match stem to full id or prefix.
+        If git worktree fallback applies (session not in primary scan), shell out
+        git worktree list --porcelain from cwd and re-check encoded paths.
+Source CWD: From JSONL via read_cwds_from_jsonl (aggregate); primary fork source
+        uses the most frequent cwd value.
+Match:  Exact stem → return file + cwd map
+        Single prefix match → same
+        Multiple prefix matches → exit 1 (ambiguous), list tuples
+        No match → exit 1 with suggestion strings (cwd from read_first_cwd_from_jsonl)
+Check:  Active PID via ~/.claude/sessions → warn
+Check:  compact_boundary in JSONL → warn
 ```
 
 ### Step 2 — Resolve target
 
 ```
-Input:  target-cwd, --user (optional)
-Action: Determine target user's home directory
+Input:  target-cwd, --user (target user only)
+Action: Resolve target user's home; find_project_dir(target_cwd) for existing
+        ~/.claude/projects/<encoded>/ or legacy slash-only or long-path prefix.
+        If none, use projects/<encode_cwd(target_cwd)> (may create).
 Check:  Target user exists? → exit 2 if not
-Check:  Target user has ~/.claude/ ? → create if missing
-Check:  Target user has cleanupPeriodDays set? → warn if default (30-day delete risk)
-Check:  Target directory exists? → create if missing, report
-Check:  Target has CLAUDE.md? → report (agent will/won't get project instructions)
+Check:  Ambiguous prefix match → exit 3
+Check:  --no-create and target working dir missing → exit 3
+Check:  cleanupPeriodDays, claude binary, CLAUDE.md → warn as implemented
 ```
 
 ### Step 3 — Generate new UUID
 
 ```
-Action: python3 -c "import uuid; print(uuid.uuid4())"
-Report: "Fork UUID: {new-uuid}"
+Action: uuid.uuid4(); ensure {fork_id}.jsonl does not already exist under target dir
 ```
 
 ### Step 4 — Copy and rewrite
 
 ```
-Action: Read source JSONL line by line
-        For each record with cwd == source-cwd: rewrite to target-cwd
-        Write to ~{target-user}/.claude/projects/{encoded-target-cwd}/{new-uuid}.jsonl
-Report: "{N} records written, {M} CWD fields rewritten"
+Action: Stream source JSONL; fork_record() per line:
+        Re-stamp sessionId on all records that have it; rewrite cwd on chain
+        participants only when it differs from target.
+Report: recordsWritten, cwdFieldsRewritten, sessionIdFieldsRewritten, chain vs metadata counts
 ```
 
 ### Step 5 — Copy companion files
 
 ```
-Action: If source has {session-id}/ directory:
-          Copy to {new-uuid}/ in target
-          Includes: subagents/*.jsonl, subagents/*.meta.json, tool-results/*.txt
-Check:  Any companion files have CWD references? → rewrite if found (NEEDS TESTING)
-Report: "{N} companion files copied" or "No companion files"
+Action: If source has {session-id}/ companion tree, copy to target_projects_dir/{fork_id}/
+Report: companionFilesCopied
 ```
 
 ### Step 6 — Set ownership (if user changed)
 
 ```
-Action: chown -R {target-user}:{target-group} on:
-        - {new-uuid}.jsonl
-        - {new-uuid}/ (companion directory)
-Check:  Permissions correct? → verify with stat
+Action: chown new jsonl and companion tree to target user
 ```
 
 ### Step 7 — Verify integrity
 
 ```
-Action: Read the new JSONL, build parentUuid chain
-Check:  Every parentUuid points to an existing entry (or null for roots)
-Check:  At least one root node exists
-Check:  At least one leaf node exists
-Report: "Chain integrity: OK ({N} entries, {B} branches, {L} leaves)"
-        or "BROKEN: {details}" → exit 5
+Action: verify_chain() single pass (chain participants only)
+Check:  broken == 0 required; warnings/badLines informational
+Failure: exit 5
 ```
 
 ### Step 8 — Output
 
 ```
-Quiet mode:  print("{new-uuid}") → exit 0
-Normal mode: print summary + resume command → exit 0
+--json: full JSON document on stdout (list or fork success/error/dry-run)
+Interactive fork: human summary + resume line; structured fields mirror JSON
 ```
 
 ---
@@ -810,8 +511,8 @@ These checks run BEFORE the fork begins. The UI collects the inputs; the CLI val
 
 | Check | How | Failure |
 |-------|-----|---------|
-| Source JSONL exists | Look up `~{source-user}/.claude/projects/{encoded-source-cwd}/{session-id}.jsonl` | exit 1 — "Source session not found at {path}" |
-| Source session ID is valid UUID | Regex match. On failure, scan source dir for prefix matches and list candidates | exit 1 — "Session not found. Did you mean:\n  6a76ff6f-ca1e-... (4.2MB, Mar 31)\n  6a73ab12-de09-... (1.1MB, Mar 28)" |
+| Source JSONL exists | Scan `~/.claude/projects/*/<id>.jsonl` (and worktree fallback); source user is always the invoking user’s store today | exit 1 — JSON `"error": "Source session not found"` with `suggestions` |
+| Source session ID prefix | Partial id may match 0, 1, or many JSONL stems | exit 1 — ambiguous or not found as implemented in `find_session` |
 | Source is compacted? | `grep "compact_boundary" {source}.jsonl` | WARN (not block) — "Source was compacted — fork gets summary context only, not full history" |
 | Source size | `du -h {source}.jsonl` | WARN if >10MB — "Large session — fork may take a moment" |
 | Source is currently running? | Check `~/.claude/sessions/*.json` for matching sessionId with live PID | WARN (not block) — "SOURCE SESSION IS ACTIVE — fork will capture current state" |
@@ -820,7 +521,8 @@ These checks run BEFORE the fork begins. The UI collects the inputs; the CLI val
 
 | Check | How | Failure |
 |-------|-----|---------|
-| Target directory exists | `test -d {target-cwd}` | Auto-create with `mkdir -p` (default). Use `--no-create` to fail instead: "Target directory {path} does not exist. Run with default behavior or create manually." |
+| Target working directory | `test -d {target-cwd}` | Auto-create with `mkdir -p` (default). `--no-create` → exit **3** if missing |
+| Target project dir encoding | `find_project_dir` + `encode_cwd` | Ambiguous long-path prefix → exit **3** |
 | Target user exists | `id {user}` | exit 2 — "User {user} not found" |
 | Target user has `~/.claude/` | `test -d ~{user}/.claude/` | Create it — `mkdir -p ~{user}/.claude/projects/` |
 | Target user has claude installed | `test -x ~{user}/.local/bin/claude` OR `which claude` | WARN — "Claude Code not found for user {user} — session cannot be resumed until installed" |
@@ -887,13 +589,9 @@ Fork summary:
   [y=proceed, n=cancel]
 ```
 
-### 5. Silent context loss from CWD mismatch
-**Problem:** If the CWD rewrite misses records (edge case), the agent loads with partial or no history — silently.
-**Prevention:** After writing the fork, run chain integrity check (Step 7). Count records with CWD matching target vs not matching. If any mismatch:
-```
-ERROR: {N} records still have CWD={old-cwd} after rewrite
-  Fork may load with missing context. Aborting.
-```
+### 5. Chain integrity after fork
+**Problem:** Corrupt or inconsistent `parentUuid` links would yield a broken transcript.
+**Prevention:** `verify_chain` runs on the **new** JSONL; any `broken > 0` fails the fork (exit **5**). CWD rewriting is limited to **chain participants**; metadata `cwd` is left as provenance by design.
 
 ### 6. No backup before modifying source
 **Problem:** The fork tool should NEVER modify the source. But bugs happen.
@@ -937,7 +635,7 @@ Source: root@/root session 6a76ff6f
 Target: greg@/home/greg/projects/foo
 
 Result:
-  /home/greg/.claude/projects/-home-greg-projects-foo/{new-uuid}.jsonl  (CWD rewritten, chowned)
+  /home/greg/.claude/projects/-home-greg-projects-foo/{new-uuid}.jsonl  (directory name from sanitizePath-style encode_cwd; CWD rewritten, chowned)
   Resume: su - greg -c "cd /home/greg/projects/foo && claude --resume {new-uuid}"
 ```
 
@@ -953,8 +651,8 @@ Target: root@/srv/new-project (doesn't exist)
 
 Actions:
   1. mkdir -p /srv/new-project
-  2. mkdir -p ~/.claude/projects/-srv-new-project/
-  3. Copy + CWD rewrite
+  2. mkdir -p ~/.claude/projects/-srv-new-project/   (encode_cwd("/srv/new-project"))
+  3. Copy JSONL; fork_record (sessionId + chain cwd)
   4. Optionally create /srv/new-project/CLAUDE.md from template
 
 Result:
@@ -985,11 +683,11 @@ Use case: Weekly fresh deployment. Previous fork ages, new fork is fresh.
 
 | Claim | Status | Evidence |
 |-------|--------|----------|
-| CWD rewrite enables cross-directory resume | **VERIFIED** | 4MB session, 32% context loaded, agent retained full memory |
-| New UUID filename works (internal sessionId mismatch) | **VERIFIED** | UUID `a7da9a5d` filename, internal `6a76ff6f`, loaded fine |
-| Multiple forks coexist in same directory | **VERIFIED** | Fork A + Fork B, both loaded independently at 34% context |
-| Claude Code finds sessions by directory scan, not internal ID | **VERIFIED** | Mismatched IDs worked across all tests |
-| Without CWD rewrite, history silently not loaded | **VERIFIED** | Session found (no error) but 0% context, "no previous conversation" |
+| Target cwd + chain `cwd` rewrite enables cross-directory resume | **VERIFIED** (historical) | Prior manual tests; see journals |
+| `sessionId` in forked JSONL matches new file stem | **BY DESIGN** | `fork_record` re-stamps every record that has `sessionId` |
+| Multiple forks coexist in same directory | **VERIFIED** | Distinct UUID filenames under same encoded project dir |
+| Claude Code discovers sessions via `~/.claude/projects/<encode_cwd(cwd)>/` | **ALIGNED** | `encode_cwd` matches Claude `sanitizePath` semantics (v0.2+) |
+| Wrong or missing cwd in chain records hurts tool/context behavior | **VERIFIED** (historical) | Motivation for selective cwd rewrite on chain participants only |
 
 ## Needs Testing
 
@@ -999,7 +697,7 @@ Use case: Weekly fresh deployment. Previous fork ages, new fork is fresh.
 | Companion file CWD references | **UNTESTED** | Subagent meta.json may have CWD baked in |
 | Fork of compacted session | **UNTESTED** | Should work but only summary context preserved |
 | Fork of session with active concurrent resume | **UNTESTED** | Which branch gets copied? Most recent leaf? |
-| Chain integrity after CWD-only rewrite | **TESTED OK** | parentUuid chain unaffected by CWD rewrite |
+| Chain integrity after fork (sessionId + selective cwd) | **TESTED OK** | `verify_chain` on output; exit 5 if broken |
 | Very large sessions (>50MB) | **UNTESTED** | Performance, memory during rewrite |
 
 ---
@@ -1010,11 +708,14 @@ Use case: Weekly fresh deployment. Previous fork ages, new fork is fresh.
 /srv/svg-terminal/claude-forker/
 ├── SPEC.md                     ← this file
 ├── docs/
+│   ├── migration.md            ← encoding / legacy directory behavior (v0.2+)
 │   ├── how-it-works.md         ← reference copy of how-to-fork-claude.md
 │   ├── testing-via-tmux.md     ← reference copy of tmux testing journal
 │   └── session-anatomy.md      ← reference copy of fork mechanics journal
 ├── tools/
-│   └── claude-fork             ← the CLI tool (to be built)
+│   └── claude-fork             ← CLI (Python 3; `VERSION` in file)
 └── tests/
-    └── test-fork.sh            ← automated test harness (to be built)
+    ├── test-fork.sh            ← schema + encode_cwd regression
+    └── fixtures/
+        └── schema-expected.json ← golden `claude-fork schema` output
 ```
