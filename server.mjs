@@ -7,7 +7,7 @@ import https from 'node:https';
 import { createConnection } from 'node:net';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execFile as execFileCb } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { parseLine } from './sgr-parser.mjs';
 import { WebSocketServer } from 'ws';
 import { createSessionCookie, validateSessionCookie } from './session-cookie.mjs';
@@ -168,6 +168,15 @@ const sessionPermCache = new Map(); // sessionName → { owner, public, allowedU
 function staticPath(filename) {
   return new URL(filename, import.meta.url).pathname;
 }
+
+// Client version hash — computed at startup from dashboard.mjs content
+const CLIENT_VERSION = (() => {
+  try {
+    const content = readFileSync(staticPath('dashboard.mjs'));
+    return createHash('md5').update(content).digest('hex').slice(0, 8);
+  } catch { return 'unknown'; }
+})();
+process.stderr.write('[SERVER] Client version: ' + CLIENT_VERSION + '\n');
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -1284,6 +1293,11 @@ async function handleDashboardWs(ws, req) {
   ws._userEmail = user.email;  // For force-relogin (Task 13) to find WS by user
   const knownSessions = new Set();
   const cpUserDash = user.linux_user || CP_DEFAULT_USER;
+
+  // Send server version — client compares and shows update banner if mismatched
+  if (ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'version', version: CLIENT_VERSION }));
+  }
 
   // Discover and subscribe to sessions
   await sendSessionDiscovery(ws, knownSessions, user);

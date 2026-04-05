@@ -111,6 +111,11 @@ import * as THREE from 'three';
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
 import { easeInOutCubic, lerpPos } from './polyhedra.mjs';
 
+// Client version — server computes hash of dashboard.mjs at startup and sends on WS connect.
+// Client stores the version from first connect. On reconnect, if server version differs,
+// the client is stale and needs a reload.
+var _serverVersion = null;
+
 // CSRF double-submit cookie: read cp_csrf cookie and include as header on mutations
 function _getCsrfToken() {
   var m = document.cookie.match(/cp_csrf=([^;]+)/);
@@ -1630,7 +1635,34 @@ function scheduleTerminalSurfaceRepaint(obj, t) {
   });
 }
 
+function showUpdateBanner() {
+  var existing = document.getElementById('update-banner');
+  if (existing) return;
+  var banner = document.createElement('div');
+  banner.id = 'update-banner';
+  banner.style.cssText = 'position:fixed;top:40px;left:50%;transform:translateX(-50%);z-index:99998;' +
+    'background:rgba(66,133,244,0.95);color:#fff;padding:10px 24px;border-radius:8px;' +
+    'font-family:-apple-system,sans-serif;font-size:0.9rem;display:flex;align-items:center;gap:12px;' +
+    'box-shadow:0 4px 16px rgba(0,0,0,0.3);';
+  banner.innerHTML = 'Update available — <button id="update-reload-btn" style="background:#fff;color:#4285f4;' +
+    'border:none;padding:6px 16px;border-radius:4px;cursor:pointer;font-size:0.85rem;font-weight:600">Reload</button>';
+  document.body.appendChild(banner);
+  document.getElementById('update-reload-btn').addEventListener('click', function() {
+    location.reload(true);
+  });
+}
+
 function routeDashboardMessage(msg) {
+  if (msg.type === 'version') {
+    if (_serverVersion === null) {
+      _serverVersion = msg.version; // first connect — remember server version
+    } else if (_serverVersion !== msg.version) {
+      // Server restarted with new code — our JS is stale
+      console.warn('[Dashboard] Server version changed: ' + _serverVersion + ' → ' + msg.version + ' — update required');
+      showUpdateBanner();
+    }
+    return;
+  }
   if (msg.type === 'reauth-required') {
     // Save UI state before redirect
     if (window._saveLayout) window._saveLayout();
