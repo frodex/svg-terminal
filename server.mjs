@@ -2016,6 +2016,18 @@ function router(req, res) {
   // Set CSRF cookie on page loads
   ensureCsrfCookie(req, res);
 
+  // Favicon (public)
+  if (pathname === '/favicon.ico' || pathname === '/favicon.svg') {
+    try {
+      const content = readFileSync(staticPath('favicon.svg'));
+      res.setHeader('Content-Type', 'image/svg+xml');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.writeHead(200);
+      res.end(content);
+    } catch { res.writeHead(404); res.end(); }
+    return;
+  }
+
   // Auth pages (public — no auth required)
   if (pathname === '/login') {
     // Dev mode password login
