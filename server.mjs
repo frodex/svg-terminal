@@ -1596,6 +1596,21 @@ function handleSSE(req, res) {
   }
   res.writeHead(200, headers);
   res.write('retry: 3000\n\n');
+
+  // Check if this user has an active API key — if not, their JS is stale, force reload
+  // SSE uses cookie auth (EventSource doesn't support headers), so we check the key store by email
+  if (apiKeyStore && AUTH_ENABLED) {
+    const sseUser = getAuthUser(req);
+    if (sseUser) {
+      const keys = apiKeyStore.listForUser(sseUser.email);
+      if (keys.length === 0) {
+        // No API keys = stale JS that never fetched /auth/api-key
+        res.write('event: reload\ndata: {}\n\n');
+        return;
+      }
+    }
+  }
+
   sseClients.add(res);
   req.on('close', () => sseClients.delete(res));
 }
@@ -2521,9 +2536,11 @@ function router(req, res) {
     if (isSessionDataEndpoint && apiKeyStore) {
       const apiKeyHeader = req.headers['x-api-key'];
       if (!apiKeyHeader || !apiKeyStore.validate(apiKeyHeader)) {
-        // No valid API key — redirect to force page reload with fresh JS
-        sendJson(res, 403, { error: 'api-key-required', message: 'Reload page to continue' });
-        return;
+        // No valid API key — return empty data so stale JS doesn't crash,
+        // but don't return real session data
+        if (pathname === '/api/sessions') return sendJson(res, 200, []);
+        if (pathname === '/api/pane') return sendJson(res, 200, {});
+        return sendJson(res, 200, []);
       }
     }
   }
