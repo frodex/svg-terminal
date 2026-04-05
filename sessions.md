@@ -6,22 +6,16 @@
 ## Project Identity
 
 **Repo:** svg-terminal (`/srv/svg-terminal`) — github.com/frodex/svg-terminal
-**Branch:** camera-only-test (active), dev (integration target)
+**Branch:** main (single line of truth — all feature branches merged and deleted 2026-04-04)
 **What this is:** A standalone SVG-based terminal viewer with a 3D dashboard. Renders live tmux sessions as vector graphics. First consumer: claude-proxy. Future: PHAT TOAD hierarchical agent dashboard.
 
 ---
 
 ## Active Direction
 
-3D dashboard is functional — Three.js CSS3DRenderer positions terminal panels in 3D space. Currently iterating on the layout/arrangement of terminals in the overview. The focus/unfocus, input bar, sidebar thumbnails, and session discovery all work.
+3D dashboard is functional — Three.js CSS3DRenderer positions terminal panels in 3D space. Layout system implemented with composable slot maps and mutation operations. Performance tier system handles mobile/weak-GPU degradation. Focus/unfocus, input bar, sidebar thumbnails, session discovery, and claude-proxy integration all work.
 
-**Current design decision:** Choosing between geometric layout patterns for the overview:
-- Nested rotating rings (terminals on counter-rotating circles)
-- Golden spiral (Fibonacci spiral, largest at center)
-- Hexagonal honeycomb (hex grid with center primary)
-- Fractal tree (maps to PHAT TOAD hierarchy)
-
-Key requirement: terminals should be oriented in 3D (not flat/locked), with lazy billboard drift toward viewer. Structure slowly rotates. No collisions. Most terminal faces visible.
+**Current work:** Top menu bar feature planned (docs/superpowers/plans/2026-04-04-top-menu-bar.md) — consolidates group-level layout controls into a fixed top bar with hamburger menu, layout selector + ghost preview, and future OAuth/session management integration.
 
 ---
 
@@ -64,6 +58,14 @@ Key requirement: terminals should be oriented in 3D (not flat/locked), with lazy
 [2026-03-28] Server-side diff: server polls at 30ms, pushes only changed lines via WebSocket
 [2026-03-28] Direct keystroke capture: document-level keydown replaces input bar text field
 [2026-03-28] Key translation: browser KeyboardEvent.key → tmux send-keys names (SPECIAL_KEY_MAP)
+[2026-04-04] Performance tiers: 3-tier system (full/reduced/minimal) with auto detection. `detectGPU()` identifies software renderers; `applyPerfTier()` controls ring spin, shadows, specular, RENDER_SCALE, and card visibility centrally.
+[2026-04-04] Compositor-safe resize: `onResize` hides all CSS3DObjects BEFORE `renderer.setSize()` — prevents mobile compositor from choking on CSS3D transforms at the new viewport size. Cards are re-shown after resize and tested.
+[2026-04-04] 8-frame rAF resize test: after resize, renders 8 frames and measures p90 frame time. Cascading degradation (tier 0→1→retest→2) with coarse threshold 20ms, fine 35ms. Allows re-promotion on conditions improving (e.g., rotate back to portrait).
+[2026-04-04] Tier 2 overview visibility: `tier2CardShouldShow` hides all overview cards on coarse+landscape (compositor can't handle full ring); shows all on desktop or portrait. Trade-off: empty ring on phone landscape vs. frozen/glitched cards.
+[2026-04-04] Background FPS sampler: 3-second window in `animate`, skips first 33% of frames, uses avg frame time with coarse-aware thresholds (42ms/50ms for tier 2, 33ms for tier 1). Fires once then stops (`_perfCheckPhase=2`); re-armed on resize.
+[2026-04-04] Thumbnail data path: `routeDashboardMessage` populates `t.screenLines` directly from WebSocket screen/delta messages — decoupled from SVG `<object>` load state. Fixes thumbnails being empty when cards are `display:none` (CSS3DObject.visible=false).
+[2026-04-04] claude-proxy reconnection: `cpResubscribeAll()` re-subscribes WebSocket sessions after proxy restart. `cpPushFullScreensAfterCpResubscribe()` sends full screen snapshots to avoid diff-only frames. Bridge ordering: register event bridges before fetching screen content.
+[2026-04-04] Render scaling: DOM_SCALE=4, WORLD_SCALE=1/DOM_SCALE, RENDER_SCALE_DEFAULT=2. Tier ≥1 drops RENDER_SCALE to 1. `resizeRenderer()` centralizes setSize + transform logic.
 
 ---
 
@@ -71,10 +73,48 @@ Key requirement: terminals should be oriented in 3D (not flat/locked), with lazy
 
 [2026-03-28] Text crispness optimization within SVG pipeline (Nx scaling sweet spot)
 [2026-03-28] Integrate oscillation parameters from design studio into live dashboard
+[2026-04-04] Top menu bar implementation (plan: docs/superpowers/plans/2026-04-04-top-menu-bar.md)
+[2026-04-04] Re-arm background FPS sampler on addTerminal (gap: new terminals increase load but don't trigger re-evaluation)
 
 ---
 
 ## Session History (most recent first)
+
+### Session c2a34800 / 2026-04-04 — Performance Tier Iteration + Repo Cleanup + Top Menu Bar Plan
+
+**Part 1: ZFS Recovery + Performance Tier Re-implementation**
+- Inspected ZFS snapshots to find "lost" uncommitted perf detection code from previous agent
+- Determined previous agent's work was overwritten by a `git checkout -- dashboard.mjs` during server bridge ordering
+- Re-implemented perf tier system from first principles, iterating on mobile behavior with user testing
+- Key architectural difference from original agent: compositor-safe resize (hide cards before setSize), 8-frame rAF test with cascading degradation, re-up capability on improved conditions
+- Fixed: thumbnail data populated from WebSocket (not SVG load), input bar visibility on re-select, resizeRenderer() helper, RENDER_SCALE_DEFAULT pattern
+
+**Part 2: claude-proxy Reconnection**
+- Verified cpResubscribeAll + cpPushFullScreensAfterCpResubscribe + bridge ordering survive proxy restart
+- Shutdown test (5s down, restart): all cards recovered, thumbnails loaded, no diff-only frames
+
+**Part 3: Repo Cleanup**
+- Merged all feature branches into main for both svg-terminal and claude-proxy
+- Deleted stale local and remote branches
+- Committed untracked files (sessions.md, PRD, research docs)
+- Deleted backup files that duplicated tracked versions
+- Established single line of truth on main
+
+**Part 4: Top Menu Bar**
+- Designed top menu bar feature: hamburger, layout selector + ghost preview, group mutations, user identity
+- Wrote plan doc: docs/superpowers/plans/2026-04-04-top-menu-bar.md
+- Created interactive mockup: ui-web/top-menu-bar-mockup.html (served at /mockup)
+
+**Part 5: Documentation Reconciliation**
+- Reviewed original agent's assessment of divergences between their proposal and current implementation
+- Updated sessions.md with perf tier key technical decisions
+- Created journal v0.2 correcting stale v0.1 statements
+- Fixed test-performance-mode.mjs Test 3 to match actual tier2CardShouldShow behavior
+
+**Artifacts:**
+- docs/superpowers/plans/2026-04-04-top-menu-bar.md
+- ui-web/top-menu-bar-mockup.html
+- docs/research/2026-04-03-v0.2-mobile-css3d-perf-tiers-journal.md
 
 ### Session 206fe1ef / 2026-04-01–2026-04-03 — Layout System Design + Card Sizing Fix + UI Improvements
 

@@ -606,6 +606,12 @@ function optimizeTermToCard(t) {
         t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
         // Reset the original ratio so +/- preserves this new shape
         t._origColRowRatio = newCols / newRows;
+        // Force repaint after the resize response arrives — CSS3D compositor
+        // holds a stale texture until explicitly invalidated.
+        setTimeout(function() {
+          var obj2 = t.dom ? t.dom.querySelector('object') : null;
+          if (obj2) scheduleTerminalSurfaceRepaint(obj2, t);
+        }, 500);
         return;
       }
     }
@@ -1437,6 +1443,24 @@ function connectDashboardWs() {
 function routeEmbedMessageToSvg(t, obj, msg, opt) {
   var skipRepaint = opt && opt.skipRepaint;
   if (msg.type === 'delta' && !t._screenAppliedToEmbed) {
+    if (!t._screenHealRequested) {
+      t._screenHealRequested = true;
+      fetch('/api/pane?session=' + encodeURIComponent(msg.session) + '&pane=0')
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(state) {
+          if (!state || !state.lines) return;
+          var t2 = terminals.get(msg.session);
+          if (!t2 || t2._screenAppliedToEmbed) return;
+          var obj2 = t2.dom ? t2.dom.querySelector('object') : null;
+          if (!obj2 || !obj2.contentWindow || typeof obj2.contentWindow.renderMessage !== 'function') return;
+          var healMsg = { type: 'screen', session: msg.session, pane: '0',
+            width: state.width || 80, height: state.height || 24,
+            cursor: state.cursor, lines: state.lines, scrollOffset: 0 };
+          routeEmbedMessageToSvg(t2, obj2, healMsg);
+        })
+        .catch(function() {})
+        .finally(function() { t._screenHealRequested = false; });
+    }
     return;
   }
   obj.contentWindow.renderMessage(msg);
@@ -1509,7 +1533,8 @@ function routeDashboardMessage(msg) {
       if (msg.title) updateTerminalTitle(msg.session, msg.title);
       // Route to main card SVG
       var obj = t.dom ? t.dom.querySelector('object') : null;
-      if (obj && obj.contentWindow && typeof obj.contentWindow.renderMessage === 'function') {
+      var objReady = obj && obj.contentWindow && typeof obj.contentWindow.renderMessage === 'function';
+      if (objReady) {
         routeEmbedMessageToSvg(t, obj, msg);
       } else {
         // SVG not loaded yet — queue the message, flush when object loads
@@ -1526,6 +1551,9 @@ function routeDashboardMessage(msg) {
       }
       // Populate screenLines directly so thumbnails work even when card is hidden
       // (CSS3DObject.visible=false sets display:none, preventing <object> SVG load).
+      if (msg.mouseMode !== undefined) t.mouseMode = msg.mouseMode;
+      if (msg.bracketedPasteMode !== undefined) t.bracketedPasteMode = msg.bracketedPasteMode;
+      if (msg.sendFocusMode !== undefined) t.sendFocusMode = msg.sendFocusMode;
       if (msg.type === 'screen' && msg.lines) {
         t.screenLines = msg.lines.map(function(l) {
           var spans = l.spans || l;
@@ -2789,6 +2817,9 @@ function removeBrowserCard(cardId) {
 
 // Expose globally so terminal.svg alt+click can call it
 window._addBrowserCard = addBrowserCard;
+window._terminals = terminals;
+window._focusTerminal = focusTerminal;
+window._activeInputSession = function() { return activeInputSession; };
 
 // === Session Discovery ===
 // DEPRECATED (PRD v0.5.0 §3.7): Session discovery replaced by session-add/session-remove WebSocket events
@@ -3768,6 +3799,9 @@ function addTerminal(sessionName, cols, rows) {
           var t = terminals.get(sessionName);
           if (!t) return;
           if (msg.type === 'screen' && msg.lines) {
+            if (msg.mouseMode !== undefined) t.mouseMode = msg.mouseMode;
+            if (msg.bracketedPasteMode !== undefined) t.bracketedPasteMode = msg.bracketedPasteMode;
+            if (msg.sendFocusMode !== undefined) t.sendFocusMode = msg.sendFocusMode;
             t.screenLines = msg.lines.map(function(l) {
               return { text: l.spans.map(function(s) { return s.text; }).join(''), spans: l.spans };
             });
@@ -3790,6 +3824,9 @@ function addTerminal(sessionName, cols, rows) {
             if (msg.cursor) t._lastCursor = msg.cursor;
             t._thumbDirty = true;
           } else if (msg.type === 'delta' && msg.changed) {
+            if (msg.mouseMode !== undefined) t.mouseMode = msg.mouseMode;
+            if (msg.bracketedPasteMode !== undefined) t.bracketedPasteMode = msg.bracketedPasteMode;
+            if (msg.sendFocusMode !== undefined) t.sendFocusMode = msg.sendFocusMode;
             for (var idx in msg.changed) {
               var lineData = msg.changed[idx];
               var spans = lineData.spans || lineData;
@@ -3808,6 +3845,23 @@ function addTerminal(sessionName, cols, rows) {
             routeEmbedMessageToSvg(t, termObj, pending[p], { skipRepaint: true });
           }
           scheduleTerminalSurfaceRepaint(termObj, t);
+        } else if (t && !t._screenAppliedToEmbed) {
+          // Self-heal: SVG loaded but no screen arrived — fetch current screen
+          fetch('/api/pane?session=' + encodeURIComponent(sessionName) + '&pane=0')
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(state) {
+              if (!state || !state.lines) return;
+              var t2 = terminals.get(sessionName);
+              if (!t2) return;
+              var obj2 = t2.dom ? t2.dom.querySelector('object') : null;
+              if (!obj2 || !obj2.contentWindow || typeof obj2.contentWindow.renderMessage !== 'function') return;
+              if (t2._screenAppliedToEmbed) return;
+              var msg = { type: 'screen', session: sessionName, pane: '0',
+                width: state.width || 80, height: state.height || 24,
+                cursor: state.cursor, lines: state.lines, scrollOffset: 0 };
+              routeEmbedMessageToSvg(t2, obj2, msg);
+            })
+            .catch(function() {});
         }
         // Initial thumbnail snapshot once main SVG has content
         t._thumbDirty = true;
@@ -3864,7 +3918,7 @@ function focusTerminal(sessionName) {
 
   focusedSessions.add(sessionName);
   activeInputSession = sessionName;
-
+  if (t.sendFocusMode) t.sendInput({ type: 'input', keys: '\x1b[I' });
   // Input routed via contentWindow.sendToWs, screen data via _screenCallback
   // (single-WebSocket architecture — no second connection needed)
 
@@ -3933,8 +3987,13 @@ function addToFocus(sessionName) {
 
   // Camera-only: no DOM to restore. Cards are always at base size.
 
+  if (activeInputSession && activeInputSession !== sessionName) {
+    var prevT = terminals.get(activeInputSession);
+    if (prevT && prevT.sendFocusMode) prevT.sendInput({ type: 'input', keys: '\x1b[O' });
+  }
   focusedSessions.add(sessionName);
   activeInputSession = sessionName;
+  if (t.sendFocusMode) t.sendInput({ type: 'input', keys: '\x1b[I' });
 
   // Input routed via contentWindow.sendToWs, screen data via _screenCallback
   // (single-WebSocket architecture — no second connection needed)
@@ -4038,6 +4097,10 @@ function removeFromFocus(sessionName) {
 
 // Restore all focused terminals
 function restoreAllFocused() {
+  if (activeInputSession) {
+    var blurT = terminals.get(activeInputSession);
+    if (blurT && blurT.sendFocusMode) blurT.sendInput({ type: 'input', keys: '\x1b[O' });
+  }
   for (const name of focusedSessions) {
     restoreFocusedTerminal(name);
   }
@@ -4052,6 +4115,10 @@ function restoreAllFocused() {
 //   camera back to HOME_POS. The old bug was calling focusedSessions.clear() inside
 //   deselectTerminals — cards immediately flew to the ring on every empty-space click.
 function deselectTerminals() {
+  if (activeInputSession) {
+    var blurT = terminals.get(activeInputSession);
+    if (blurT && blurT.sendFocusMode) blurT.sendInput({ type: 'input', keys: '\x1b[O' });
+  }
   activeInputSession = null;
   _zoomedSession = null;
   // Remove input/highlight indicators but keep focusedSessions intact.
@@ -4420,8 +4487,15 @@ document.addEventListener('keydown', function(e) {
   t.scrollReset();
 
   // Ctrl combos — selection is auto-copied on mouseup, no persistent selection to check
-  if (e.ctrlKey && e.key.length === 1) {
+  if (e.ctrlKey && !e.altKey && e.key.length === 1) {
     t.sendInput({ type: 'input', keys: e.key.toLowerCase(), ctrl: true });
+    return;
+  }
+
+  // Alt combos — ESC + key (word navigation in bash, emacs bindings, etc.)
+  if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.length === 1) {
+    e.preventDefault();
+    t.sendInput({ type: 'input', keys: e.key, alt: true });
     return;
   }
 
@@ -4446,7 +4520,11 @@ document.addEventListener('paste', function(e) {
   const text = e.clipboardData.getData('text');
   if (text) {
     const t = terminals.get(activeInputSession);
-    if (t) t.sendInput({ type: 'input', keys: text });
+    if (t) {
+      var payload = text;
+      if (t.bracketedPasteMode) payload = '\x1b[200~' + text + '\x1b[201~';
+      t.sendInput({ type: 'input', keys: payload });
+    }
   }
 });
 
@@ -4721,27 +4799,18 @@ function getSelectedTextFromSvg(t) {
 // In shell prompts (bash/readline), the cursor is a linear position in the input
 // buffer. Left/Right wraps across visual line boundaries. So to move from one
 // visual row to another, we just count the total Left or Right presses needed:
-//   total offset = (cursorRow - targetRow) * cols + (cursorCol - targetCol)
-// Positive = go Left, negative = go Right.
-// Sends keys with small delays to avoid dropped keystrokes.
-function moveCursorTo(t, cursorPos, targetPos) {
-  // Get terminal cols for line-width calculation
-  const cols = t.screenCols || 80;
-
-  // Linear offset: how many characters between cursor and target
-  // treating the screen as wrapped text
-  const cursorLinear = cursorPos.y * cols + cursorPos.x;
-  const targetLinear = targetPos.row * cols + targetPos.col;
-  const delta = cursorLinear - targetLinear;
-
-  if (delta === 0) return;
-
-  const key = delta > 0 ? 'Left' : 'Right';
-  const steps = Math.min(Math.abs(delta), 200); // cap to avoid flooding
-
-  // Send as a batch of special keys in one WebSocket message.
-  // Individual messages with 5ms delays were dropping keystrokes.
-  t.sendInput({ type: 'input', specialKey: key, repeat: steps });
+// Send SGR-encoded mouse event to the PTY.
+// SGR format: ESC [ < Cb ; Cx ; Cy M (press) or m (release)
+// Coordinates are 1-based. Button: 0=left, 1=middle, 2=right.
+function sendMouseEvent(t, button, col, row, pressed, modifiers) {
+  var cb = button;
+  if (modifiers) {
+    if (modifiers.shift) cb |= 4;
+    if (modifiers.alt) cb |= 8;
+    if (modifiers.ctrl) cb |= 16;
+  }
+  var seq = '\x1b[<' + cb + ';' + (col + 1) + ';' + (row + 1) + (pressed ? 'M' : 'm');
+  t.sendInput({ type: 'input', keys: seq });
 }
 
 function clearSel() {
@@ -4866,20 +4935,18 @@ document.addEventListener('mouseup', function(e) {
   }
 
   if (!isRealSelection) {
-    // Just a click, not a drag — try to move cursor to clicked position.
+    // Click (not drag). Behavior depends on whether the app enabled mouse tracking.
     if (selStart && activeInputSession) {
       var ct = terminals.get(activeInputSession);
-      if (ct) {
-        var clickedCell = selStart;
-        fetch('/api/pane?session=' + encodeURIComponent(activeInputSession) + '&pane=0')
-          .then(function(r) { return r.json(); })
-          .then(function(data) {
-            if (data && data.cursor) {
-              moveCursorTo(ct, data.cursor, clickedCell);
-            }
-          })
-          .catch(function() {});
+      if (ct && ct.mouseMode && ct.mouseMode !== 'none') {
+        sendMouseEvent(ct, 0, selStart.col, selStart.row, true, {
+          shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey
+        });
+        sendMouseEvent(ct, 0, selStart.col, selStart.row, false, {
+          shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey
+        });
       }
+      // mouseMode 'none' or unset: no input sent — click is local-only (selection/focus)
     }
     clearSel();
     selTerminal = null;

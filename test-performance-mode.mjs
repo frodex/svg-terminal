@@ -45,7 +45,7 @@ async function run() {
     console.log('  FAIL: Full mode did not restore all effects\n');
   }
 
-  console.log('Test 3: Tier 2 card visibility');
+  console.log('Test 3: Tier 2 card visibility (overview, non-coarse pointer)');
   await page.evaluate(() => {
     var el = document.getElementById('perf-indicator');
     if (el) { el.click(); }
@@ -58,12 +58,14 @@ async function run() {
   await sleep(500);
   var minState = await page.evaluate(() => window._perfState());
   console.log('  perfTier:', minState.perfTier, 'Hidden:', minState.hiddenCount, '/', minState.terminalCount);
-  if (minState.perfTier === 2 && minState.hiddenCount === minState.terminalCount) {
-    console.log('  PASS: All cards hidden in Tier 2 (no focused sessions)\n');
+  // Puppeteer is non-coarse pointer — tier2CardShouldShow returns true for all
+  // overview cards on desktop. On coarse+landscape, cards would be hidden instead.
+  if (minState.perfTier === 2 && minState.hiddenCount === 0) {
+    console.log('  PASS: Tier 2 overview — all cards visible (non-coarse pointer)\n');
   } else if (minState.perfTier === 2 && minState.hiddenCount > 0) {
-    console.log('  PASS: Tier 2 active, ' + minState.hiddenCount + ' unfocused cards hidden\n');
+    console.log('  FAIL: Tier 2 overview hid ' + minState.hiddenCount + ' cards on non-coarse pointer (expected 0)\n');
   } else {
-    console.log('  FAIL: Expected Tier 2 with hidden cards\n');
+    console.log('  FAIL: Expected perfTier 2, got ' + minState.perfTier + '\n');
   }
 
   await browser.close();

@@ -237,7 +237,7 @@ function attachCpToTerminalWs(clientWs, sessionId, linuxUser) {
         await cpRequest('input', {
           sessionId,
           user: u,
-          body: { keys: msg.keys, specialKey: msg.specialKey, ctrl: msg.ctrl, alt: msg.alt },
+          body: { keys: msg.keys, specialKey: msg.specialKey, ctrl: msg.ctrl, alt: msg.alt, repeat: msg.repeat },
         });
       } else if (msg.type === 'resize') {
         await cpRequest('resize', { sessionId, user: u, cols: msg.cols, rows: msg.rows });
@@ -524,11 +524,20 @@ async function handleSessions(req, res) {
   }
 
   // Source 2: claude-proxy (Unix socket)
+  // CP sessions also appear in local tmux (same tmux server).  Override source
+  // so input is routed through claude-proxy's mode-aware sendInput, not tmux send-keys.
   try {
     const cpSessions = await cpRequest('listSessions', { user: CP_DEFAULT_USER }, 2000);
     for (const s of cpSessions || []) {
       const name = s.id || s.name;
-      if (!seen.has(name)) {
+      const existing = sessions.find(e => e.name === name);
+      if (existing) {
+        existing.source = 'claude-proxy';
+        existing.cpId = s.id || name;
+        existing.displayName = s.name || s.id;
+        existing.title = s.title || name;
+        existing.launchProfile = s.launchProfile;
+      } else {
         sessions.push({
           name,
           cpId: s.id || name,
@@ -540,8 +549,8 @@ async function handleSessions(req, res) {
           source: 'claude-proxy',
           launchProfile: s.launchProfile
         });
-        seen.add(name);
       }
+      seen.add(name);
     }
   } catch (err) {
     // claude-proxy not running or unreachable — that's fine
@@ -926,7 +935,31 @@ function triggerCapture(session, pane) {
 function bridgeClaudeProxySession(session, cpUser) {
   const u = cpUser || CP_DEFAULT_USER;
   const key = session + ':0';
-  if (sessionWatchers.has(key)) return sessionWatchers.get(key);
+  if (sessionWatchers.has(key)) {
+    const existing = sessionWatchers.get(key);
+    if (!existing._cpTerminalHandler) {
+      process.stderr.write(`[svg-terminal] upgrading watcher for ${session} to cp bridge\n`);
+      const handler = (cpMsg) => {
+        if (cpMsg.event !== 'terminal' || cpMsg.sessionId !== session) return;
+        const inner = cpMsg.data;
+        if (inner == null) return;
+        const base = typeof inner === 'object' && !Array.isArray(inner) ? inner : {};
+        const msg = { ...base, session, pane: '0' };
+        const json = JSON.stringify(msg);
+        for (const ws of existing.subscribers) {
+          if (ws.readyState === 1) ws.send(json);
+        }
+      };
+      existing._cpTerminalHandler = handler;
+      if (existing.timer) { clearInterval(existing.timer); existing.timer = null; }
+      cpRegisterTerminal(session, handler);
+      void cpEnsureSubscribed(session, u).catch(() => {
+        cpUnregisterTerminal(session, handler);
+        existing._cpTerminalHandler = null;
+      });
+    }
+    return existing;
+  }
 
   const watcher = {
     session,
@@ -944,12 +977,14 @@ function bridgeClaudeProxySession(session, cpUser) {
     if (inner == null) return;
     const base = typeof inner === 'object' && !Array.isArray(inner) ? inner : {};
     const msg = { ...base, session, pane: '0' };
+    if (msg.type === 'screen') watcher._lastScreen = msg;
     const json = JSON.stringify(msg);
     for (const ws of watcher.subscribers) {
       if (ws.readyState === 1) ws.send(json);
     }
   };
   watcher._cpTerminalHandler = handler;
+  watcher._lastScreen = null;
   cpRegisterTerminal(session, handler);
 
   void cpEnsureSubscribed(session, u).catch(() => {
@@ -1027,17 +1062,21 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
   }
 
   // Source 2: claude-proxy (Unix socket)
+  // CP sessions also appear in local tmux — override source so they're bridged correctly.
   try {
-    const cpSessions = await cpRequest('listSessions', { user: cpUser }, 2000);
-    for (const s of cpSessions || []) {
+    const cpSessions2 = await cpRequest('listSessions', { user: cpUser }, 2000);
+    for (const s of cpSessions2 || []) {
       const name = s.id || s.name;
-      if (!seen.has(name)) {
+      const existing = sessions.find(e => e.name === name);
+      if (existing) {
+        existing.source = 'claude-proxy';
+      } else {
         sessions.push({
           name, windows: 1, cols: s.cols || 80, rows: s.rows || 24,
           title: s.title || name, source: 'claude-proxy'
         });
-        seen.add(name);
       }
+      seen.add(name);
     }
   } catch (err) {
     // claude-proxy not running — fine
@@ -1133,7 +1172,13 @@ async function handleDashboardWs(ws, req) {
           if (msg.source === 'claude-proxy') {
             bridgeClaudeProxySession(session, cpUserDash);
             const watcher = sessionWatchers.get(session + ':0');
-            if (watcher) watcher.subscribers.add(ws);
+            if (watcher) {
+              watcher.subscribers.add(ws);
+              // Replay cached screen so late-joining clients get the initial frame
+              if (watcher._lastScreen && ws.readyState === 1) {
+                ws.send(JSON.stringify(watcher._lastScreen));
+              }
+            }
           } else {
             subscribeToSession(ws, session, '0');
           }
@@ -1184,6 +1229,7 @@ async function handleDashboardWs(ws, req) {
                 specialKey: fwd.specialKey,
                 ctrl: fwd.ctrl,
                 alt: fwd.alt,
+                repeat: fwd.repeat,
               },
             });
           } else if (fwd.type === 'resize') {
