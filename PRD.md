@@ -396,4 +396,18 @@ Session discovery works — `server.mjs` merges local tmux + `GET localhost:3101
 | `test-dashboard-e2e.mjs` | 20 E2E puppeteer tests |
 | `restart-server.sh` | Kill + restart in one command |
 | `PRD.md` | This file — source of truth |
+| `docs/PRD-amendment-007-cursor-agent-launcher-plan.md` | Stepped plan: `cursor-agent` + launcher parity with Claude (claude-proxy) |
 | `TASKLIST.md` | Current bugs, features, priorities |
+
+---
+
+## 15. Amendment index & follow-on plans
+
+Build-plan extensions and integration notes (append-only; PRD §1–14 remain the core product spec):
+
+| Document | Summary |
+|----------|---------|
+| `docs/PRD-amendment-006.md` | Unix socket claude-proxy API + svg-terminal systemd (as-built). |
+| `docs/PRD-amendment-007-cursor-agent-launcher-plan.md` | **Planned:** Cursor profile uses **`cursor-agent`** via **`launch-cursor-agent.sh`** (check/install like Claude); **`PtyMultiplexer`** refactored to select launcher by **`launchProfile`**. |
+
+**Roadmap tie-in:** Implement amendment 007 under the same **claude-proxy integration** track as Phase B/C in §12.3 (launcher scripts live in claude-proxy, not svg-terminal).
