@@ -83,12 +83,80 @@
 [2026-04-04] Top menu bar implementation (plan: docs/superpowers/plans/2026-04-04-top-menu-bar.md)
 [2026-04-04] Re-arm background FPS sampler on addTerminal (gap: new terminals increase load but don't trigger re-evaluation)
 [2026-04-04] **claude-forker:** Implement v0.8 source-verified fix plan — `claude-forker/docs/2026-04-04-v0.8-source-verified-fix-plan.md` (tool `0.2.0`, SPEC `v0.0.9`, `tests/test-fork.sh`, `docs/migration.md`). Next agent owns implementation; journal: `docs/research/2026-04-04-v0.1-claude-forker-v0.8-plan-handoff-journal.md`.
+[2026-04-05] **Legacy cleanup:** Remove all HTTP session data endpoints (/api/pane, /api/sessions), dead code (handleTerminalWs, attachCpToTerminalWs, handleTerminalWs), and local tmux input/resize paths. All data flows through WebSocket exclusively. Requires plan per implementation-plan-standards.md (Rules 1-7). Touches svg-terminal server.mjs, dashboard.mjs, claude-proxy, and browser code.
+[2026-04-05] **Future card types:** File viewer and file transfer cards planned — all via WebSocket, no HTTP endpoints.
 
 ---
 
 ## Session History (most recent first)
 
-### Session 2026-04-05 — OAuth Implementation + Admin Panel + Security Hardening
+### Session 2026-04-05 — OAuth, Security Hardening, Session Authorization, Admin Panel
+
+**Part 1: OAuth Provider Setup**
+- Google, Microsoft, GitHub OAuth configured and live at https://3200.droidware.ai
+- Fixed callback URL (was hardcoded localhost), Google OIDC iss parameter, pending page check status
+- Created setup guide (docs/oauth-provider-setup-v0.1 through v0.3)
+
+**Part 2: Admin Panel**
+- Full user lifecycle: approve/deny/deactivate/reactivate/purge
+- Editable cp- usernames on approval with [check existing] and [auto-generate]
+- Multi-provider OAuth linking, merge accounts, flag toggles
+- Admin PIN with 15-min sudo window for privileged actions
+- Force re-login (revokes API keys, sends reauth-required WS message)
+- Info tooltips and section descriptions on all admin sections
+
+**Part 3: Security Hardening (from audit CSV)**
+- 17 findings addressed: CSRF, CSP, SSRF protection, 1MB body limit, auth on admin/SSE/WS, reserved usernames, DB permissions, bounded OAuth state map, dev mode hardening (AUTH_MODE=dev + DEV_PASSWORD required)
+
+**Part 4: Session Authorization (Phase 1)**
+- STRICT_SESSION_AUTHZ feature flag with is_superadmin role
+- authorizeSession() with permission cache from claude-proxy listSessions
+- handleInput/POST /api/input removed (tmux bypass)
+- /ws/terminal removed (410 Gone)
+- /auth/status info leak fixed (single-use check tokens)
+- /api/proxy admin-only, admin-client.mjs behind auth gate
+- CP_DEFAULT_USER identity passthrough fixes on all paths
+
+**Part 5: Session Authorization (Phase 2)**
+- API Key Store: 30min idle, 24h absolute, max 10/user, one WS per key
+- Cookie fallback removed from WS upgrade — API key is sole WS credential
+- WS consolidation: session create/restart/fork/layout moved to WS messages
+- Reconnection overlay: frosted glass, countdown, login link
+- Rate limiting: 6 tiers by endpoint type
+- Dev mode login page
+- Client version check with update banner
+
+**Part 6: Claude-proxy Fixes**
+- viewOnly enforcement on socket RPC (sendInput rejects non-owner/admin)
+- viewOnlyAllowScroll/viewOnlyAllowResize metadata fields
+- Access metadata exposed in listSessions response
+- listSessionsForUser bug: checked 'cp-users' but getGroups strips prefix — fixed to 'users'
+
+**Part 7: Implementation Plan Standards**
+- Wrote /srv/PHAT-TOAD-with-Trails/implementation-planner/implementation-plan-standards.md
+- 7 rules: agent interchangeability, current state verification, no unverified claims, test completeness, phasing/rollback, schema contracts, single review round
+- Applied retroactively — plan went through 5 review rounds; standards would have reduced to 1
+
+**Part 8: Misc**
+- Cache-busted dashboard.mjs?v=hash in index.html
+- API key required on HTTP session data endpoints
+- Animated SVG favicon with pulsing cursor (data URI, no HTTP)
+- User provisioning: 5 users (frodex310 superadmin, cp-aaronb, cp-aaronh, cp-joshm, cp-gregt, cp-frodex)
+
+**Key bug found:** claude-proxy listSessionsForUser checked groups.includes('cp-users') but getGroups() strips the cp- prefix, returning 'users'. Non-owner users on public sessions were invisible. One character fix.
+
+**Artifacts:**
+- docs/oauth-provider-setup-v0.1 through v0.3.md
+- docs/admin-panel-v0.1, v0.2.md
+- docs/research/2026-04-05-v0.1-oauth-admin-security-journal.md
+- docs/research/2026-04-05-v0.1-session-authorization-journal.md (+ NOTES, ORIGINAL)
+- docs/superpowers/plans/2026-04-05-v0.1 through v0.5-session-auth-and-ws-consolidation.md (+ NOTES, REVIEWED variants)
+- docs/superpowers/specs/implementation-plan-standards.md
+- /srv/security-scan/updates/2026-04-05-svg-terminal-security-fixes.md, phase2-security-fixes.md
+- api-key-store.mjs, rate-limiter.mjs, test-api-key-store.mjs, test-rate-limiter.mjs, test-feature-flag.mjs, test-session-authz.mjs
+- favicon.svg, favicon-nocursor.svg
+
+### Session 2026-04-05 (earlier) — OAuth Implementation + Admin Panel + Security Hardening
 
 **Part 1: OAuth Provider Setup**
 - Set up Google OAuth (consent screen, credentials, scopes)
