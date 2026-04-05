@@ -649,6 +649,7 @@ async function handleRestartSession(req, res) {
       { user: linuxUser, sessionId: deadId, settings },
       120000
     );
+    notifyDashboardCpSessionCreated(result);
     return sendJson(res, 201, { ok: true, source: 'claude-proxy', session: result });
   } catch (err) {
     process.stderr.write('[svg-terminal] restartSession: ' + (err && err.message ? err.message : err) + '\n');
@@ -677,6 +678,7 @@ async function handleForkSession(req, res) {
       { user: linuxUser, sessionId: sourceId, settings },
       120000
     );
+    notifyDashboardCpSessionCreated(result);
     return sendJson(res, 201, { ok: true, source: 'claude-proxy', session: result });
   } catch (err) {
     process.stderr.write('[svg-terminal] forkSession: ' + (err && err.message ? err.message : err) + '\n');
@@ -706,6 +708,7 @@ async function handleCreateSession(req, res) {
 
   try {
     const result = await cpRequest('createSession', { user: linuxUser, body: payload }, 120000);
+    notifyDashboardCpSessionCreated(result);
     return sendJson(res, 201, { ok: true, source: 'claude-proxy', session: result });
   } catch (err) {
     process.stderr.write('[svg-terminal] createSession (cp): ' + (err && err.message ? err.message : err) + '\n');
@@ -807,6 +810,28 @@ const sessionWatchers = new Map(); // key = "session:pane", value = watcher
 const dashboardClients = new Set(); // all /ws/dashboard connections
 // Reverse index: ws → Set of watcher keys (for fast unsubscribe on close)
 const wsToWatcherKeys = new WeakMap();
+
+/** Notify all dashboard clients that a new claude-proxy session exists (restart/fork/create). */
+function notifyDashboardCpSessionCreated(result) {
+  if (!result || typeof result !== 'object') return;
+  const name = result.id || result.name;
+  if (!name) return;
+  const row = {
+    name,
+    cpId: result.id || name,
+    displayName: result.name || result.id,
+    windows: 1,
+    cols: result.cols || 80,
+    rows: result.rows || 24,
+    title: result.title || name,
+    source: 'claude-proxy',
+    launchProfile: result.launchProfile
+  };
+  const msg = JSON.stringify({ type: 'session-add', session: name, pane: '0', ...row });
+  for (const ws of dashboardClients) {
+    if (ws.readyState === 1) ws.send(msg);
+  }
+}
 
 function getOrCreateWatcher(session, pane) {
   const key = session + ':' + pane;

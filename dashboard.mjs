@@ -719,6 +719,14 @@ var _perfFrameTimes = [];
 var _perfCheckStart = 0;
 var _perfCheckPhase = 0;
 var _cachedGPU = null;
+// Ignore longer gaps between RAF ticks — not render cost (tab in background, OS sleep, debugger).
+var _perfMaxFrameGapMs = 200;
+
+function resetAutoPerfSampling() {
+  _perfCheckPhase = 0;
+  _perfFrameTimes.length = 0;
+  delete _perfFrameTimes._lastTime;
+}
 
 let dashboardWs = null; // shared WebSocket to /ws/dashboard
 const clock = new THREE.Clock();
@@ -1305,6 +1313,11 @@ function init() {
 
   // Events
   window.addEventListener('resize', onResize);
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState !== 'visible' || perfMode !== 'auto') return;
+    resetAutoPerfSampling();
+    console.log('[perf] tab visible again — reset FPS sampling (background intervals ignored)');
+  });
   document.addEventListener('mousemove', onMouseMove);
   document.addEventListener('mousedown', onMouseDown);
   document.addEventListener('mouseup', onMouseUp);
@@ -1326,8 +1339,7 @@ function init() {
       else if (perfMode === 'reduced') applyPerfTier(1);
       else if (perfMode === 'minimal') applyPerfTier(2);
       else {
-        _perfCheckPhase = 0;
-        _perfFrameTimes = [];
+        resetAutoPerfSampling();
         if (_cachedGPU && _cachedGPU.isSoftware) applyPerfTier(1);
         else applyPerfTier(0);
       }
@@ -1469,6 +1481,12 @@ function routeDashboardMessage(msg) {
     if (!terminals.has(msg.session) && !msg.session.startsWith('browser-')) {
       addTerminal(msg.session, msg.cols, msg.rows);
       assignRings();
+      // Subscribe so claude-proxy sessions get screen bridge + deltas (same as refreshSessions).
+      sendDashboardMessage({
+        type: 'subscribe',
+        session: msg.session,
+        source: msg.source || 'tmux'
+      });
     }
     return;
   }
@@ -1704,10 +1722,7 @@ function onResize() {
   }
   requestAnimationFrame(testFrame);
 
-  if (_perfCheckPhase === 2) {
-    _perfCheckPhase = 0;
-    _perfFrameTimes = [];
-  }
+  resetAutoPerfSampling();
 }
 
 // === Mouse ===
@@ -3145,7 +3160,8 @@ function updateRestartPanelVisibility() {
   var deadSel = document.getElementById('rs-dead');
   var dangerRow = document.getElementById('rs-danger-row');
   if (deadSel && dangerRow) {
-    var opt = deadSel.options[deadSel.selectedIndex];
+    var idx = deadSel.selectedIndex;
+    var opt = idx >= 0 ? deadSel.options[idx] : null;
     var lp = opt && opt.getAttribute('data-profile');
     dangerRow.hidden = !(sessionFormIsAdmin() && lp === 'claude');
   }
@@ -3208,16 +3224,23 @@ async function openRestartSessionPanel() {
 
   var deadSel = document.getElementById('rs-dead');
   var emptyHint = document.getElementById('rs-empty-hint');
+  var rsBtn = document.getElementById('restart-session-submit');
   if (deadSel) {
     deadSel.innerHTML = '';
+    var ph = document.createElement('option');
+    ph.value = '';
+    ph.textContent = '— Select a dead session —';
+    deadSel.appendChild(ph);
     try {
       var r = await fetch('/api/cp/dead-sessions', { credentials: 'same-origin' });
       var list = r.ok ? await r.json() : [];
       if (!Array.isArray(list)) list = [];
       if (list.length === 0) {
         if (emptyHint) emptyHint.hidden = false;
+        if (rsBtn) rsBtn.disabled = true;
       } else {
         if (emptyHint) emptyHint.hidden = true;
+        if (rsBtn) rsBtn.disabled = false;
         list.forEach(function(d) {
           var id = d.id || d.tmuxId;
           if (!id) return;
@@ -3228,9 +3251,11 @@ async function openRestartSessionPanel() {
           opt.textContent = (d.name || id) + (lp ? ' (' + lp + ')' : '');
           deadSel.appendChild(opt);
         });
+        if (deadSel.options.length > 1) deadSel.selectedIndex = 1;
       }
     } catch (e) {
       if (emptyHint) emptyHint.hidden = false;
+      if (rsBtn) rsBtn.disabled = true;
     }
   }
 
@@ -4106,8 +4131,11 @@ function animate() {
     }
     if (_perfCheckPhase === 1) {
       var now = performance.now();
-      if (_perfFrameTimes.length > 0) {
-        _perfFrameTimes.push(now - _perfFrameTimes._lastTime);
+      if (_perfFrameTimes._lastTime !== undefined) {
+        var dt = now - _perfFrameTimes._lastTime;
+        if (dt <= _perfMaxFrameGapMs && !document.hidden) {
+          _perfFrameTimes.push(dt);
+        }
       }
       _perfFrameTimes._lastTime = now;
       if (now - _perfCheckStart > 3000) {
