@@ -15,7 +15,7 @@
 
 3D dashboard is functional — Three.js CSS3DRenderer positions terminal panels in 3D space. Layout system implemented with composable slot maps and mutation operations. Performance tier system handles mobile/weak-GPU degradation. Focus/unfocus, input bar, sidebar thumbnails, session discovery, and claude-proxy integration all work.
 
-**Current work:** Top menu bar feature planned (docs/superpowers/plans/2026-04-04-top-menu-bar.md) — consolidates group-level layout controls into a fixed top bar with hamburger menu, layout selector + ghost preview, and future OAuth/session management integration.
+**Current work:** OAuth/auth system fully implemented and hardened. Google and Microsoft OAuth live at `https://3200.droidware.ai`. Admin panel built with full user lifecycle (approve, deactivate, reactivate, purge). Security audit findings addressed. Top menu bar feature planned (docs/superpowers/plans/2026-04-04-top-menu-bar.md) — consolidates group-level layout controls into a fixed top bar with hamburger menu, layout selector + ghost preview, and OAuth/session management integration.
 
 ---
 
@@ -39,6 +39,9 @@
 [2026-03-30] Auth architecture: server.mjs owns sessions/cookies, calls claude-proxy API for sessions only. OAuth/user-store/provisioner live in svg-terminal.
 [2026-03-30] User approval model: pending→approved→Linux account. Tiered: can_approve_users/admins/sudo. Root delegates. Pre-approve by email.
 [2026-03-30] Auth disabled when no OAuth env vars set (dev mode returns root user for all requests)
+[2026-04-05] All Linux user accounts must use `cp-` prefix. Deactivated accounts use `cpx-` prefix. System accounts (root, claude-proxy) are outside this namespace and cannot be assigned via admin panel.
+[2026-04-05] User deletion is a 2-phase process: Deactivate (soft delete, cp→cpx, login removed) then Purge (permanent). No direct delete.
+[2026-04-05] Documentation files use stepped versioning (v0.1, v0.2, etc). Always cp to next version BEFORE editing. Never overwrite.
 [2026-03-27] SVG rendering: `dominant-baseline: text-before-edge`, explicit x-positioned `<tspan>` per span, runtime font measurement via getBBox()
 [2026-03-27] Three-tier polling: >=4x6px char cells → 150ms, <4x6px → 2000ms, offscreen → stopped
 [2026-03-27] Embedded FiraCode Nerd Font Mono subset (31KB woff2, base64 data URI)
@@ -66,6 +69,10 @@
 [2026-04-04] Thumbnail data path: `routeDashboardMessage` populates `t.screenLines` directly from WebSocket screen/delta messages — decoupled from SVG `<object>` load state. Fixes thumbnails being empty when cards are `display:none` (CSS3DObject.visible=false).
 [2026-04-04] claude-proxy reconnection: `cpResubscribeAll()` re-subscribes WebSocket sessions after proxy restart. `cpPushFullScreensAfterCpResubscribe()` sends full screen snapshots to avoid diff-only frames. Bridge ordering: register event bridges before fetching screen content.
 [2026-04-04] Render scaling: DOM_SCALE=4, WORLD_SCALE=1/DOM_SCALE, RENDER_SCALE_DEFAULT=2. Tier ≥1 drops RENDER_SCALE to 1. `resizeRenderer()` centralizes setSize + transform logic.
+[2026-04-05] OAuth callback URL uses `PUBLIC_URL` env var (not hardcoded localhost). Google OIDC requires `iss` parameter passthrough from callback query string.
+[2026-04-05] Multi-provider auth: `provider_links` table maps multiple OAuth providers to one user. Auth callback checks `findByProvider` first, then `findByEmail`. Session cookie uses primary user email regardless of which provider was used to sign in.
+[2026-04-05] User lifecycle states: pending → approved → deactivated → (reactivated as pending, or purged). Deactivate renames cp-→cpx-, sets nologin shell, removes provider links. Reactivate restores cp-, sets pending, user must re-auth.
+[2026-04-05] Security hardening: CSRF double-submit cookie, auth on all admin/SSE/WebSocket endpoints, SSRF protection on /api/proxy, 1MB request body limit, CSP headers, WebSocket origin validation, bounded OAuth state map, reserved username blocking, DB file permissions 0600, no hardcoded AUTH_SECRET fallback, restricted CORS to PUBLIC_URL.
 
 ---
 
@@ -75,10 +82,67 @@
 [2026-03-28] Integrate oscillation parameters from design studio into live dashboard
 [2026-04-04] Top menu bar implementation (plan: docs/superpowers/plans/2026-04-04-top-menu-bar.md)
 [2026-04-04] Re-arm background FPS sampler on addTerminal (gap: new terminals increase load but don't trigger re-evaluation)
+[2026-04-04] **claude-forker:** Implement v0.8 source-verified fix plan — `claude-forker/docs/2026-04-04-v0.8-source-verified-fix-plan.md` (tool `0.2.0`, SPEC `v0.0.9`, `tests/test-fork.sh`, `docs/migration.md`). Next agent owns implementation; journal: `docs/research/2026-04-04-v0.1-claude-forker-v0.8-plan-handoff-journal.md`.
 
 ---
 
 ## Session History (most recent first)
+
+### Session 2026-04-05 — OAuth Implementation + Admin Panel + Security Hardening
+
+**Part 1: OAuth Provider Setup**
+- Set up Google OAuth (consent screen, credentials, scopes)
+- Set up Microsoft OAuth (Azure AD app registration)
+- GitHub OAuth app registered
+- Fixed callback URL: was hardcoded `http://localhost:3200`, now uses `PUBLIC_URL` env var
+- Fixed Google OIDC `iss` parameter: server was dropping it from callback query, causing `OAUTH_INVALID_RESPONSE`
+- Fixed pending page "Check Status": added `/auth/status` endpoint that works without session cookie
+- Created `docs/oauth-provider-setup-v0.1.md` (provider setup) and `docs/oauth-provider-setup-v0.2.md` (full lifecycle)
+- Environment vars added to systemd service file
+
+**Part 2: Admin Panel Build**
+- Wired admin link into hamburger menu (visible to admins only)
+- Added editable username field to pending approval with `cp-` prefix enforcement
+- Added `[check existing]` lookup and `[auto-generate]` reset buttons
+- Multi-provider support: users can link Google + Microsoft + GitHub to one account
+- Merge flow: when approving a pending user with an existing user's username, offers to merge accounts
+- Built 5 admin features: edit flags (toggle buttons), deactivate, edit linux username, merge users, add user manually
+- Deactivated Users section with Reactivate and Purge
+
+**Part 3: User Lifecycle (3-phase)**
+- Deactivate: removes provider links, renames `cp-*` → `cpx-*`, moves home dir, sets nologin shell
+- Reactivate: restores `cpx-*` → `cp-*`, sets pending status, user must re-authenticate
+- Purge: double-confirm, deletes `cpx-*` account + home dir + DB records permanently
+- Migrated existing users to `cp-` prefix: aaronb→cp-aaronb, aaronh→cp-aaronh, joshm→cp-joshm
+- Assigned root Linux account to frodex310@gmail.com (admin)
+
+**Part 4: Security Hardening (audit-driven)**
+- Applied fixes for security audit findings (`/srv/security-scan/security-audit-findings-2026-04-03.csv`)
+- HIGH: Removed hardcoded AUTH_SECRET fallback, restricted CORS to PUBLIC_URL, SSRF protection on /api/proxy (blocks private IPs), 1MB request body limit, auth on admin/reload/clients/throttle endpoints, WebSocket auth on upgrade, SSE auth, reserved username blocking
+- MEDIUM: CSRF double-submit cookie pattern, GitHub verified-email-only, sanitized error messages, DB file permissions 0600, bounded OAuth state map (1000 max), CSP headers on all HTML, WebSocket origin validation
+- Created `docs/admin-panel-v0.1.md` (complete admin panel reference)
+
+**Users provisioned:**
+- frodex310@gmail.com → root (admin)
+- aaronmbraskin@gmail.com → cp-aaronb
+- aaron.hopkins@gmail.com → cp-aaronh (admin)
+- joshua.montgomery@guardwellfarm.com → cp-joshm (admin)
+- microsoft.net@frodex.com → cp-gregt (test account)
+
+**Artifacts:**
+- docs/oauth-provider-setup-v0.1.md, docs/oauth-provider-setup-v0.2.md
+- docs/admin-panel-v0.1.md
+
+### Session 2026-04-04 — claude-forker v0.8 plan finalized; implementation delegated
+
+- Iterated source-verified fix plan v0.3 → v0.8 against Claude Code snapshot at `/srv/src` (`sessionStoragePortable.ts` `sanitizePath` / `findProjectDir`, `hash.ts` `djb2Hash`, `getWorktreePathsPortable.ts`).
+- Resolved earlier review issues: `_djb2_hash` must match `simpleHash` (initial 0, `(h<<5)-h+c`, signed 32-bit, abs, base-36); prefix match uses `sanitized[:200] + '-'`; `find_project_dir` is **target** resolution only — `find_session` full-scans all project dirs plus worktree fallback (Fix 7).
+- **Canonical implementation spec:** `claude-forker/docs/2026-04-04-v0.8-source-verified-fix-plan.md` (approved). v0.8 clarifies Fix 8.2 HOW IT WORKS (source discovery vs target encoding/prefix fallback).
+- User requested another agent implement the code; this session updated `sessions.md` + research journal only.
+
+**Artifacts:**
+- `claude-forker/docs/2026-04-04-v0.8-source-verified-fix-plan.md`
+- `docs/research/2026-04-04-v0.1-claude-forker-v0.8-plan-handoff-journal.md`
 
 ### Session c2a34800 / 2026-04-04 — Performance Tier Iteration + Repo Cleanup + Top Menu Bar Plan
 
