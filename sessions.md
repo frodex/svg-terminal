@@ -15,7 +15,7 @@
 
 3D dashboard is functional — Three.js CSS3DRenderer positions terminal panels in 3D space. Layout system implemented with composable slot maps and mutation operations. Performance tier system handles mobile/weak-GPU degradation. Focus/unfocus, input bar, sidebar thumbnails, session discovery, and claude-proxy integration all work.
 
-**Current work:** OAuth/auth system fully implemented and hardened. Google and Microsoft OAuth live at `https://3200.droidware.ai`. Admin panel built with full user lifecycle (approve, deactivate, reactivate, purge). Security audit findings addressed. Top menu bar feature planned (docs/superpowers/plans/2026-04-04-top-menu-bar.md) — consolidates group-level layout controls into a fixed top bar with hamburger menu, layout selector + ghost preview, and OAuth/session management integration.
+**Current work:** Auth system complete (Phase 1+2). OAuth login (Google/Microsoft/GitHub), admin panel with full user lifecycle, session authorization with feature flag, API key store for WS auth, WS consolidation (session ops over authenticated WS), reconnection overlay, admin PIN with sudo window, rate limiting, dev mode hardening. Claude-proxy viewOnly enforcement added. Cookie fallback removed — API key is sole WS credential.
 
 ---
 
