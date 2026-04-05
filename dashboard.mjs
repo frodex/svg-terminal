@@ -1435,11 +1435,16 @@ function init() {
     .then(function(data) {
       _apiKey = data.key;
       connectDashboardWs();
+      // Start session polling AFTER API key is available
+      refreshSessions();
+      setInterval(refreshSessions, 30000);
     })
     .catch(function(e) {
       if (e.message !== 'not authenticated') {
         // API key fetch failed but we're authenticated — try without key
         connectDashboardWs();
+        refreshSessions();
+        setInterval(refreshSessions, 30000);
       }
     });
 
@@ -1447,9 +1452,6 @@ function init() {
   wireSessionFormPanel();
   wireRestartForkPanels();
   syncUiOverlayPointerBlock();
-  // Keep refreshSessions as fallback for old sessions during transition
-  refreshSessions();
-  setInterval(refreshSessions, 30000); // fallback only, WS handles real-time discovery
   // DEPRECATED: titles arrive via WebSocket screen/delta messages
   // setInterval(refreshTitles, 10000);
   animate();
