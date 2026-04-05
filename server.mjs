@@ -1553,9 +1553,8 @@ async function handleDashboardWs(ws, req) {
       }
     } catch (err) {
       console.error('[ws/dashboard] input error:', err);
-      writeFileSync('/tmp/svg-terminal-ws-error.log', new Date().toISOString() + ' ' + (err.stack || err.message || String(err)) + '\n', { flag: 'a' });
       if (ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'error', message: 'Input processing error: ' + (err.message || String(err)).slice(0, 100) }));
+        ws.send(JSON.stringify({ type: 'error', message: 'Input processing error' }));
       }
     }
   });
