@@ -111,6 +111,20 @@ import * as THREE from 'three';
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
 import { easeInOutCubic, lerpPos } from './polyhedra.mjs';
 
+// CSRF double-submit cookie: read cp_csrf cookie and include as header on mutations
+function _getCsrfToken() {
+  var m = document.cookie.match(/cp_csrf=([^;]+)/);
+  return m ? m[1] : '';
+}
+function csrfFetch(url, opts) {
+  opts = opts || {};
+  if (opts.method && opts.method !== 'GET' && opts.method !== 'HEAD') {
+    opts.headers = opts.headers || {};
+    opts.headers['X-CSRF-Token'] = _getCsrfToken();
+  }
+  return fetch(url, opts);
+}
+
 // === Ring Layout Preset (from design studio 2026-03-27 session) ===
 const DEG2RAD = Math.PI / 180;
 const RING = {
@@ -360,6 +374,8 @@ function refreshTopBarUser() {
     .then(function(u) {
       pill.textContent = u.displayName || u.email || u.linuxUser || 'Signed in';
       pill.title = u.email || '';
+      var adminLink = document.getElementById('menu-admin');
+      if (adminLink && u.canApprove) adminLink.style.display = '';
     })
     .catch(function() {
       pill.textContent = 'Guest';
@@ -1390,12 +1406,42 @@ function init() {
     }
   }
 
+  // Auth check + fetch WS token on page load
+  fetch('/auth/me', { credentials: 'same-origin' })
+    .then(function(r) {
+      if (!r.ok) {
+        location.href = '/login';
+        throw new Error('not authenticated');
+      }
+      return r.json();
+    })
+    .then(function(u) {
+      var pill = document.getElementById('top-user-pill');
+      if (pill) {
+        pill.textContent = u.displayName || u.email || u.linuxUser || 'Signed in';
+        pill.title = u.email || '';
+      }
+      var adminLink = document.getElementById('menu-admin');
+      if (adminLink && u.canApprove) adminLink.style.display = '';
+      // Fetch WS token (Cloudflare strips cookies from WS upgrades)
+      return fetch('/auth/ws-token', { credentials: 'same-origin' });
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      _wsAuthToken = data.token;
+      connectDashboardWs();
+    })
+    .catch(function(e) {
+      if (e.message !== 'not authenticated') {
+        // WS token fetch failed but we're authenticated — try without token
+        connectDashboardWs();
+      }
+    });
+
   wireTopBar();
   wireSessionFormPanel();
   wireRestartForkPanels();
   syncUiOverlayPointerBlock();
-
-  connectDashboardWs();
   // Keep refreshSessions as fallback for old sessions during transition
   refreshSessions();
   setInterval(refreshSessions, 5000);
@@ -1405,12 +1451,16 @@ function init() {
 }
 
 // === Shared Dashboard WebSocket ===
+var _wsAuthToken = null;
+var _dashWsAuthFailures = 0;
 function connectDashboardWs() {
   var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  var url = proto + '//' + location.host + '/ws/dashboard';
+  var tokenParam = _wsAuthToken ? '?token=' + encodeURIComponent(_wsAuthToken) : '';
+  var url = proto + '//' + location.host + '/ws/dashboard' + tokenParam;
   var ws = new WebSocket(url);
   ws.onopen = function() {
     console.log('[Dashboard WS] connected');
+    _dashWsAuthFailures = 0;
     dashboardWs = ws;
     // Send current focus state so server adjusts capture rates
     if (focusedSessions.size > 0) {
@@ -1425,10 +1475,25 @@ function connectDashboardWs() {
       console.warn('[Dashboard WS] bad message', e);
     }
   };
-  ws.onclose = function() {
-    console.log('[Dashboard WS] disconnected, reconnecting in 2s');
+  ws.onclose = function(ev) {
     dashboardWs = null;
-    setTimeout(connectDashboardWs, 2000);
+    // 1006 = abnormal close (connection rejected before open), likely auth failure
+    if (ev.code === 1006) {
+      _dashWsAuthFailures++;
+      if (_dashWsAuthFailures >= 3) {
+        console.warn('[Dashboard WS] repeated auth failures, redirecting to login');
+        location.href = '/login?error=' + encodeURIComponent('Session expired — please sign in again');
+        return;
+      }
+    }
+    console.log('[Dashboard WS] disconnected, reconnecting in 2s');
+    // Refresh WS token before reconnecting (may have expired)
+    setTimeout(function() {
+      fetch('/auth/ws-token', { credentials: 'same-origin' })
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(data) { if (data) _wsAuthToken = data.token; })
+        .finally(connectDashboardWs);
+    }, 2000);
   };
   ws.onerror = function() {
     // onclose will fire after this and handle reconnect
@@ -3109,7 +3174,7 @@ async function submitSessionFormFromPanel() {
   }
 
   try {
-    var res = await fetch('/api/sessions/create', {
+    var res = await csrfFetch('/api/sessions/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
@@ -3419,7 +3484,7 @@ async function submitRestartFromPanel() {
   body.deadSessionId = deadSel.value;
 
   try {
-    var res = await fetch('/api/sessions/restart', {
+    var res = await csrfFetch('/api/sessions/restart', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
@@ -3454,7 +3519,7 @@ async function submitForkFromPanel() {
   body.sourceSessionId = srcSel.value;
 
   try {
-    var res = await fetch('/api/sessions/fork', {
+    var res = await csrfFetch('/api/sessions/fork', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
@@ -3744,12 +3809,6 @@ function addTerminal(sessionName, cols, rows) {
       if (obj && obj.contentWindow && typeof obj.contentWindow.sendToWs === 'function') {
         if (obj.contentWindow.sendToWs(msg)) return;
       }
-      // Last resort: HTTP POST (deprecated)
-      fetch('/api/input', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session: sessionName, pane: '0', ...msg })
-      }).catch(function() {});
     },
     // Unified scroll — one offset, one method. Used by mouse wheel, PgUp/PgDn, etc.
     scrollBy: function(lines) {
@@ -5058,7 +5117,7 @@ init();
 
   window._saveLayout = function() {
     const state = window._getLayoutState();
-    fetch('/api/layout?uid=' + encodeURIComponent(activeUid), {
+    csrfFetch('/api/layout?uid=' + encodeURIComponent(activeUid), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(state)

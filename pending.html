@@ -33,17 +33,22 @@
   </div>
   <script>
     var params = new URLSearchParams(location.search);
-    document.getElementById('email').textContent = params.get('email') || '';
+    var email = params.get('email');
+    var checkToken = params.get('check');
+    document.getElementById('email').textContent = email || '';
     document.getElementById('check').addEventListener('click', async function() {
       var statusEl = document.getElementById('status');
       statusEl.textContent = 'Checking...';
       try {
-        var res = await fetch('/auth/me');
-        if (res.ok) {
-          var data = await res.json();
-          if (data.status === 'approved') { location.href = '/'; }
-          else { statusEl.textContent = 'Still pending. Check back soon.'; }
-        } else { statusEl.textContent = 'Still pending. Check back soon.'; }
+        var res = await fetch('/auth/status?email=' + encodeURIComponent(email) + '&check=' + encodeURIComponent(checkToken || ''));
+        var data = await res.json();
+        if (data.status === 'approved') { location.href = '/'; }
+        else if (data.status === 'denied') { statusEl.textContent = 'Access denied.'; }
+        else {
+          // Rotate check token for next click
+          if (data.check) checkToken = data.check;
+          statusEl.textContent = 'Still pending. Check back soon.';
+        }
       } catch(e) { statusEl.textContent = 'Could not check status.'; }
     });
   </script>

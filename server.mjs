@@ -7,12 +7,13 @@ import https from 'node:https';
 import { createConnection } from 'node:net';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execFile as execFileCb } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { parseLine } from './sgr-parser.mjs';
 import { WebSocketServer } from 'ws';
 import { createSessionCookie, validateSessionCookie } from './session-cookie.mjs';
 import { UserStore } from './user-store.mjs';
 import { getAuthUrlAsync, handleCallback, getSupportedProviders } from './auth.mjs';
-import { createSystemAccount, addToGroup, generateUsername, ensureCpUsersGroup } from './provisioner.mjs';
+import { createSystemAccount, deleteSystemAccount, addToGroup, generateUsername, ensureCpUsersGroup, userExists, deactivateAccount, reactivateAccount, purgeAccount } from './provisioner.mjs';
 
 // ---------------------------------------------------------------------------
 // Async tmux helper
@@ -44,7 +45,6 @@ for (let i = 0; i < args.length; i++) {
 // Auth config
 // ---------------------------------------------------------------------------
 
-const AUTH_SECRET = process.env.AUTH_SECRET || 'dev-mode-secret-change-in-production!!';
 const COOKIE_NAME = 'cp_session';
 const COOKIE_MAX_AGE = 86400;
 const AUTH_PROVIDERS = {
@@ -52,7 +52,41 @@ const AUTH_PROVIDERS = {
   github: process.env.GITHUB_CLIENT_ID ? { clientId: process.env.GITHUB_CLIENT_ID, clientSecret: process.env.GITHUB_CLIENT_SECRET } : null,
   microsoft: process.env.MICROSOFT_CLIENT_ID ? { clientId: process.env.MICROSOFT_CLIENT_ID, clientSecret: process.env.MICROSOFT_CLIENT_SECRET, tenant: process.env.MICROSOFT_TENANT } : null,
 };
-const AUTH_ENABLED = Object.values(AUTH_PROVIDERS).some(v => v !== null);
+const AUTH_MODE = process.env.AUTH_MODE || null; // 'dev' for development mode, null for production
+const DEV_PASSWORD = process.env.DEV_PASSWORD || null;
+const DEV_LOCALHOST_ONLY = process.env.DEV_LOCALHOST_ONLY !== '0'; // default: restrict dev mode to localhost
+
+const hasOAuthProviders = Object.values(AUTH_PROVIDERS).some(v => v !== null);
+
+// Dev mode requires explicit opt-in + password
+if (AUTH_MODE === 'dev') {
+  if (!DEV_PASSWORD) {
+    process.stderr.write('[FATAL] DEV_PASSWORD is required when AUTH_MODE=dev.\n');
+    process.stderr.write('        Set DEV_PASSWORD to a password for dev access.\n');
+    process.exit(1);
+  }
+  if (DEV_LOCALHOST_ONLY) {
+    process.stderr.write('[INFO] Dev mode enabled — restricted to localhost only. Set DEV_LOCALHOST_ONLY=0 to allow LAN access.\n');
+  } else {
+    process.stderr.write('[WARN] Dev mode enabled with LAN access. This is not safe for production.\n');
+  }
+}
+
+// Production mode: require OAuth providers
+const AUTH_ENABLED = hasOAuthProviders || AUTH_MODE === 'dev';
+if (!hasOAuthProviders && AUTH_MODE !== 'dev') {
+  process.stderr.write('[FATAL] No OAuth providers configured and AUTH_MODE is not "dev".\n');
+  process.stderr.write('        Either configure OAuth providers (GOOGLE_CLIENT_ID, etc.) or set AUTH_MODE=dev with DEV_PASSWORD.\n');
+  process.exit(1);
+}
+
+// AUTH_SECRET is required when OAuth providers are configured.
+const AUTH_SECRET = process.env.AUTH_SECRET || (AUTH_MODE === 'dev' ? DEV_PASSWORD : null);
+if (hasOAuthProviders && !process.env.AUTH_SECRET) {
+  process.stderr.write('[FATAL] AUTH_SECRET environment variable is required when OAuth providers are configured.\n');
+  process.stderr.write('        Set AUTH_SECRET to a random 32+ character string.\n');
+  process.exit(1);
+}
 
 let userStore = null;
 if (AUTH_ENABLED) {
@@ -60,7 +94,48 @@ if (AUTH_ENABLED) {
   const DB_PATH = process.env.USER_DB_PATH || new URL('data/users.db', import.meta.url).pathname;
   userStore = new UserStore(DB_PATH);
   try { ensureCpUsersGroup(); } catch {}
+
+  // Ensure root-mapped users have superadmin flag
+  const rootUser = userStore.findByLinuxUser('root');
+  if (rootUser && !rootUser.is_superadmin) {
+    userStore.setSuperadmin(rootUser.email, true);
+    process.stderr.write('[AUTH] Auto-promoted ' + rootUser.email + ' to superadmin (linux_user=root)\n');
+  }
 }
+
+const STRICT_SESSION_AUTHZ = process.env.STRICT_SESSION_AUTHZ === '1';
+if (STRICT_SESSION_AUTHZ) {
+  process.stderr.write('[AUTH] STRICT_SESSION_AUTHZ enabled — per-session authorization enforced\n');
+}
+
+const pendingCheckTokens = new Map(); // checkToken → { email, expires }
+
+function isSuperadmin(user) {
+  if (!user) return false;
+  return !!(user.is_superadmin);
+}
+
+/**
+ * Check if user is authorized to access a session.
+ * @param {object} user - authenticated user (from getAuthUser or API key identity)
+ * @param {string} sessionName - tmux/cp session name
+ * @returns {boolean}
+ */
+function authorizeSession(user, sessionName) {
+  if (!STRICT_SESSION_AUTHZ) return true;
+  if (!user) return false;
+  if (isSuperadmin(user)) return true;
+
+  const cached = sessionPermCache.get(sessionName);
+  if (!cached) return false; // unknown session = deny (may race before first discovery — superadmin bypass handles bootstrap)
+  if (cached.public) return true;
+  if (cached.owner === user.linux_user) return true;
+  if (cached.allowedUsers && cached.allowedUsers.includes(user.linux_user)) return true;
+  return false;
+}
+
+// Session permission cache — populated during session discovery
+const sessionPermCache = new Map(); // sessionName → { owner, public, allowedUsers, allowedGroups, viewOnly }
 
 // ---------------------------------------------------------------------------
 // Static file helpers
@@ -196,7 +271,7 @@ async function cpMaybeUnsub(sessionId) {
   rec.count--;
   if (rec.count <= 0) {
     cpSubscribeCounts.delete(sessionId);
-    await cpRequest('unsubscribe', { sessionId }).catch(() => {});
+    await cpRequest('unsubscribe', { sessionId, user: rec.user }).catch(() => {});
   }
 }
 
@@ -245,8 +320,9 @@ function attachCpToTerminalWs(clientWs, sessionId, linuxUser) {
         await cpRequest('scroll', { sessionId, user: u, offset: msg.offset });
       }
     } catch (e) {
+      process.stderr.write('[ws/terminal] input error: ' + (e.message || e) + '\n');
       if (clientWs.readyState === 1) {
-        clientWs.send(JSON.stringify({ type: 'error', message: e.message }));
+        clientWs.send(JSON.stringify({ type: 'error', message: 'Input processing error' }));
       }
     }
   });
@@ -262,8 +338,16 @@ function attachCpToTerminalWs(clientWs, sessionId, linuxUser) {
 // Response helpers
 // ---------------------------------------------------------------------------
 
-function setCors(res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+const CORS_ORIGIN = process.env.PUBLIC_URL || null;
+
+function setCors(res, req) {
+  if (CORS_ORIGIN) {
+    res.setHeader('Access-Control-Allow-Origin', CORS_ORIGIN);
+    res.setHeader('Vary', 'Origin');
+  } else {
+    // No PUBLIC_URL set — allow all origins for local development only
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
 }
 
 function sendJson(res, status, data) {
@@ -287,6 +371,8 @@ function handleRoot(req, res) {
     const content = readFileSync(staticPath('index.html'));
     setCors(res);
     res.setHeader('Content-Type', 'text/html');
+    res.setHeader('Content-Security-Policy', CSP_HEADER);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.writeHead(200);
     res.end(content);
   } catch (err) {
@@ -386,6 +472,14 @@ async function handlePane(req, res, params) {
   if (!validateParam(session)) return sendError(res, 400, 'Invalid session name');
   if (!validateParam(pane)) return sendError(res, 400, 'Invalid pane identifier');
 
+  const auth = getAuthUser(req);
+  if (STRICT_SESSION_AUTHZ) {
+    if (!authorizeSession(auth, session)) {
+      sendError(res, 403, 'Not authorized for this session');
+      return;
+    }
+  }
+
   // Check if session is on local tmux (default server)
   let isLocal = false;
   try {
@@ -404,9 +498,10 @@ async function handlePane(req, res, params) {
   } else {
     // Claude-proxy session — screen via Unix socket JSON-RPC
     try {
+      const cpUser = (auth ? (auth.linux_user || CP_DEFAULT_USER) : CP_DEFAULT_USER);
       const state = await cpRequest('getSessionScreen', {
         sessionId: session,
-        user: CP_DEFAULT_USER,
+        user: cpUser,
       }, 3000);
       state.path = state.path || '';
       state.command = state.command || '';
@@ -452,54 +547,6 @@ function isAllowedKey(key) {
   return ALLOWED_SPECIAL_KEYS.has(key) || Object.keys(CP_TO_TMUX_KEYS).includes(key) || /^C-[a-z]$/.test(key);
 }
 
-// DEPRECATED (PRD v0.5.0 §3.3): HTTP input endpoint, replaced by WebSocket input via /ws/dashboard
-async function handleInput(req, res) {
-  let body = '';
-  req.on('data', (chunk) => { body += chunk; });
-  req.on('end', async () => {
-    let parsed;
-    try {
-      parsed = JSON.parse(body);
-    } catch {
-      return sendError(res, 400, 'Invalid JSON body');
-    }
-
-    const { session, pane = '0', keys, specialKey } = parsed;
-
-    if (!validateParam(session)) {
-      return sendError(res, 400, 'Invalid session parameter');
-    }
-    if (!validateParam(pane)) {
-      return sendError(res, 400, 'Invalid pane parameter');
-    }
-
-    const target = `${session}:${pane}`;
-
-    if (specialKey !== undefined) {
-      if (!isAllowedKey(specialKey)) {
-        return sendError(res, 400, `Invalid specialKey: ${specialKey}`);
-      }
-      try {
-        await tmuxAsync('send-keys', '-t', target, translateKeyForTmux(specialKey));
-        return sendJson(res, 200, { ok: true });
-      } catch (err) {
-        return sendError(res, 500, `tmux error: ${err.message}`);
-      }
-    }
-
-    if (typeof keys === 'string' && keys.length > 0) {
-      try {
-        await tmuxAsync('send-keys', '-t', target, '-l', keys);
-        return sendJson(res, 200, { ok: true });
-      } catch (err) {
-        return sendError(res, 500, `tmux error: ${err.message}`);
-      }
-    }
-
-    return sendError(res, 400, 'Must provide keys or specialKey');
-  });
-}
-
 async function handleSessions(req, res) {
   const seen = new Set();
   const sessions = [];
@@ -526,6 +573,9 @@ async function handleSessions(req, res) {
   // Source 2: claude-proxy (Unix socket)
   // CP sessions also appear in local tmux (same tmux server).  Override source
   // so input is routed through claude-proxy's mode-aware sendInput, not tmux send-keys.
+  // NOTE: Intentionally uses CP_DEFAULT_USER — this is the server's own session discovery
+  // at startup, not a user request. User-facing discovery in sendSessionDiscovery() uses
+  // the authenticated user's linux_user.
   try {
     const cpSessions = await cpRequest('listSessions', { user: CP_DEFAULT_USER }, 2000);
     for (const s of cpSessions || []) {
@@ -556,7 +606,13 @@ async function handleSessions(req, res) {
     // claude-proxy not running or unreachable — that's fine
   }
 
-  sendJson(res, 200, sessions);
+  if (STRICT_SESSION_AUTHZ) {
+    const auth = getAuthUser(req);
+    const filtered = sessions.filter(s => authorizeSession(auth, typeof s === 'string' ? s : s.name));
+    sendJson(res, 200, filtered);
+  } else {
+    sendJson(res, 200, sessions);
+  }
 }
 
 /** Build createSession body for claude-proxy — mirrors CreateSessionRequest / session-form field mapping. */
@@ -658,7 +714,7 @@ async function handleRestartSession(req, res) {
       { user: linuxUser, sessionId: deadId, settings },
       120000
     );
-    notifyDashboardCpSessionCreated(result);
+    notifyDashboardCpSessionCreated(result, linuxUser);
     return sendJson(res, 201, { ok: true, source: 'claude-proxy', session: result });
   } catch (err) {
     process.stderr.write('[svg-terminal] restartSession: ' + (err && err.message ? err.message : err) + '\n');
@@ -687,7 +743,7 @@ async function handleForkSession(req, res) {
       { user: linuxUser, sessionId: sourceId, settings },
       120000
     );
-    notifyDashboardCpSessionCreated(result);
+    notifyDashboardCpSessionCreated(result, linuxUser);
     return sendJson(res, 201, { ok: true, source: 'claude-proxy', session: result });
   } catch (err) {
     process.stderr.write('[svg-terminal] forkSession: ' + (err && err.message ? err.message : err) + '\n');
@@ -717,7 +773,7 @@ async function handleCreateSession(req, res) {
 
   try {
     const result = await cpRequest('createSession', { user: linuxUser, body: payload }, 120000);
-    notifyDashboardCpSessionCreated(result);
+    notifyDashboardCpSessionCreated(result, linuxUser);
     return sendJson(res, 201, { ok: true, source: 'claude-proxy', session: result });
   } catch (err) {
     process.stderr.write('[svg-terminal] createSession (cp): ' + (err && err.message ? err.message : err) + '\n');
@@ -821,7 +877,7 @@ const dashboardClients = new Set(); // all /ws/dashboard connections
 const wsToWatcherKeys = new WeakMap();
 
 /** Notify all dashboard clients that a new claude-proxy session exists (restart/fork/create). */
-function notifyDashboardCpSessionCreated(result) {
+function notifyDashboardCpSessionCreated(result, ownerUser) {
   if (!result || typeof result !== 'object') return;
   const name = result.id || result.name;
   if (!name) return;
@@ -836,6 +892,17 @@ function notifyDashboardCpSessionCreated(result) {
     source: 'claude-proxy',
     launchProfile: result.launchProfile
   };
+  // Update permission cache on session lifecycle
+  if (STRICT_SESSION_AUTHZ) {
+    sessionPermCache.set(name, {
+      owner: ownerUser || CP_DEFAULT_USER,
+      public: true,
+      allowedUsers: [],
+      allowedGroups: [],
+      viewOnly: false,
+    });
+  }
+
   const msg = JSON.stringify({ type: 'session-add', session: name, pane: '0', ...row });
   for (const ws of dashboardClients) {
     if (ws.readyState === 1) ws.send(msg);
@@ -1057,6 +1124,21 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
       sessions.push({ name, windows, cols: width, rows: height, source: 'tmux' });
       seen.add(name);
     }
+    // Cache local tmux sessions — default: owned by server user, public
+    if (STRICT_SESSION_AUTHZ) {
+      for (const s of sessions) {
+        if (s.source !== 'tmux') continue;
+        if (!sessionPermCache.has(s.name)) {
+          sessionPermCache.set(s.name, {
+            owner: CP_DEFAULT_USER,
+            public: true,
+            allowedUsers: [],
+            allowedGroups: [],
+            viewOnly: false,
+          });
+        }
+      }
+    }
   } catch (err) {
     // tmux not running or no sessions
   }
@@ -1077,6 +1159,19 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
         });
       }
       seen.add(name);
+    }
+
+    // Populate permission cache for STRICT_SESSION_AUTHZ
+    if (STRICT_SESSION_AUTHZ) {
+      for (const s of cpSessions2 || []) {
+        sessionPermCache.set(s.id || s.name, {
+          owner: s.owner || cpUser,
+          public: s.public !== false,
+          allowedUsers: s.allowedUsers || [],
+          allowedGroups: s.allowedGroups || [],
+          viewOnly: !!s.viewOnly,
+        });
+      }
     }
   } catch (err) {
     // claude-proxy not running — fine
@@ -1169,6 +1264,12 @@ async function handleDashboardWs(ws, req) {
       if (msg.type === 'subscribe') {
         const session = msg.session;
         if (session && validateParam(session)) {
+          if (STRICT_SESSION_AUTHZ && !authorizeSession(user, session)) {
+            if (ws.readyState === 1) ws.send(JSON.stringify({
+              type: 'error', session: session, message: 'Not authorized for this session'
+            }));
+            return;
+          }
           if (msg.source === 'claude-proxy') {
             bridgeClaudeProxySession(session, cpUserDash);
             const watcher = sessionWatchers.get(session + ':0');
@@ -1210,6 +1311,23 @@ async function handleDashboardWs(ws, req) {
         return;
       }
 
+      // Session authorization for input/resize/scroll
+      if (STRICT_SESSION_AUTHZ && !authorizeSession(user, session)) {
+        if (ws.readyState === 1) ws.send(JSON.stringify({
+          type: 'error', session: session, message: 'Not authorized'
+        }));
+        return;
+      }
+      if (STRICT_SESSION_AUTHZ && msg.type === 'input') {
+        const perms = sessionPermCache.get(session);
+        if (perms && perms.viewOnly) {
+          if (ws.readyState === 1) ws.send(JSON.stringify({
+            type: 'error', session: session, message: 'Session is view-only'
+          }));
+          return;
+        }
+      }
+
       // Check if this session is bridged to claude-proxy (Unix socket).
       // cp-* sessions are NOT in local tmux — input/scroll/resize go through JSON-RPC.
       const watcher = sessionWatchers.get(session + ':' + pane);
@@ -1247,8 +1365,9 @@ async function handleDashboardWs(ws, req) {
             });
           }
         } catch (err) {
+          process.stderr.write('[ws/dashboard] cp-bridge error: ' + (err.message || err) + '\n');
           if (ws.readyState === 1) {
-            ws.send(JSON.stringify({ type: 'error', message: err.message }));
+            ws.send(JSON.stringify({ type: 'error', message: 'Session communication error' }));
           }
         }
         return;
@@ -1303,8 +1422,9 @@ async function handleDashboardWs(ws, req) {
         setTimeout(() => triggerCapture(session, pane), 5);
       }
     } catch (err) {
+      process.stderr.write('[ws/dashboard] input error: ' + (err.message || err) + '\n');
       if (ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'error', message: 'Input error: ' + err.message }));
+        ws.send(JSON.stringify({ type: 'error', message: 'Input processing error' }));
       }
     }
   });
@@ -1330,12 +1450,18 @@ function broadcast(event, data) {
 }
 
 function handleSSE(req, res) {
-  res.writeHead(200, {
+  const headers = {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
-    'Access-Control-Allow-Origin': '*',
-  });
+  };
+  if (CORS_ORIGIN) {
+    headers['Access-Control-Allow-Origin'] = CORS_ORIGIN;
+    headers['Vary'] = 'Origin';
+  } else {
+    headers['Access-Control-Allow-Origin'] = '*';
+  }
+  res.writeHead(200, headers);
   res.write('retry: 3000\n\n');
   sseClients.add(res);
   req.on('close', () => sseClients.delete(res));
@@ -1376,8 +1502,9 @@ async function handleTerminalWs(ws, session, pane) {
         lastState = state;
       }
     } catch (err) {
+      process.stderr.write('[ws/terminal] capture error: ' + (err.message || err) + '\n');
       if (ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'error', message: err.message }));
+        ws.send(JSON.stringify({ type: 'error', message: 'Terminal capture error' }));
       }
     }
   }
@@ -1455,8 +1582,9 @@ async function handleTerminalWs(ws, session, pane) {
         setTimeout(captureAndPush, 5);
       }
     } catch (err) {
+      process.stderr.write('[ws/terminal] input error: ' + (err.message || err) + '\n');
       if (ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'error', message: 'Input error: ' + err.message }));
+        ws.send(JSON.stringify({ type: 'error', message: 'Input processing error' }));
       }
     }
   });
@@ -1475,6 +1603,31 @@ const PROXY_BLOCKED_HEADERS = new Set([
   'content-security-policy-report-only',
 ]);
 
+/** Check if a hostname resolves to a private/internal IP range (SSRF protection). */
+function isPrivateHost(hostname) {
+  // Block obvious private hostnames
+  if (hostname === 'localhost' || hostname === 'localhost.localdomain') return true;
+  if (hostname.endsWith('.local') || hostname.endsWith('.internal')) return true;
+  // Check IP address patterns
+  const ip = hostname;
+  // IPv6 loopback
+  if (ip === '::1' || ip === '0000:0000:0000:0000:0000:0000:0000:0001') return true;
+  // IPv6 unique local (fc00::/7)
+  if (/^f[cd][0-9a-f]{2}:/i.test(ip)) return true;
+  // IPv4
+  const parts = ip.split('.');
+  if (parts.length === 4 && parts.every(p => /^\d+$/.test(p))) {
+    const [a, b] = parts.map(Number);
+    if (a === 127) return true;                     // 127.0.0.0/8
+    if (a === 10) return true;                      // 10.0.0.0/8
+    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+    if (a === 192 && b === 168) return true;        // 192.168.0.0/16
+    if (a === 169 && b === 254) return true;        // 169.254.0.0/16 (link-local, AWS metadata)
+    if (a === 0) return true;                       // 0.0.0.0/8
+  }
+  return false;
+}
+
 function handleProxy(req, res, params) {
   const targetUrl = params.get('url');
   if (!targetUrl) return sendError(res, 400, 'Missing url parameter');
@@ -1490,13 +1643,26 @@ function handleProxy(req, res, params) {
     return sendError(res, 400, 'Only http/https URLs supported');
   }
 
+  // SSRF protection: block private/internal IP ranges
+  if (isPrivateHost(parsed.hostname)) {
+    return sendError(res, 403, 'Proxying to private/internal addresses is not allowed');
+  }
+
   const client = parsed.protocol === 'https:' ? https : http;
   const opts = { timeout: 10000 };
-  if (parsed.protocol === 'https:') opts.rejectUnauthorized = false;
   const proxyReq = client.get(targetUrl, opts, (proxyRes) => {
     // Follow redirects (up to 5)
     if (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400 && proxyRes.headers.location) {
       const redirectUrl = new URL(proxyRes.headers.location, targetUrl).href;
+      // SSRF check on redirect target too
+      try {
+        const redirectParsed = new URL(redirectUrl);
+        if (isPrivateHost(redirectParsed.hostname)) {
+          return sendError(res, 403, 'Redirect to private/internal address blocked');
+        }
+      } catch {
+        return sendError(res, 400, 'Invalid redirect URL');
+      }
       const redirectParams = new URLSearchParams();
       redirectParams.set('url', redirectUrl);
       return handleProxy(req, res, redirectParams);
@@ -1563,9 +1729,48 @@ function parseCookie(req) {
   return match ? match[1] : null;
 }
 
+function parseCsrfCookie(req) {
+  const header = req.headers.cookie || '';
+  const match = header.match(/cp_csrf=([^;]+)/);
+  return match ? match[1] : null;
+}
+
+/** Validate CSRF double-submit cookie: cookie value must match X-CSRF-Token header. */
+function validateCsrf(req, res) {
+  if (!AUTH_ENABLED) return true; // No CSRF needed when auth is off
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return true;
+  const cookieToken = parseCsrfCookie(req);
+  const headerToken = req.headers['x-csrf-token'];
+  if (!cookieToken || !headerToken || cookieToken !== headerToken) {
+    sendError(res, 403, 'CSRF token mismatch');
+    return false;
+  }
+  return true;
+}
+
+/** Set CSRF cookie if not already present. Non-HttpOnly so JS can read it. */
+function ensureCsrfCookie(req, res) {
+  if (!AUTH_ENABLED) return;
+  const existing = parseCsrfCookie(req);
+  if (!existing) {
+    const token = randomBytes(24).toString('base64url');
+    res.setHeader('Set-Cookie', [
+      res.getHeader('Set-Cookie') || [],
+      'cp_csrf=' + token + '; Path=/; SameSite=Lax; Max-Age=' + COOKIE_MAX_AGE,
+    ].flat().filter(Boolean));
+  }
+}
+
 function getAuthUser(req) {
-  if (!AUTH_ENABLED) return { email: 'root@localhost', status: 'approved', linux_user: 'root',
-    display_name: 'Development', can_approve_users: 1, can_approve_admins: 1, can_approve_sudo: 1 };
+  if (AUTH_MODE === 'dev' && !hasOAuthProviders) {
+    // Dev mode: check cookie exists (set after dev password login)
+    const token = parseCookie(req);
+    if (!token) return null;
+    const payload = validateSessionCookie(token, AUTH_SECRET);
+    if (!payload) return null;
+    return { email: 'dev@localhost', status: 'approved', linux_user: 'root',
+      display_name: 'Development', can_approve_users: 1, can_approve_admins: 1, can_approve_sudo: 1 };
+  }
   const token = parseCookie(req);
   if (!token) return null;
   const payload = validateSessionCookie(token, AUTH_SECRET);
@@ -1576,7 +1781,7 @@ function getAuthUser(req) {
 function requireAuth(req, res) {
   const user = getAuthUser(req);
   if (!user) { res.writeHead(302, { Location: '/login' }); res.end(); return null; }
-  if (user.status === 'pending') { res.writeHead(302, { Location: '/pending?email=' + encodeURIComponent(user.email) }); res.end(); return null; }
+  if (user.status === 'pending') { const checkToken = randomBytes(16).toString('base64url'); pendingCheckTokens.set(checkToken, { email: user.email, expires: Date.now() + 3600000 }); res.writeHead(302, { Location: '/pending?email=' + encodeURIComponent(user.email) + '&check=' + checkToken }); res.end(); return null; }
   if (user.status === 'denied') { res.writeHead(302, { Location: '/login?error=Access+denied' }); res.end(); return null; }
   return user;
 }
@@ -1584,22 +1789,56 @@ function requireAuth(req, res) {
 function requireAdmin(req, res) {
   const user = requireAuth(req, res);
   if (!user) return null;
-  if (user.linux_user === 'root' || user.can_approve_users || user.can_approve_admins || user.can_approve_sudo) return user;
-  res.writeHead(403); res.end('Forbidden'); return null;
+  if (user.linux_user === 'root' || user.can_approve_users || user.can_approve_admins || user.can_approve_sudo || user.is_superadmin) return user;
+  sendError(res, 403, 'Admin access required'); return null;
 }
 
+const MAX_BODY_SIZE = 1 * 1024 * 1024; // 1MB
+
 function readBody(req) {
-  return new Promise(resolve => {
+  return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => { body += chunk; });
+    let size = 0;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > MAX_BODY_SIZE) {
+        req.destroy();
+        reject(Object.assign(new Error('Request body too large'), { statusCode: 413 }));
+        return;
+      }
+      body += chunk;
+    });
     req.on('end', () => resolve(body));
+    req.on('error', reject);
   });
 }
+
+/** Send error from a caught exception, respecting statusCode if set (e.g. 413 from readBody). */
+function sendCaughtError(res, err, fallbackStatus = 500) {
+  if (res.headersSent) return;
+  const status = err.statusCode || fallbackStatus;
+  sendError(res, status, status === 413 ? 'Request body too large' : 'Internal server error');
+}
+
+const CSP_HEADER = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com",
+  "style-src 'self' 'unsafe-inline'",
+  "connect-src 'self' wss: https://cdn.jsdelivr.net",
+  "img-src 'self' data:",
+  "object-src 'self'",
+  "base-uri 'self'",
+].join('; ');
 
 function serveHtml(req, res, filename) {
   try {
     const content = readFileSync(staticPath(filename));
-    setCors(res); res.setHeader('Content-Type', 'text/html'); res.writeHead(200); res.end(content);
+    setCors(res);
+    res.setHeader('Content-Type', 'text/html');
+    res.setHeader('Content-Security-Policy', CSP_HEADER);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.writeHead(200);
+    res.end(content);
   } catch { sendError(res, 500, 'Failed to read ' + filename); }
 }
 
@@ -1622,10 +1861,55 @@ function router(req, res) {
     process.stderr.write(`[HTTP] ${remoteIp} ${req.method} ${pathname}\n`);
   }
 
+  // Dev mode: restrict to localhost if DEV_LOCALHOST_ONLY is enabled
+  if (AUTH_MODE === 'dev' && DEV_LOCALHOST_ONLY) {
+    const rawIp = req.socket.remoteAddress;
+    if (rawIp !== '127.0.0.1' && rawIp !== '::1' && rawIp !== '::ffff:127.0.0.1') {
+      sendError(res, 403, 'Dev mode is restricted to localhost');
+      return;
+    }
+  }
+
+  // CSRF validation for state-changing requests (skip auth endpoints which use OAuth state)
+  if (!pathname.startsWith('/auth/') && !validateCsrf(req, res)) return;
+
+  // Set CSRF cookie on page loads
+  ensureCsrfCookie(req, res);
+
   // Auth pages (public — no auth required)
-  if (pathname === '/login') return serveHtml(req, res, 'login.html');
+  if (pathname === '/login') {
+    // Dev mode password login
+    if (AUTH_MODE === 'dev' && !hasOAuthProviders && req.method === 'POST') {
+      (async () => {
+        try {
+          const body = await readBody(req);
+          const { password } = JSON.parse(body);
+          if (password !== DEV_PASSWORD) { sendError(res, 401, 'Invalid password'); return; }
+          const cookie = createSessionCookie({ email: 'dev@localhost', displayName: 'Development' }, AUTH_SECRET, COOKIE_MAX_AGE);
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Set-Cookie': [
+              COOKIE_NAME + '=' + cookie + '; HttpOnly; Path=/; Max-Age=' + COOKIE_MAX_AGE + '; SameSite=Lax',
+              'cp_ws_token=' + cookie + '; Path=/; Max-Age=' + COOKIE_MAX_AGE + '; SameSite=Lax',
+            ],
+          });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (err) { sendCaughtError(res, err); }
+      })();
+      return;
+    }
+    return serveHtml(req, res, 'login.html');
+  }
   if (pathname === '/pending') return serveHtml(req, res, 'pending.html');
-  if (pathname === '/admin-client.mjs') return serveJs(req, res, 'admin-client.mjs');
+  // admin-client.mjs moved behind auth gate (Task 8)
+
+  if (pathname === '/auth/ws-token') {
+    const user = getAuthUser(req);
+    if (!user) return sendJson(res, 401, { error: 'Not authenticated' });
+    // Short-lived token (5 min) for WebSocket auth — Cloudflare strips cookies from WS upgrades
+    const wsToken = createSessionCookie({ email: user.email, displayName: user.display_name }, AUTH_SECRET, 300);
+    return sendJson(res, 200, { token: wsToken });
+  }
 
   if (pathname === '/auth/me') {
     const user = getAuthUser(req);
@@ -1634,18 +1918,55 @@ function router(req, res) {
       linuxUser: user.linux_user, canApprove: !!(user.can_approve_users || user.can_approve_admins || user.can_approve_sudo) });
   }
 
+  if (pathname === '/auth/status') {
+    const email = url.searchParams.get('email');
+    const checkToken = url.searchParams.get('check');
+    if (!email || !checkToken) return sendError(res, 400, 'Missing parameters');
+    const entry = pendingCheckTokens.get(checkToken);
+    if (!entry || entry.email !== email || Date.now() > entry.expires) {
+      return sendError(res, 403, 'Invalid or expired check token');
+    }
+    // Consume the token (single-use to prevent replay)
+    pendingCheckTokens.delete(checkToken);
+
+    const user = userStore.findByEmail(email);
+    if (!user) return sendJson(res, 404, { status: 'unknown' });
+    if (user.status === 'approved') {
+      // Issue a fresh session cookie and return approved status
+      const cookie = createSessionCookie({ email: user.email, displayName: user.display_name }, AUTH_SECRET, COOKIE_MAX_AGE);
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Set-Cookie': [
+          COOKIE_NAME + '=' + cookie + '; HttpOnly; Path=/; Max-Age=' + COOKIE_MAX_AGE + '; SameSite=Lax',
+          'cp_ws_token=' + cookie + '; Path=/; Max-Age=' + COOKIE_MAX_AGE + '; SameSite=Lax',
+        ],
+      });
+      res.end(JSON.stringify({ status: 'approved' }));
+      return;
+    }
+    // Still pending — issue a fresh check token for the next click
+    const newToken = randomBytes(16).toString('base64url');
+    pendingCheckTokens.set(newToken, { email, expires: Date.now() + 3600000 });
+    return sendJson(res, 200, { status: user.status, check: newToken });
+  }
+
   if (req.method === 'POST' && pathname === '/auth/logout') {
-    res.writeHead(302, { Location: '/login', 'Set-Cookie': COOKIE_NAME + '=; HttpOnly; Path=/; Max-Age=0' });
+    res.writeHead(302, { Location: '/login', 'Set-Cookie': [
+      COOKIE_NAME + '=; HttpOnly; Path=/; Max-Age=0',
+      'cp_ws_token=; Path=/; Max-Age=0',
+    ] });
     res.end(); return;
   }
 
   if (pathname === '/auth/callback') {
     (async () => {
       try {
-        const callbackUrl = 'http://localhost:' + port + '/auth/callback';
-        const query = { state: url.searchParams.get('state'), code: url.searchParams.get('code') };
+        const callbackUrl = (process.env.PUBLIC_URL || ('http://localhost:' + port)) + '/auth/callback';
+        const query = { state: url.searchParams.get('state'), code: url.searchParams.get('code'), iss: url.searchParams.get('iss') };
         const identity = await handleCallback(callbackUrl, query, AUTH_PROVIDERS);
-        let user = userStore.findByEmail(identity.email);
+        // Check provider link first — handles multi-provider login (different email, same user)
+        let user = userStore.findByProvider(identity.provider, identity.providerId);
+        if (!user) user = userStore.findByEmail(identity.email);
         if (!user) {
           // Check for pre-approved
           const preApproved = userStore.findByEmail(identity.email);
@@ -1659,20 +1980,26 @@ function router(req, res) {
           } else {
             userStore.createPendingUser({ email: identity.email, displayName: identity.displayName,
               provider: identity.provider, providerId: identity.providerId });
-            res.writeHead(302, { Location: '/pending?email=' + encodeURIComponent(identity.email) }); res.end(); return;
+            const checkToken = randomBytes(16).toString('base64url'); pendingCheckTokens.set(checkToken, { email: identity.email, expires: Date.now() + 3600000 }); res.writeHead(302, { Location: '/pending?email=' + encodeURIComponent(identity.email) + '&check=' + checkToken }); res.end(); return;
           }
         }
         if (!userStore.findByProvider(identity.provider, identity.providerId)) {
-          userStore.linkProvider(identity.email, identity.provider, identity.providerId);
+          userStore.linkProvider(user.email, identity.provider, identity.providerId);
         }
-        userStore.updateLastLogin(identity.email);
-        if (user.status === 'pending') { res.writeHead(302, { Location: '/pending?email=' + encodeURIComponent(identity.email) }); res.end(); return; }
+        userStore.updateLastLogin(user.email);
+        if (user.status === 'pending') { const checkToken = randomBytes(16).toString('base64url'); pendingCheckTokens.set(checkToken, { email: user.email, expires: Date.now() + 3600000 }); res.writeHead(302, { Location: '/pending?email=' + encodeURIComponent(user.email) + '&check=' + checkToken }); res.end(); return; }
         if (user.status === 'denied') { res.writeHead(302, { Location: '/login?error=Access+denied' }); res.end(); return; }
-        const cookie = createSessionCookie({ email: identity.email, displayName: identity.displayName }, AUTH_SECRET, COOKIE_MAX_AGE);
-        res.writeHead(302, { Location: '/', 'Set-Cookie': COOKIE_NAME + '=' + cookie + '; HttpOnly; Path=/; Max-Age=' + COOKIE_MAX_AGE + '; SameSite=Lax' });
+        const cookie = createSessionCookie({ email: user.email, displayName: user.display_name || identity.displayName }, AUTH_SECRET, COOKIE_MAX_AGE);
+        res.writeHead(302, { Location: '/', 'Set-Cookie': [
+          COOKIE_NAME + '=' + cookie + '; HttpOnly; Path=/; Max-Age=' + COOKIE_MAX_AGE + '; SameSite=Lax',
+          'cp_ws_token=' + cookie + '; Path=/; Max-Age=' + COOKIE_MAX_AGE + '; SameSite=Lax',
+        ] });
         res.end();
       } catch (err) {
-        res.writeHead(302, { Location: '/login?error=' + encodeURIComponent(err.message) }); res.end();
+        console.error('[AUTH] callback error:', err);
+        // Don't leak internal error details to the client
+        const safeMsg = /No verified|not configured|Missing state/i.test(err.message) ? err.message : 'Authentication failed';
+        res.writeHead(302, { Location: '/login?error=' + encodeURIComponent(safeMsg) }); res.end();
       }
     })();
     return;
@@ -1682,7 +2009,7 @@ function router(req, res) {
     const provider = pathname.split('/')[2];
     (async () => {
       try {
-        const callbackUrl = 'http://localhost:' + port + '/auth/callback';
+        const callbackUrl = (process.env.PUBLIC_URL || ('http://localhost:' + port)) + '/auth/callback';
         const result = await getAuthUrlAsync(provider, AUTH_PROVIDERS, callbackUrl);
         res.writeHead(302, { Location: result.url }); res.end();
       } catch (err) {
@@ -1692,16 +2019,27 @@ function router(req, res) {
     return;
   }
 
-  // SSE command channel
-  if (pathname === '/api/events') return handleSSE(req, res);
+  // SSE command channel (requires auth)
+  if (pathname === '/api/events') {
+    if (AUTH_ENABLED) {
+      const user = getAuthUser(req);
+      if (!user || user.status !== 'approved') {
+        res.writeHead(401); res.end('Unauthorized'); return;
+      }
+    }
+    return handleSSE(req, res);
+  }
   if (req.method === 'POST' && pathname === '/api/admin/reload') {
+    const u = requireAdmin(req, res); if (!u) return;
     broadcast('reload', {});
     return sendJson(res, 200, { ok: true, clients: sseClients.size });
   }
   if (pathname === '/api/admin/clients') {
+    const u = requireAdmin(req, res); if (!u) return;
     return sendJson(res, 200, { count: sseClients.size });
   }
   if (pathname === '/api/admin/throttle') {
+    const u = requireAdmin(req, res); if (!u) return;
     setCors(res);
     if (req.method === 'POST') {
       let body = '';
@@ -1727,23 +2065,72 @@ function router(req, res) {
 
   // Admin routes (protected)
   if (pathname === '/admin') { const u = requireAdmin(req, res); if (!u) return; return serveHtml(req, res, 'admin.html'); }
-  if (pathname === '/api/admin/pending') { const u = requireAdmin(req, res); if (!u) return; return sendJson(res, 200, userStore.listPending()); }
-  if (pathname === '/api/admin/users') { const u = requireAdmin(req, res); if (!u) return; return sendJson(res, 200, userStore.listUsers()); }
+  if (pathname === '/api/admin/pending') {
+    const u = requireAdmin(req, res); if (!u) return;
+    const pending = userStore.listPending().map(p => ({
+      ...p,
+      suggested_username: generateUsername(p.email),
+    }));
+    return sendJson(res, 200, pending);
+  }
+  if (pathname === '/api/admin/users') {
+    const u = requireAdmin(req, res); if (!u) return;
+    const users = userStore.listUsers().map(usr => ({
+      ...usr,
+      providers: userStore.getProviderLinks(usr.email),
+    }));
+    return sendJson(res, 200, users);
+  }
+
+  if (pathname === '/api/admin/deactivated') {
+    const u = requireAdmin(req, res); if (!u) return;
+    return sendJson(res, 200, userStore.listDeactivated());
+  }
+
+  if (pathname === '/api/admin/check-username') {
+    const u = requireAdmin(req, res); if (!u) return;
+    const raw = url.searchParams.get('username');
+    if (!raw) return sendError(res, 400, 'Missing username');
+    const username = raw.startsWith('cp-') ? raw : 'cp-' + raw;
+    const linuxExists = userExists(username);
+    const dbUser = userStore.findByLinuxUser(username);
+    return sendJson(res, 200, {
+      username,
+      linuxExists,
+      dbUser: dbUser ? { email: dbUser.email, displayName: dbUser.display_name, status: dbUser.status } : null,
+    });
+  }
 
   if (req.method === 'POST' && pathname === '/api/admin/approve') {
     (async () => {
       const u = requireAdmin(req, res); if (!u) return;
       const body = await readBody(req);
-      const { email } = JSON.parse(body);
+      const { email, username, assignExisting, mergeInto } = JSON.parse(body);
       const target = userStore.findByEmail(email);
       if (!target) return sendError(res, 404, 'User not found');
-      const linuxUser = generateUsername(email);
-      createSystemAccount(linuxUser, target.display_name);
+
+      // Merge into existing user
+      if (mergeInto) {
+        const primary = userStore.findByEmail(mergeInto);
+        if (!primary) return sendError(res, 404, 'Merge target "' + mergeInto + '" not found');
+        userStore.mergeUser(email, mergeInto);
+        sendJson(res, 200, { ok: true, merged: true, primaryEmail: mergeInto });
+        return;
+      }
+
+      const linuxUser = username ? (username.startsWith('cp-') ? username : 'cp-' + username) : generateUsername(email);
+      if (!linuxUser.startsWith('cp-')) return sendError(res, 400, 'Username must start with cp-');
+      if (userExists(linuxUser) && !assignExisting) {
+        return sendError(res, 409, 'Linux user "' + linuxUser + '" already exists — confirm to assign');
+      }
+      if (!userExists(linuxUser)) {
+        createSystemAccount(linuxUser, target.display_name);
+      }
       addToGroup(linuxUser, 'users');
       userStore.approveUser(email, u.email || 'root');
       userStore.setLinuxUser(email, linuxUser);
       sendJson(res, 200, { ok: true });
-    })().catch(err => sendError(res, 500, err.message));
+    })().catch(err => sendCaughtError(res, err));
     return;
   }
 
@@ -1754,7 +2141,7 @@ function router(req, res) {
       const { email } = JSON.parse(body);
       userStore.denyUser(email);
       sendJson(res, 200, { ok: true });
-    })().catch(err => sendError(res, 500, err.message));
+    })().catch(err => sendCaughtError(res, err));
     return;
   }
 
@@ -1765,8 +2152,30 @@ function router(req, res) {
       const { emails } = JSON.parse(body);
       userStore.preApprove(emails, u.email || 'root');
       sendJson(res, 200, { ok: true });
-    })().catch(err => sendError(res, 500, err.message));
+    })().catch(err => sendCaughtError(res, err));
     return;
+  }
+
+  if (pathname.startsWith('/api/admin/user/') && pathname.endsWith('/providers')) {
+    const u = requireAdmin(req, res); if (!u) return;
+    const userEmail = decodeURIComponent(pathname.split('/')[4]);
+    if (req.method === 'GET') {
+      const links = userStore.getProviderLinks(userEmail);
+      return sendJson(res, 200, links);
+    }
+    if (req.method === 'DELETE') {
+      (async () => {
+        const body = await readBody(req);
+        const { provider, providerId } = JSON.parse(body);
+        // Don't allow unlinking the last provider
+        const links = userStore.getProviderLinks(userEmail);
+        if (links.length <= 1) return sendError(res, 400, 'Cannot remove the only login method');
+        userStore.unlinkProvider(provider, providerId);
+        sendJson(res, 200, { ok: true });
+      })().catch(err => sendCaughtError(res, err));
+      return;
+    }
+    return sendError(res, 405, 'GET or DELETE only');
   }
 
   if (req.method === 'PATCH' && pathname.startsWith('/api/admin/user/') && pathname.endsWith('/flags')) {
@@ -1778,7 +2187,132 @@ function router(req, res) {
       const flags = JSON.parse(body);
       userStore.updateFlags(email, flags);
       sendJson(res, 200, { ok: true });
-    })().catch(err => sendError(res, 500, err.message));
+    })().catch(err => sendCaughtError(res, err));
+    return;
+  }
+
+  // Deactivate user (soft delete: cp- → cpx-, remove logins, status=deactivated)
+  if (req.method === 'POST' && pathname === '/api/admin/deactivate') {
+    (async () => {
+      const u = requireAdmin(req, res); if (!u) return;
+      const body = await readBody(req);
+      const { email } = JSON.parse(body);
+      if (email === u.email) return sendError(res, 400, 'Cannot deactivate yourself');
+      const target = userStore.findByEmail(email);
+      if (!target) return sendError(res, 404, 'User not found');
+      if (target.status === 'deactivated') return sendError(res, 400, 'Already deactivated');
+      let deactivatedName = target.linux_user;
+      if (target.linux_user && target.linux_user.startsWith('cp-')) {
+        deactivatedName = deactivateAccount(target.linux_user);
+        userStore.setLinuxUser(email, deactivatedName);
+      }
+      userStore.deactivateUser(email);
+      sendJson(res, 200, { ok: true, linuxUser: deactivatedName });
+    })().catch(err => sendCaughtError(res, err));
+    return;
+  }
+
+  // Reactivate user (cpx- → cp-, status=pending, must re-authenticate)
+  if (req.method === 'POST' && pathname === '/api/admin/reactivate') {
+    (async () => {
+      const u = requireAdmin(req, res); if (!u) return;
+      const body = await readBody(req);
+      const { email } = JSON.parse(body);
+      const target = userStore.findByEmail(email);
+      if (!target) return sendError(res, 404, 'User not found');
+      if (target.status !== 'deactivated') return sendError(res, 400, 'User is not deactivated');
+      let restoredName = target.linux_user;
+      if (target.linux_user && target.linux_user.startsWith('cpx-')) {
+        restoredName = reactivateAccount(target.linux_user);
+        userStore.setLinuxUser(email, restoredName);
+      }
+      userStore.reactivateUser(email);
+      sendJson(res, 200, { ok: true, linuxUser: restoredName });
+    })().catch(err => sendCaughtError(res, err));
+    return;
+  }
+
+  // Purge user (permanently delete cpx- account + DB entry)
+  if (req.method === 'POST' && pathname === '/api/admin/purge') {
+    (async () => {
+      const u = requireAdmin(req, res); if (!u) return;
+      const body = await readBody(req);
+      const { email } = JSON.parse(body);
+      const target = userStore.findByEmail(email);
+      if (!target) return sendError(res, 404, 'User not found');
+      if (target.status !== 'deactivated') return sendError(res, 400, 'User must be deactivated before purging');
+      if (target.linux_user && target.linux_user.startsWith('cpx-')) {
+        try { purgeAccount(target.linux_user); } catch (e) { /* best effort */ }
+      }
+      userStore.deleteUser(email);
+      sendJson(res, 200, { ok: true });
+    })().catch(err => sendCaughtError(res, err));
+    return;
+  }
+
+  // Edit Linux username
+  if (req.method === 'PATCH' && pathname.startsWith('/api/admin/user/') && pathname.endsWith('/linux-user')) {
+    (async () => {
+      const u = requireAdmin(req, res); if (!u) return;
+      const email = decodeURIComponent(pathname.split('/')[4]);
+      const target = userStore.findByEmail(email);
+      if (!target) return sendError(res, 404, 'User not found');
+      const body = await readBody(req);
+      const { linux_user } = JSON.parse(body);
+      if (!linux_user || !linux_user.startsWith('cp-')) return sendError(res, 400, 'Username must start with cp-');
+      // Check for conflicts
+      const existing = userStore.findByLinuxUser(linux_user);
+      if (existing && existing.email !== email) return sendError(res, 409, 'Linux user "' + linux_user + '" already assigned to ' + existing.email);
+      userStore.setLinuxUser(email, linux_user);
+      sendJson(res, 200, { ok: true });
+    })().catch(err => sendCaughtError(res, err));
+    return;
+  }
+
+  // Merge users
+  if (req.method === 'POST' && pathname === '/api/admin/merge') {
+    (async () => {
+      const u = requireAdmin(req, res); if (!u) return;
+      const body = await readBody(req);
+      const { sourceEmail, targetEmail } = JSON.parse(body);
+      if (!sourceEmail || !targetEmail) return sendError(res, 400, 'sourceEmail and targetEmail required');
+      if (sourceEmail === targetEmail) return sendError(res, 400, 'Cannot merge user into themselves');
+      const source = userStore.findByEmail(sourceEmail);
+      const target = userStore.findByEmail(targetEmail);
+      if (!source) return sendError(res, 404, 'Source user not found');
+      if (!target) return sendError(res, 404, 'Target user not found');
+      userStore.mergeUser(sourceEmail, targetEmail);
+      sendJson(res, 200, { ok: true });
+    })().catch(err => sendCaughtError(res, err));
+    return;
+  }
+
+  // Add user manually
+  if (req.method === 'POST' && pathname === '/api/admin/add-user') {
+    (async () => {
+      const u = requireAdmin(req, res); if (!u) return;
+      const body = await readBody(req);
+      const { email, display_name, linux_user, status, is_admin } = JSON.parse(body);
+      if (!email) return sendError(res, 400, 'Email required');
+      if (userStore.findByEmail(email)) return sendError(res, 409, 'User already exists');
+      if (linux_user && !linux_user.startsWith('cp-')) return sendError(res, 400, 'Username must start with cp-');
+      if (linux_user) {
+        const existing = userStore.findByLinuxUser(linux_user);
+        if (existing) return sendError(res, 409, 'Linux user "' + linux_user + '" already assigned to ' + existing.email);
+      }
+      const userStatus = status === 'approved' ? 'approved' : 'pending';
+      userStore.db.prepare(
+        'INSERT INTO users (email, display_name, linux_user, status, approved_by, can_approve_users, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(email, display_name || email.split('@')[0], linux_user || null, userStatus, u.email || 'root', is_admin ? 1 : 0, new Date().toISOString());
+      // Create Linux account if approved and username provided
+      if (userStatus === 'approved' && linux_user) {
+        if (!userExists(linux_user)) {
+          createSystemAccount(linux_user, display_name || email.split('@')[0]);
+        }
+        addToGroup(linux_user, 'users');
+      }
+      sendJson(res, 200, { ok: true });
+    })().catch(err => sendCaughtError(res, err));
     return;
   }
 
@@ -1788,18 +2322,20 @@ function router(req, res) {
     if (!user) return;
   }
 
+  if (pathname === '/admin-client.mjs') return serveJs(req, res, 'admin-client.mjs');
+
   if (req.method === 'POST' && pathname === '/api/sessions/create') {
-    handleCreateSession(req, res).catch(err => sendError(res, 500, err.message));
+    handleCreateSession(req, res).catch(err => sendCaughtError(res, err));
     return;
   }
 
   if (req.method === 'POST' && pathname === '/api/sessions/restart') {
-    handleRestartSession(req, res).catch(err => sendError(res, 500, err.message));
+    handleRestartSession(req, res).catch(err => sendCaughtError(res, err));
     return;
   }
 
   if (req.method === 'POST' && pathname === '/api/sessions/fork') {
-    handleForkSession(req, res).catch(err => sendError(res, 500, err.message));
+    handleForkSession(req, res).catch(err => sendCaughtError(res, err));
     return;
   }
 
@@ -1811,15 +2347,23 @@ function router(req, res) {
       pathname === '/api/cp/dead-sessions')
   ) {
     if (pathname === '/api/cp/dead-sessions') {
-      handleCpDeadSessions(req, res).catch(err => sendError(res, 500, err.message));
+      handleCpDeadSessions(req, res).catch(err => sendCaughtError(res, err));
     } else {
-      handleCpPicklist(req, res, pathname).catch(err => sendError(res, 500, err.message));
+      handleCpPicklist(req, res, pathname).catch(err => sendCaughtError(res, err));
     }
     return;
   }
 
   if (req.method === 'GET') {
     if (pathname === '/') {
+      if (AUTH_ENABLED) {
+        const user = getAuthUser(req);
+        if (!user || user.status !== 'approved') {
+          res.writeHead(302, { Location: '/login' });
+          res.end();
+          return;
+        }
+      }
       return handleRoot(req, res);
     }
     if (pathname === '/terminal.svg') {
@@ -1830,6 +2374,8 @@ function router(req, res) {
         const content = readFileSync(staticPath('terminal.html'));
         setCors(res);
         res.setHeader('Content-Type', 'text/html');
+        res.setHeader('Content-Security-Policy', CSP_HEADER);
+        res.setHeader('X-Content-Type-Options', 'nosniff');
         res.writeHead(200);
         res.end(content);
       } catch (err) {
@@ -1838,16 +2384,21 @@ function router(req, res) {
       return;
     }
     if (pathname === '/api/pane') {
-      handlePane(req, res, url.searchParams).catch(err => sendError(res, 500, err.message));
+      handlePane(req, res, url.searchParams).catch(err => sendCaughtError(res, err));
       return;
     }
+    // STUB — TO BE FINISHED/COMPLETED: layout persistence per authenticated user.
+    // Currently stores layout as JSON file keyed by user email.
+    // Future: richer profile system with preferences, theme, default sessions.
     if (pathname === '/api/layout') {
       setCors(res);
-      const uid = url.searchParams.get('uid');
-      if (!uid || !/^[a-zA-Z0-9_-]+$/.test(uid)) { sendError(res, 400, 'Invalid uid'); return; }
+      const user = getAuthUser(req);
+      if (!user) { sendJson(res, 200, {}); return; }
+      // Use user email as profile key (sanitized for filesystem)
+      const safeKey = user.email.replace(/[^a-zA-Z0-9@._-]/g, '_');
       const profileDir = staticPath('profiles');
-      if (!existsSync(profileDir)) mkdirSync(profileDir, { recursive: true });
-      const profilePath = profileDir + '/' + uid + '.json';
+      if (!existsSync(profileDir)) mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+      const profilePath = profileDir + '/' + safeKey + '.json';
 
       if (req.method === 'GET') {
         try {
@@ -1861,27 +2412,31 @@ function router(req, res) {
         return;
       }
       if (req.method === 'POST') {
-        let body = '';
-        req.on('data', chunk => { body += chunk; });
-        req.on('end', () => {
+        (async () => {
           try {
+            const body = await readBody(req);
             JSON.parse(body); // validate JSON
-            writeFileSync(profilePath, body);
+            writeFileSync(profilePath, body, { mode: 0o600 });
             sendJson(res, 200, { ok: true });
           } catch (err) {
-            sendError(res, 400, 'Invalid JSON: ' + err.message);
+            sendCaughtError(res, err);
           }
-        });
+        })();
         return;
       }
       sendError(res, 405, 'GET or POST only');
       return;
     }
     if (pathname === '/api/sessions') {
-      handleSessions(req, res).catch(err => sendError(res, 500, err.message));
+      handleSessions(req, res).catch(err => sendCaughtError(res, err));
       return;
     }
     if (pathname === '/api/proxy') {
+      // When AUTH_ENABLED: admin-only. When AUTH_ENABLED=false (dev mode): proxy stays open (matches existing dev behavior).
+      if (AUTH_ENABLED) {
+        const proxyUser = requireAdmin(req, res);
+        if (!proxyUser) return;
+      }
       handleProxy(req, res, url.searchParams);
       return;
     }
@@ -1893,6 +2448,8 @@ function router(req, res) {
         const content = readFileSync(staticPath('font-test.html'));
         setCors(res);
         res.setHeader('Content-Type', 'text/html');
+        res.setHeader('Content-Security-Policy', CSP_HEADER);
+        res.setHeader('X-Content-Type-Options', 'nosniff');
         res.writeHead(200);
         res.end(content);
       } catch (err) {
@@ -1938,11 +2495,6 @@ function router(req, res) {
     }
   }
 
-  if (req.method === 'POST' && pathname === '/api/input') {
-    handleInput(req, res).catch(err => sendError(res, 500, err.message));
-    return;
-  }
-
   setCors(res);
   res.writeHead(404);
   res.end(JSON.stringify({ error: 'Not found' }));
@@ -1960,38 +2512,44 @@ server.on('upgrade', async (req, socket, head) => {
   const url = new URL(req.url, 'http://localhost');
   const remoteIp = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   process.stderr.write(`[WS] ${remoteIp} UPGRADE ${url.pathname}\n`);
+
+  // WebSocket auth: token-based (Origin check removed — Cloudflare tunnel rewrites Origin to internal IP)
+  // WebSocket auth check: parse session cookie or query string token
+  if (AUTH_ENABLED) {
+    const cookieHeader = req.headers.cookie || '';
+    const match = cookieHeader.match(new RegExp(COOKIE_NAME + '=([^;]+)'));
+    const wsTokenMatch = cookieHeader.match(/cp_ws_token=([^;]+)/);
+    const queryToken = url.searchParams.get('token');
+    const token = match ? match[1] : (wsTokenMatch ? wsTokenMatch[1] : (queryToken || null));
+    const payload = token ? validateSessionCookie(token, AUTH_SECRET) : null;
+    if (!payload) {
+      process.stderr.write(`[WS] ${remoteIp} Unauthorized for ${url.pathname} | cookie: ${!!match} | wsToken: ${!!wsTokenMatch} | queryToken: ${!!queryToken} | url: ${url.search}\n`);
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    const user = userStore.findByEmail(payload.email);
+    if (!user || user.status !== 'approved') {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+  }
+
   if (url.pathname === '/ws/dashboard') {
     wss.handleUpgrade(req, socket, head, (ws) => {
       handleDashboardWs(ws, req).catch(err => {
-        process.stderr.write('Dashboard WS error: ' + err.message + '\n');
+        process.stderr.write('Dashboard WS error: ' + (err && err.message || err) + '\n');
         try { ws.close(); } catch {}
       });
     });
     return;
   }
   if (url.pathname === '/ws/terminal') {
-    // DEPRECATED (PRD v0.5.0 §3.4): Per-card WebSocket, replaced by /ws/dashboard
-    // Kept for old sessions during transition.
-    const session = url.searchParams.get('session');
-    const pane = url.searchParams.get('pane') || '0';
-    if (!session || !validateParam(session) || !validateParam(pane)) {
-      socket.destroy();
-      return;
-    }
-
-    // Check if session is in local tmux. If not, proxy to claude-proxy API.
-    let isLocal = false;
-    try { await tmuxAsync('has-session', '-t', session); isLocal = true; } catch (e) {}
-
-    if (isLocal) {
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        handleTerminalWs(ws, session, pane);
-      });
-    } else {
-      wss.handleUpgrade(req, socket, head, (clientWs) => {
-        attachCpToTerminalWs(clientWs, session, CP_DEFAULT_USER);
-      });
-    }
+    process.stderr.write(`[WS] ${remoteIp} REJECTED deprecated /ws/terminal\n`);
+    socket.write('HTTP/1.1 410 Gone\r\n\r\n');
+    socket.destroy();
+    return;
   } else {
     socket.destroy();
   }

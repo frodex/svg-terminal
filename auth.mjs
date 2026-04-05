@@ -2,8 +2,12 @@ import * as oidc from 'openid-client';
 import { randomBytes } from 'node:crypto';
 
 const pendingStates = new Map();
+const MAX_PENDING_STATES = 1000;
 
 function generateState(provider) {
+  if (pendingStates.size >= MAX_PENDING_STATES) {
+    throw new Error('Too many pending authentication requests. Please try again later.');
+  }
   const state = randomBytes(24).toString('base64url');
   pendingStates.set(state, { provider, expires: Date.now() + 600000 });
   return state;
@@ -60,8 +64,10 @@ async function githubExchange(code, config) {
   });
   const emails = await emailRes.json();
   const primary = emails.find(e => e.primary && e.verified);
-  const email = primary?.email || user.email;
-  if (!email) throw new Error('No verified email found on GitHub account');
+  if (!primary || !primary.email) {
+    throw new Error('No verified primary email found on GitHub account. Please verify your email on GitHub and try again.');
+  }
+  const email = primary.email;
   return { email, displayName: user.name || user.login, providerId: String(user.id) };
 }
 
@@ -98,7 +104,10 @@ export async function handleCallback(callbackUrl, query, providers) {
   const config = providers[provider];
   if (!config) throw new Error('Provider "' + provider + '" not configured');
   const oidcConfig = await getOidcConfig(provider, config, callbackUrl);
-  const currentUrl = new URL(callbackUrl + '?code=' + code + '&state=' + state);
+  const currentUrl = new URL(callbackUrl);
+  currentUrl.searchParams.set('code', code);
+  currentUrl.searchParams.set('state', state);
+  if (query.iss) currentUrl.searchParams.set('iss', query.iss);
   const tokenResponse = await oidc.authorizationCodeGrant(oidcConfig, currentUrl, { expectedState: state });
   const claims = tokenResponse.claims();
   if (!claims) throw new Error('No ID token claims');

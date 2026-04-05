@@ -122,97 +122,19 @@ test('cache-control no-cache on API responses', async () => {
   assert.equal(res.headers.get('cache-control'), 'no-cache');
 });
 
-// Input API tests
+// Input API tests removed — /api/input endpoint deleted (Task 3, session authz hardening)
+// /ws/terminal tests removed — endpoint returns 410 Gone (Task 8, session authz hardening)
 
-test('rejects invalid session in input', async () => {
-  const res = await fetch(`${BASE}/api/input`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session: 'foo;rm -rf', pane: '0', keys: 'test' }),
+test('WebSocket /ws/terminal returns 410 Gone', async () => {
+  // The per-card terminal WS endpoint is deprecated; server rejects with 410
+  const ws = new WebSocket('ws://127.0.0.1:' + TEST_PORT + '/ws/terminal?session=test&pane=0');
+  const closeCode = await new Promise((resolve) => {
+    ws.onerror = () => {};
+    ws.onclose = (e) => resolve(e.code);
+    setTimeout(() => resolve('timeout'), 3000);
   });
-  assert.equal(res.status, 400);
-});
-
-test('rejects GET on input endpoint', async () => {
-  const res = await fetch(`${BASE}/api/input`);
-  assert.equal(res.status, 404);
-});
-
-test('sends keys to a real tmux session', async () => {
-  const { execSync } = await import('node:child_process');
-  execSync('tmux new-session -d -s svg-test-input');
-  try {
-    const res = await fetch(`${BASE}/api/input`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session: 'svg-test-input', pane: '0', keys: 'echo hello' }),
-    });
-    const data = await res.json();
-    assert.equal(res.status, 200);
-    assert.equal(data.ok, true);
-  } finally {
-    execSync('tmux kill-session -t svg-test-input');
-  }
-});
-
-test('rejects invalid special key', async () => {
-  const res = await fetch(`${BASE}/api/input`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session: 'anything', pane: '0', specialKey: 'Evil-Key' }),
-  });
-  assert.equal(res.status, 400);
-});
-
-test('WebSocket /ws/terminal connects and receives screen event', async () => {
-  const sessRes = await get('/api/sessions');
-  const sessions = await sessRes.json();
-  if (sessions.length === 0) return;
-  const session = sessions[0].name;
-
-  const ws = new WebSocket('ws://127.0.0.1:' + TEST_PORT + '/ws/terminal?session=' + session + '&pane=0');
-
-  const firstMsg = await new Promise((resolve, reject) => {
-    ws.onmessage = (e) => resolve(JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString()));
-    ws.onerror = () => reject(new Error('WebSocket error'));
-    setTimeout(() => reject(new Error('Timeout')), 5000);
-  });
-
-  assert.equal(firstMsg.type, 'screen');
-  assert.ok(typeof firstMsg.width === 'number');
-  assert.ok(typeof firstMsg.height === 'number');
-  assert.ok(Array.isArray(firstMsg.lines));
-  assert.ok(firstMsg.cursor);
-
-  ws.close();
-});
-
-test('WebSocket input sends keys and receives update', async () => {
-  const sessRes = await get('/api/sessions');
-  const sessions = await sessRes.json();
-  if (sessions.length === 0) return;
-  const session = sessions[0].name;
-
-  const ws = new WebSocket('ws://127.0.0.1:' + TEST_PORT + '/ws/terminal?session=' + session + '&pane=0');
-
-  await new Promise((resolve, reject) => {
-    ws.onmessage = (e) => {
-      const msg = JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString());
-      if (msg.type === 'screen') resolve();
-    };
-    ws.onerror = () => reject(new Error('WebSocket error'));
-    setTimeout(() => reject(new Error('Timeout')), 5000);
-  });
-
-  ws.send(JSON.stringify({ type: 'input', keys: ' ' }));
-
-  const response = await new Promise((resolve, reject) => {
-    ws.onmessage = (e) => resolve(JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString()));
-    setTimeout(() => reject(new Error('No response after input')), 2000);
-  });
-
-  assert.ok(response.type === 'screen' || response.type === 'delta');
-  ws.close();
+  // WebSocket will get a non-101 response, which triggers an error/close
+  assert.ok(closeCode !== 'timeout', 'Connection should be rejected, not hang');
 });
 
 test('GET /api/pane returns metadata fields', async () => {
@@ -233,97 +155,7 @@ test('GET /api/pane returns metadata fields', async () => {
   }
 });
 
-test('WebSocket resize message is processed by server', async () => {
-  // This test verifies the server processes resize messages without error.
-  // Note: tmux may not actually change dimensions if the pane is attached to a
-  // larger terminal — tmux clamps pane size to the smallest attached client.
-  // We verify the server responds with a screen (not an error) after resize.
-  const sessRes = await get('/api/sessions');
-  const sessions = await sessRes.json();
-  if (sessions.length === 0) return;
-  const session = sessions[0].name;
-
-  const ws = new WebSocket('ws://127.0.0.1:' + TEST_PORT + '/ws/terminal?session=' + session + '&pane=0');
-
-  // Wait for initial screen
-  const first = await new Promise((resolve, reject) => {
-    ws.onmessage = (e) => {
-      const msg = JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString());
-      if (msg.type === 'screen') resolve(msg);
-    };
-    setTimeout(() => reject(new Error('Timeout')), 5000);
-  });
-
-  assert.ok(typeof first.width === 'number');
-  assert.ok(typeof first.height === 'number');
-
-  // Send resize — server should not crash and should send a screen response
-  ws.send(JSON.stringify({ type: 'resize', cols: 120, rows: 35 }));
-
-  const response = await new Promise((resolve, reject) => {
-    ws.onmessage = (e) => {
-      const msg = JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString());
-      if (msg.type === 'screen' || msg.type === 'delta') resolve(msg);
-    };
-    setTimeout(() => reject(new Error('No response after resize')), 3000);
-  });
-
-  // Server sent a screen or delta — no error, resize was handled
-  assert.ok(response.type === 'screen' || response.type === 'delta',
-    'Expected screen or delta response after resize');
-
-  ws.close();
-});
-
-test('resize lock prevents second browser from overwriting first resize', async () => {
-  // Create a dedicated tmux session for this test
-  try { execSync('tmux kill-session -t resize-test 2>/dev/null'); } catch {}
-  execSync('tmux new-session -d -s resize-test -x 80 -y 24');
-
-  try {
-    const wsUrl = 'ws://127.0.0.1:' + TEST_PORT + '/ws/terminal?session=resize-test&pane=0';
-
-    // Open two WebSocket connections to the same session
-    const ws1 = new WebSocket(wsUrl);
-    const ws2 = new WebSocket(wsUrl);
-
-    // Wait for both to receive initial screen
-    const waitForScreen = (ws) => new Promise((resolve, reject) => {
-      ws.onmessage = (e) => {
-        const msg = JSON.parse(typeof e.data === 'string' ? e.data : e.data.toString());
-        if (msg.type === 'screen') resolve(msg);
-      };
-      ws.onerror = () => reject(new Error('WebSocket error'));
-      setTimeout(() => reject(new Error('Timeout waiting for screen')), 5000);
-    });
-
-    await Promise.all([waitForScreen(ws1), waitForScreen(ws2)]);
-
-    // WS1 sends a resize
-    ws1.send(JSON.stringify({ type: 'resize', cols: 100, rows: 30 }));
-
-    // Wait for resize to take effect
-    await new Promise(r => setTimeout(r, 50));
-
-    // WS2 sends a different resize — should be rejected by lock
-    ws2.send(JSON.stringify({ type: 'resize', cols: 60, rows: 15 }));
-
-    // Wait for any processing
-    await new Promise(r => setTimeout(r, 100));
-
-    // Check tmux dimensions — should be 100x30 (WS1's resize), not 60x15
-    const output = execSync("tmux display-message -t resize-test -p '#{window_width} #{window_height}'").toString().trim();
-    const [width, height] = output.split(' ').map(Number);
-
-    assert.equal(width, 100, `Expected width 100 (WS1), got ${width} — lock did not prevent WS2 overwrite`);
-    assert.equal(height, 30, `Expected height 30 (WS1), got ${height} — lock did not prevent WS2 overwrite`);
-
-    ws1.close();
-    ws2.close();
-  } finally {
-    try { execSync('tmux kill-session -t resize-test 2>/dev/null'); } catch {}
-  }
-});
+// WebSocket resize + resize-lock tests removed — /ws/terminal returns 410 (Task 8)
 
 // ---------------------------------------------------------------------------
 // DashboardSocket tests

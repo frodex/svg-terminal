@@ -16,33 +16,117 @@
     .btn { padding: 6px 14px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px; }
     .btn-approve { background: #2d6a4f; color: #fff; }
     .btn-deny { background: #6a2d2d; color: #fff; }
+    .btn-deactivate { background: #8b6622; color: #fff; }
+    .btn-deactivate:hover { background: #a07830; }
+    .btn-reactivate { background: #2d6a4f; color: #fff; }
+    .btn-reactivate:hover { background: #3d8b6a; }
+    .btn-purge { background: #8b2222; color: #fff; }
+    .btn-purge:hover { background: #a03030; }
+    .btn-delete { background: #8b2222; color: #fff; }
+    .btn-merge { background: #4a4a2e; color: #fff; }
+    .btn-edit { background: transparent; color: #999; border: 1px solid #333; }
     .btn-approve:hover { background: #3d8b6a; }
     .btn-deny:hover { background: #8b3d3d; }
+    .btn-delete:hover { background: #a03030; }
+    .btn-merge:hover { background: #6a6a3e; }
+    .btn-edit:hover { color: #e0e0e0; border-color: #666; }
+    .flag-toggle { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 0.75rem;
+                   cursor: pointer; margin: 1px 2px; border: none; }
+    .flag-on { background: #2d6a4f; color: #fff; }
+    .flag-off { background: #333; color: #666; }
+    .flag-toggle:hover { opacity: 0.8; }
+    .inline-edit { display: inline-flex; align-items: center; gap: 4px; }
+    .inline-edit input { background: #1a1a2e; color: #e0e0e0; border: 1px solid #4285f4; border-radius: 3px;
+                         padding: 2px 6px; font-family: monospace; font-size: 0.8rem; width: 120px; }
+    .inline-edit .btn { padding: 2px 8px; font-size: 0.75rem; }
+    .note { color: #888; font-size: 0.75rem; font-style: italic; }
+    .form-row { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+    .form-row label { color: #999; font-size: 0.8rem; min-width: 80px; }
+    .form-row input, .form-row select { background: #1a1a2e; color: #e0e0e0; border: 1px solid #333;
+                                         border-radius: 4px; padding: 6px 10px; font-size: 0.85rem; }
+    .form-row input:focus, .form-row select:focus { border-color: #4285f4; outline: none; }
+    .form-row input[type="checkbox"] { width: auto; }
     textarea { width: 100%; height: 80px; background: #1a1a2e; color: #e0e0e0; border: 1px solid #333;
                border-radius: 4px; padding: 8px; font-family: monospace; font-size: 0.85rem; resize: vertical; }
     .submit { margin-top: 8px; padding: 8px 20px; background: #4285f4; color: #fff; border: none;
               border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
     .submit:hover { background: #5a9bf4; }
     .empty { color: #666; font-style: italic; padding: 12px; }
+    .cp-prefix { color: #666; font-family: monospace; font-size: 0.8rem; }
+    .username-input { background: #1a1a2e; color: #e0e0e0; border: 1px solid #333; border-radius: 3px;
+                      padding: 3px 6px; font-family: monospace; font-size: 0.8rem; }
+    .username-input:focus { border-color: #4285f4; outline: none; }
+    .btn-auto { background: transparent; color: #999; border: 1px solid #333; padding: 3px 6px; font-size: 0.8rem;
+                cursor: pointer; border-radius: 3px; margin-left: 2px; }
+    .btn-auto:hover { color: #e0e0e0; border-color: #666; }
+    .provider-tag { display: inline-block; background: #2a2a4a; border-radius: 3px; padding: 2px 8px;
+                    font-size: 0.75rem; margin: 1px 2px; white-space: nowrap; }
+    .btn-unlink { background: none; border: none; color: #a44; cursor: pointer; font-size: 0.85rem;
+                  padding: 0 2px; margin-left: 2px; }
+    .btn-unlink:hover { color: #f66; }
+    .lookup-result { font-size: 0.75rem; margin-top: 2px; min-height: 1em; }
+    .lookup-free { color: #4caf50; }
+    .lookup-taken { color: #ff9800; }
+    .lookup-warn { color: #f44336; }
     a.back { color: #4285f4; text-decoration: none; font-size: 0.9rem; }
     a.back:hover { text-decoration: underline; }
+    .section-info { color: #777; font-size: 0.78rem; margin-bottom: 10px; line-height: 1.5; }
+    .info-icon { display: inline-block; width: 16px; height: 16px; border-radius: 50%; background: #2a2a4a;
+                 color: #999; font-size: 0.7rem; text-align: center; line-height: 16px; cursor: help;
+                 margin-left: 6px; vertical-align: middle; font-style: italic; }
+    .info-icon:hover { background: #3a3a5a; color: #ccc; }
   </style>
 </head>
 <body>
   <a class="back" href="/">&#8592; Back to Dashboard</a>
   <h1>User Management</h1>
   <div class="section">
-    <h2>Pending Requests</h2>
+    <h2>Pending Requests <span class="info-icon" title="Users who have signed in via OAuth but have not been approved yet. You can edit the Linux username before approving, check if a name is taken, or merge into an existing account.">i</span></h2>
+    <p class="section-info">Approve or deny new sign-in requests. Edit the <code>cp-</code> username before approving. Use <strong>[check existing]</strong> to look up a name, <strong>[auto-generate]</strong> to reset.</p>
     <div id="pending-list"><span class="empty">Loading...</span></div>
   </div>
   <div class="section">
-    <h2>Pre-Approve by Email</h2>
+    <h2>Pre-Approve by Email <span class="info-icon" title="Add email addresses before users sign in. When they sign in for the first time, they skip the pending queue and go straight to the dashboard.">i</span></h2>
+    <p class="section-info">Enter email addresses of users you want to approve in advance. They will be auto-approved on first OAuth sign-in.</p>
     <textarea id="pre-emails" placeholder="Enter email addresses, one per line"></textarea>
     <button class="submit" id="pre-approve-btn">Pre-Approve</button>
   </div>
   <div class="section">
-    <h2>All Users</h2>
+    <h2>Add User Manually <span class="info-icon" title="Create a user account without requiring OAuth sign-in. If status is Approved and a username is provided, the Linux account is created immediately.">i</span></h2>
+    <p class="section-info">Create a user directly. All Linux usernames use the <code>cp-</code> prefix. If approved, the Linux account is created on save.</p>
+    <div class="form-row">
+      <label>Email</label>
+      <input type="email" id="add-email" placeholder="user@example.com" size="28">
+      <label>Display Name</label>
+      <input type="text" id="add-name" placeholder="(optional)" size="18">
+    </div>
+    <div class="form-row">
+      <label>Linux User</label>
+      <span class="cp-prefix">cp-</span><input type="text" id="add-linux" placeholder="username" size="14">
+      <label>Status</label>
+      <select id="add-status"><option value="approved">Approved</option><option value="pending">Pending</option></select>
+      <label><input type="checkbox" id="add-admin"> Admin</label>
+    </div>
+    <button class="submit" id="add-user-btn">Add User</button>
+  </div>
+  <div class="section">
+    <h2>All Users <span class="info-icon" title="Manage active users. Toggle permission flags, edit Linux username mappings, merge accounts, or deactivate users. Deactivated users move to the section below.">i</span></h2>
+    <p class="section-info">
+      <strong>Flags:</strong>
+      <em>approve users</em> — can approve/deny pending requests.
+      <em>approve admins</em> — can grant "approve users" to others.
+      <em>grant sudo</em> — can grant all permissions including itself.
+      Click a flag to toggle.
+      <strong>Providers:</strong> OAuth login methods linked to this account. × to unlink (cannot remove last one).
+      <strong>Merge:</strong> combine two accounts — provider links move to the target, source is deleted.
+      <strong>Deactivate:</strong> soft-delete — renames account to <code>cpx-</code>, removes logins, preserves data.
+    </p>
     <div id="user-list"><span class="empty">Loading...</span></div>
+  </div>
+  <div class="section">
+    <h2>Deactivated Users <span class="info-icon" title="Deactivated accounts are soft-deleted: Linux account renamed cp-* → cpx-*, login removed, data preserved. Reactivate restores the account as pending (must re-authenticate). Purge permanently deletes the account and all data.">i</span></h2>
+    <p class="section-info"><strong>Reactivate:</strong> restores <code>cpx-</code> → <code>cp-</code>, sets status to pending — user must sign in again and be re-approved. <strong>Purge:</strong> permanently deletes the Linux account, home directory, and all database records. Cannot be undone.</p>
+    <div id="deactivated-list"><span class="empty">Loading...</span></div>
   </div>
   <script src="/admin-client.mjs" type="module"></script>
 </body>

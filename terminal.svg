@@ -315,84 +315,11 @@
       }
 
       // -----------------------------------------------------------------------
-      // WebSocket
+      // WebSocket — REMOVED (Task 8, session authz hardening)
+      // Per-card /ws/terminal removed. Dashboard's shared WS pushes screen
+      // data via renderMessage(); input routed via cpRequest('input').
+      // ws variable and useWebSocket kept for sendToWs() fallback detection.
       // -----------------------------------------------------------------------
-      function connectWebSocket() {
-        var proto = (location.protocol === 'https:') ? 'wss:' : 'ws:';
-        var host = SERVER ? SERVER.replace(/^https?:\/\//, '') : location.host;
-        var wsUrl = proto + '//' + host + '/ws/terminal?session=' + encodeURIComponent(SESSION) + '&pane=' + encodeURIComponent(PANE);
-
-        ws = new WebSocket(wsUrl);
-
-        ws.onopen = function() {
-          useWebSocket = true;
-          window._wsReady = true;
-          if (pollTimer !== null) {
-            clearTimeout(pollTimer);
-            pollTimer = null;
-          }
-          hideError();
-        };
-
-        ws.onmessage = function(e) {
-          // If shared WS (renderMessage) is active, skip per-card WS rendering
-          // to prevent two capture streams from fighting (PRD v0.5.0)
-          if (_sharedWsActive) return;
-          var msg = JSON.parse(e.data);
-
-          if (msg.type === 'screen') {
-            if (!initialized || columns !== msg.width || rows !== msg.height) {
-              initLayout(msg.width, msg.height);
-            }
-            allLines = msg.lines;
-            for (var i = 0; i < msg.lines.length; i++) {
-              updateLine(i, msg.lines[i].spans);
-              prevState[i] = JSON.stringify(msg.lines[i].spans);
-            }
-            rebuildBgLayer(msg.lines); rebuildLinkLayer(msg.lines);
-            if (msg.cursor) {
-              cursorEl.setAttribute('x', (msg.cursor.x * CELL_W).toFixed(2));
-              cursorEl.setAttribute('y', msg.cursor.y * CELL_H);
-            }
-            hideError();
-            try { if (window._screenCallback) window._screenCallback(msg); } catch(e) {}
-
-          } else if (msg.type === 'delta') {
-            var keys = Object.keys(msg.changed);
-            for (var k = 0; k < keys.length; k++) {
-              var idx = parseInt(keys[k]);
-              var lineData = msg.changed[keys[k]];
-              var spans = lineData.spans || lineData;
-              updateLine(idx, spans);
-              allLines[idx] = { spans: spans };
-              prevState[idx] = JSON.stringify(spans);
-            }
-            if (keys.length > 0) { rebuildBgLayer(allLines); rebuildLinkLayer(allLines); }
-            if (msg.cursor) {
-              cursorEl.setAttribute('x', (msg.cursor.x * CELL_W).toFixed(2));
-              cursorEl.setAttribute('y', msg.cursor.y * CELL_H);
-            }
-            try { if (window._screenCallback) window._screenCallback(msg); } catch(e) {}
-            hideError();
-
-          } else if (msg.type === 'error') {
-            showError();
-          }
-        };
-
-        ws.onclose = function() {
-          useWebSocket = false;
-          window._wsReady = false;
-          ws = null;
-          // DISABLED: HTTP poll fallback removed — shared WS handles data (PRD v0.5.0)
-          // if (pollTimer === null) schedulePoll(pollInterval);
-          wsReconnectTimer = setTimeout(connectWebSocket, 2000);
-        };
-
-        ws.onerror = function() {
-          // onclose fires after onerror — reconnect handled there
-        };
-      }
 
       // -----------------------------------------------------------------------
       // DEPRECATED (PRD v0.5.0): HTTP polling fallback
@@ -717,10 +644,8 @@
       // Start
       // -----------------------------------------------------------------------
       if (SESSION) {
-        connectWebSocket();
-        // REMOVED: schedulePoll(pollInterval) safety net — caused 500 error flood on cp-* sessions
-        // that don't exist in local tmux. WebSocket (per-card or shared) handles data delivery.
-        // Old sessions without WebSocket won't get HTTP polling fallback anymore.
+        // Per-card /ws/terminal removed (Task 8). Dashboard shared WS
+        // delivers screen data via renderMessage(). Nothing to start here.
       } else if (!SESSION) {
         startPolling(150);
       }
