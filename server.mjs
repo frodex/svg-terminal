@@ -355,7 +355,7 @@ function attachCpToTerminalWs(clientWs, sessionId, linuxUser) {
     } catch (e) {
       process.stderr.write('[ws/terminal] input error: ' + (e.message || e) + '\n');
       if (clientWs.readyState === 1) {
-        clientWs.send(JSON.stringify({ type: 'error', message: 'Input processing error' }));
+        clientWs.send(JSON.stringify({ type: 'error', message: 'Input processing error [attachCpToTerminalWs]' }));
       }
     }
   });
@@ -401,11 +401,17 @@ function sendError(res, status, message) {
 
 function handleRoot(req, res) {
   try {
-    const content = readFileSync(staticPath('index.html'));
+    let content = readFileSync(staticPath('index.html'), 'utf8');
+    // Inject version hash as cache buster on dashboard.mjs — forces reload when server code changes
+    content = content.replace(
+      'src="/dashboard.mjs"',
+      'src="/dashboard.mjs?v=' + CLIENT_VERSION + '"'
+    );
     setCors(res);
     res.setHeader('Content-Type', 'text/html');
     res.setHeader('Content-Security-Policy', CSP_HEADER);
     res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'no-cache');
     res.writeHead(200);
     res.end(content);
   } catch (err) {
@@ -1212,6 +1218,7 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
   }
 
   // Phase 1: Send session-add messages for all sessions (cards appear in browser)
+  process.stderr.write('[WS] Discovery: ' + sessions.length + ' sessions for ' + cpUser + '\n');
   for (const s of sessions) {
     if (knownSessions.has(s.name)) continue;
     knownSessions.add(s.name);
@@ -1293,6 +1300,8 @@ async function handleDashboardWs(ws, req) {
   ws._userEmail = user.email;  // For force-relogin (Task 13) to find WS by user
   const knownSessions = new Set();
   const cpUserDash = user.linux_user || CP_DEFAULT_USER;
+
+  process.stderr.write('[WS] Dashboard connected for ' + user.email + ' (linux_user=' + cpUserDash + ')\n');
 
   // Send server version — client compares and shows update banner if mismatched
   if (ws.readyState === 1) {
@@ -1543,9 +1552,10 @@ async function handleDashboardWs(ws, req) {
         setTimeout(() => triggerCapture(session, pane), 5);
       }
     } catch (err) {
-      process.stderr.write('[ws/dashboard] input error: ' + (err.message || err) + '\n');
+      console.error('[ws/dashboard] input error:', err);
+      writeFileSync('/tmp/svg-terminal-ws-error.log', new Date().toISOString() + ' ' + (err.stack || err.message || String(err)) + '\n', { flag: 'a' });
       if (ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'error', message: 'Input processing error' }));
+        ws.send(JSON.stringify({ type: 'error', message: 'Input processing error: ' + (err.message || String(err)).slice(0, 100) }));
       }
     }
   });
@@ -1705,9 +1715,9 @@ async function handleTerminalWs(ws, session, pane) {
         setTimeout(captureAndPush, 5);
       }
     } catch (err) {
-      process.stderr.write('[ws/terminal] input error: ' + (err.message || err) + '\n');
+      console.error('[ws/terminal-legacy] input error:', err);
       if (ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'error', message: 'Input processing error' }));
+        ws.send(JSON.stringify({ type: 'error', message: 'Input processing error [handleTerminalWs]' }));
       }
     }
   });
