@@ -624,6 +624,36 @@ html, body {
   border: 2px solid rgba(120, 120, 130, 0.85);
 }
 
+/* Drop zone overlay — shown during moveCard drag over focused layout */
+.drop-zone-overlay {
+  position: fixed;
+  top: 44px;
+  left: 0;
+  right: 140px;
+  bottom: 50px;
+  pointer-events: none;
+  z-index: 240;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.drop-zone-overlay.visible {
+  opacity: 1;
+}
+.drop-zone {
+  position: absolute;
+  box-sizing: border-box;
+  border-radius: 10px;
+  border: 2px dashed rgba(255, 255, 255, 0.15);
+  transition: border-color 0.15s ease, background 0.15s ease, backdrop-filter 0.15s ease;
+}
+.drop-zone.active {
+  background: rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  border: 2px solid rgba(100, 200, 255, 0.6);
+  box-shadow: 0 0 20px rgba(100, 200, 255, 0.15);
+}
+
 /* Help: floating ? hidden — use Menu → Help (top bar) */
 .help-btn {
   display: none !important;

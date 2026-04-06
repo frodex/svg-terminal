@@ -236,6 +236,9 @@ let activeLayout = 'auto';
 // User-defined card-to-slot ordering. Maps session name → desired slot index.
 // Set by drag-to-swap. Cleared on layout change or focus group change.
 let slotOrder = new Map();
+// All slot screen rects from the last layout run (including empty slots).
+// Each entry: { slotIndex, x, y, w, h, name: sessionName|null }
+let _allSlotRects = [];
 
 // Generate n-stacked layout dynamically — N equal rows, full width.
 // Cards are centered within slot at comfortable aspect (not letterboxed to full width).
@@ -318,6 +321,140 @@ function clearGhostLayoutPreview() {
   clearTimeout(_ghostFadeTimer);
   _ghostFadeTimer = null;
   _ghostHoverKey = null;
+}
+
+// --- Drop zone overlay for drag-to-swap ---
+var _dropZones = []; // { name, slotIndex, el, rect } for each focused card's slot
+var _activeDropZone = null; // the zone the cursor is currently over
+var _dragSourceSlotIndex = null; // slot index of the card being dragged
+var _dragSourceName = null; // session name of the card being dragged
+
+function showDropZones(sourceName) {
+  var host = document.getElementById('drop-zone-overlay');
+  if (!host) return;
+  host.innerHTML = '';
+  _dropZones = [];
+  _dragSourceName = sourceName;
+
+  var sourceT = terminals.get(sourceName);
+  _dragSourceSlotIndex = sourceT ? sourceT._slotIndex : null;
+
+  var overlay = host.getBoundingClientRect();
+  // Create drop zones for ALL layout slots (including empty ones)
+  for (var i = 0; i < _allSlotRects.length; i++) {
+    var sr = _allSlotRects[i];
+    // Interior zone: 50% size, centered within the slot
+    var zoneW = sr.w * 0.5;
+    var zoneH = sr.h * 0.5;
+    var zoneX = sr.x + (sr.w - zoneW) / 2;
+    var zoneY = sr.y + (sr.h - zoneH) / 2;
+    var el = document.createElement('div');
+    el.className = 'drop-zone';
+    el.style.left = ((zoneX - overlay.left) / overlay.width * 100) + '%';
+    el.style.top = ((zoneY - overlay.top) / overlay.height * 100) + '%';
+    el.style.width = (zoneW / overlay.width * 100) + '%';
+    el.style.height = (zoneH / overlay.height * 100) + '%';
+    host.appendChild(el);
+    // Use the element's actual screen rect for hit testing (not computed coords)
+    _dropZones.push({
+      name: sr.name,       // null for empty slots
+      slotIndex: sr.slotIndex,
+      el: el,
+      rect: null, // filled below after DOM layout
+    });
+  }
+  // Force layout, then read actual screen rects for hit testing
+  host.offsetHeight; // force reflow
+  for (var di = 0; di < _dropZones.length; di++) {
+    var r = _dropZones[di].el.getBoundingClientRect();
+    _dropZones[di].rect = { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+  }
+  host.classList.add('visible');
+  host.setAttribute('aria-hidden', 'false');
+  _activeDropZone = null;
+}
+
+function hideDropZones() {
+  var host = document.getElementById('drop-zone-overlay');
+  if (host) {
+    host.classList.remove('visible');
+    host.setAttribute('aria-hidden', 'true');
+    host.innerHTML = '';
+  }
+  _dropZones = [];
+  _activeDropZone = null;
+  _dragSourceSlotIndex = null;
+  _dragSourceName = null;
+  // Clean up any remaining _dragOrigPos
+  for (var [, t] of terminals) {
+    delete t._dragOrigPos;
+  }
+}
+
+function hitTestDropZone(clientX, clientY) {
+  for (var i = 0; i < _dropZones.length; i++) {
+    var dz = _dropZones[i];
+    if (dz.slotIndex === _dragSourceSlotIndex) continue; // skip source card's own slot
+    var r = dz.rect;
+    if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) {
+      return dz;
+    }
+  }
+  return null;
+}
+
+function updateDropZoneHighlight(clientX, clientY) {
+  var hit = hitTestDropZone(clientX, clientY);
+  if (hit === _activeDropZone) return; // no change
+
+  // Clear previous highlight
+  if (_activeDropZone) {
+    _activeDropZone.el.classList.remove('active');
+  }
+
+  _activeDropZone = hit;
+
+  // Set new highlight
+  if (_activeDropZone) {
+    _activeDropZone.el.classList.add('active');
+    // Live preview: move target card to source card's slot
+    previewSwap(_activeDropZone.name);
+  } else {
+    // Moved out of all zones — cancel preview
+    cancelSwapPreview();
+  }
+}
+
+function previewSwap(targetName) {
+  if (!_dragSourceName || targetName === _dragSourceName) return;
+  var sourceT = terminals.get(_dragSourceName);
+  var targetT = terminals.get(targetName);
+  if (!sourceT || !targetT) return;
+
+  // Save target's original position if not already saved
+  if (!targetT._dragOrigPos) {
+    targetT._dragOrigPos = { ...targetT.targetPos };
+  }
+
+  // Move target card to source card's original slot position
+  if (sourceT._dragOrigPos) {
+    targetT.morphFrom = { ...targetT.currentPos };
+    targetT.targetPos = { ...sourceT._dragOrigPos };
+    targetT.morphStart = clock.getElapsedTime();
+  }
+}
+
+function cancelSwapPreview() {
+  // Return all cards that were preview-moved back to their original positions
+  for (var [name, t] of terminals) {
+    if (name === _dragSourceName) continue;
+    if (t._dragOrigPos) {
+      t.morphFrom = { ...t.currentPos };
+      t.targetPos = { ...t._dragOrigPos };
+      t.morphStart = clock.getElapsedTime();
+      delete t._dragOrigPos;
+    }
+  }
 }
 
 function renderGhostLayoutPreview(layoutKey) {
@@ -1087,12 +1224,13 @@ function calculateSlotLayout(slots) {
   var assignments = assignCardsToSlots(cards, slots);
 
   // Underflow: fewer cards than slots — rescale used slots to fill available space.
-  // Compute bounding box of assigned slots, then normalize all to fill 0-100% range.
+  // BUT: skip rescaling if user has pinned cards to specific slots (slotOrder),
+  // because rescaling would move cards to wrong positions relative to the drop zones.
   var usedAssignments = [];
   for (var ui = 0; ui < assignments.length; ui++) {
     if (assignments[ui].slot) usedAssignments.push(assignments[ui]);
   }
-  if (usedAssignments.length > 0 && usedAssignments.length < slots.length) {
+  if (usedAssignments.length > 0 && usedAssignments.length < slots.length && slotOrder.size === 0) {
     var minX = 100, minY = 100, maxX = 0, maxY = 0;
     for (var ui = 0; ui < usedAssignments.length; ui++) {
       var s = usedAssignments[ui].slot;
@@ -1121,6 +1259,25 @@ function calculateSlotLayout(slots) {
   // Frustum projection setup
   var vFov = camera.fov * DEG2RAD;
   var halfTan = Math.tan(vFov / 2);
+
+  // Build screen rects for ALL slots (including empty ones) for drop zone targeting.
+  // Map which card is in each slot (null if empty).
+  var nameBySlotIndex = {};
+  for (var mi = 0; mi < assignments.length; mi++) {
+    if (assignments[mi].slot) nameBySlotIndex[assignments[mi].slotIndex] = assignments[mi].name;
+  }
+  _allSlotRects = [];
+  for (var si = 0; si < slots.length; si++) {
+    var s = slots[si];
+    _allSlotRects.push({
+      slotIndex: si,
+      x: (s.x / 100) * availW,
+      y: TOP_BAR_H + (s.y / 100) * availH,
+      w: (s.w / 100) * availW,
+      h: (s.h / 100) * availH,
+      name: nameBySlotIndex[si] || null,
+    });
+  }
 
   var placements = [];
 
@@ -1167,6 +1324,8 @@ function calculateSlotLayout(slots) {
     var fracH = fitH / screenH;
     var depth = card.worldH / (fracH * 2 * halfTan);
 
+    t._slotIndex = a.slotIndex;
+    t._slotRect = { x: slotPxX, y: slotPxY, w: slotPxW, h: slotPxH }; // screen-space slot rect for drop zone hit testing
     placements.push({ name: a.name, cx: cx, cy: cy, fitW: fitW, fitH: fitH, depth: depth, worldW: card.worldW, worldH: card.worldH });
   }
 
@@ -2055,6 +2214,10 @@ function onMouseMove(e) {
         t.morphStart = 0;
         t._userPositioned = true;
       }
+      // Update drop zone highlighting
+      if (focusedSessions.size >= 2) {
+        updateDropZoneHighlight(e.clientX, e.clientY);
+      }
       return;
     }
 
@@ -2218,6 +2381,12 @@ function onMouseDown(e) {
         dragStart.x = e.clientX;
         dragStart.y = e.clientY;
         _moveCardSession = sessionName;
+        if (dragMode === 'moveCard' && focusedSessions.size >= 2) {
+          // Save source card's original position for cancel/preview
+          var srcT = terminals.get(sessionName);
+          if (srcT) srcT._dragOrigPos = { ...srcT.targetPos };
+          showDropZones(sessionName);
+        }
         e.preventDefault();
         return;
       }
@@ -2356,45 +2525,49 @@ function onMouseUp(e) {
   if ((dragMode === 'moveCard' || dragMode === 'dollyCard') && dragDistance <= 5 && _moveCardSession) {
     setActiveInput(_moveCardSession);
   }
-  // Drag-to-swap: if a focused card was dragged onto another focused card, swap their slot positions
-  if (dragMode === 'moveCard' && dragDistance > 5 && _moveCardSession && focusedSessions.size >= 2) {
-    const draggedT = terminals.get(_moveCardSession);
-    if (draggedT) {
-      const draggedPos = new THREE.Vector3();
-      draggedT.css3dObject.getWorldPosition(draggedPos);
-      let closestName = null;
-      let closestDist = Infinity;
-      for (const [name, t] of terminals) {
-        if (name === _moveCardSession || !focusedSessions.has(name)) continue;
-        const pos = new THREE.Vector3();
-        t.css3dObject.getWorldPosition(pos);
-        const dist = draggedPos.distanceTo(pos);
-        if (dist < closestDist) {
-          closestDist = dist;
-          closestName = name;
+  // Drag-to-swap with visual drop zones
+  if (dragMode === 'moveCard' && _moveCardSession && focusedSessions.size >= 2) {
+    if (_activeDropZone && dragDistance > 5) {
+      // Drop on a zone — commit the swap (or move to empty slot)
+      var draggedName = _moveCardSession;
+      var targetName = _activeDropZone.name; // null for empty slots
+      var draggedSlotIdx = _dragSourceSlotIndex;
+      var targetSlotIdx = _activeDropZone.slotIndex;
+
+      if (draggedSlotIdx != null && targetSlotIdx != null) {
+        // Rebuild slotOrder from current state of ALL focused cards, then apply the swap.
+        // This prevents stale entries from accumulating across multiple drags.
+        slotOrder.clear();
+        for (var [fn, ft] of terminals) {
+          if (focusedSessions.has(fn) && ft._slotIndex != null) {
+            slotOrder.set(fn, ft._slotIndex);
+          }
         }
+        // Now apply the swap
+        slotOrder.set(draggedName, targetSlotIdx);
+        if (targetName) slotOrder.set(targetName, draggedSlotIdx);
       }
-      // Swap if dragged card is close enough to another card (within 50% of card width)
-      const swapThreshold = (draggedT.baseCardW || 1280) * WORLD_SCALE * 0.5;
-      if (closestName && closestDist < swapThreshold) {
-        // Find current slot assignments for both cards
-        const draggedSlot = slotOrder.get(_moveCardSession);
-        const targetSlot = slotOrder.get(closestName);
-        // If neither has a pinned slot, we need to figure out their current indices
-        // from the last layout run. For simplicity: swap whatever they have, or
-        // assign based on current positions in the focused set.
-        const names = [...focusedSessions];
-        const draggedIdx = draggedSlot != null ? draggedSlot : names.indexOf(_moveCardSession);
-        const targetIdx = targetSlot != null ? targetSlot : names.indexOf(closestName);
-        slotOrder.set(_moveCardSession, targetIdx);
-        slotOrder.set(closestName, draggedIdx);
-        // Reset user-positioned and re-run layout so both cards morph to swapped slots
+
+      var draggedT = terminals.get(draggedName);
+      var targetT = targetName ? terminals.get(targetName) : null;
+      if (draggedT) draggedT._userPositioned = false;
+      if (targetT) targetT._userPositioned = false;
+      calculateFocusedLayout();
+      // Clean up drag state
+      if (draggedT) delete draggedT._dragOrigPos;
+      if (targetT) delete targetT._dragOrigPos;
+    } else {
+      // No drop zone hit or minimal drag — cancel, return card to original position
+      cancelSwapPreview();
+      var draggedT = terminals.get(_moveCardSession);
+      if (draggedT && draggedT._dragOrigPos) {
+        draggedT.targetPos = { ...draggedT._dragOrigPos };
+        draggedT.morphFrom = { ...draggedT.currentPos };
+        draggedT.morphStart = clock.getElapsedTime();
         draggedT._userPositioned = false;
-        const targetT = terminals.get(closestName);
-        if (targetT) targetT._userPositioned = false;
-        calculateFocusedLayout();
       }
     }
+    hideDropZones();
   }
   // After resize drag, calculate cols/rows proportionally.
   // Same text size: cell pixel size stays constant, so cols/rows scale with card size.
