@@ -233,6 +233,9 @@ const LAYOUT_ORDER = ['auto', '2up-h', '2up-v', '1main-2side', '3col', '2x2', '2
 
 // Current active layout for the focus group
 let activeLayout = 'auto';
+// User-defined card-to-slot ordering. Maps session name → desired slot index.
+// Set by drag-to-swap. Cleared on layout change or focus group change.
+let slotOrder = new Map();
 
 // Generate n-stacked layout dynamically — N equal rows, full width.
 // Cards are centered within slot at comfortable aspect (not letterboxed to full width).
@@ -278,6 +281,7 @@ function setActiveLayoutFromMenu(layoutKey) {
   if (focusedSessions.size < 2) return;
   if (!LAYOUTS[layoutKey]) return;
   activeLayout = layoutKey;
+  slotOrder.clear(); // reset card-to-slot assignments for new layout
   // Clear user-positioned flag so all cards participate in the new layout
   for (const name of focusedSessions) {
     const t = terminals.get(name);
@@ -499,16 +503,34 @@ function wireTopBar() {
 // Returns array of { name, slotIndex, slot } objects.
 // Cards with no available slot get slotIndex = -1 and slot = null (overflow).
 function assignCardsToSlots(cards, slots) {
-  var sorted = cards.slice().sort(function(a, b) { return b.cells - a.cells; });
-  var slotOrder = slots.map(function(s, i) { return { index: i, area: s.w * s.h }; })
+  // First: honor user-defined slot overrides (from drag-to-swap)
+  var pinned = [];    // { name, slotIndex, slot } for cards with overrides
+  var unpinned = [];  // cards without overrides
+  var usedSlots = new Set();
+
+  for (var ci = 0; ci < cards.length; ci++) {
+    var card = cards[ci];
+    if (slotOrder.has(card.name) && slotOrder.get(card.name) < slots.length) {
+      var si = slotOrder.get(card.name);
+      pinned.push({ name: card.name, slotIndex: si, slot: slots[si] });
+      usedSlots.add(si);
+    } else {
+      unpinned.push(card);
+    }
+  }
+
+  // Sort unpinned by cell count (biggest first), assign to remaining slots by area (biggest first)
+  unpinned.sort(function(a, b) { return b.cells - a.cells; });
+  var freeSlots = slots.map(function(s, i) { return { index: i, area: s.w * s.h }; })
+    .filter(function(s) { return !usedSlots.has(s.index); })
     .sort(function(a, b) { return b.area - a.area; });
 
-  var assignments = [];
-  for (var i = 0; i < sorted.length; i++) {
-    if (i < slotOrder.length) {
-      assignments.push({ name: sorted[i].name, slotIndex: slotOrder[i].index, slot: slots[slotOrder[i].index] });
+  var assignments = pinned.slice();
+  for (var i = 0; i < unpinned.length; i++) {
+    if (i < freeSlots.length) {
+      assignments.push({ name: unpinned[i].name, slotIndex: freeSlots[i].index, slot: slots[freeSlots[i].index] });
     } else {
-      assignments.push({ name: sorted[i].name, slotIndex: -1, slot: null });
+      assignments.push({ name: unpinned[i].name, slotIndex: -1, slot: null });
     }
   }
   return assignments;
@@ -2334,6 +2356,46 @@ function onMouseUp(e) {
   if ((dragMode === 'moveCard' || dragMode === 'dollyCard') && dragDistance <= 5 && _moveCardSession) {
     setActiveInput(_moveCardSession);
   }
+  // Drag-to-swap: if a focused card was dragged onto another focused card, swap their slot positions
+  if (dragMode === 'moveCard' && dragDistance > 5 && _moveCardSession && focusedSessions.size >= 2) {
+    const draggedT = terminals.get(_moveCardSession);
+    if (draggedT) {
+      const draggedPos = new THREE.Vector3();
+      draggedT.css3dObject.getWorldPosition(draggedPos);
+      let closestName = null;
+      let closestDist = Infinity;
+      for (const [name, t] of terminals) {
+        if (name === _moveCardSession || !focusedSessions.has(name)) continue;
+        const pos = new THREE.Vector3();
+        t.css3dObject.getWorldPosition(pos);
+        const dist = draggedPos.distanceTo(pos);
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestName = name;
+        }
+      }
+      // Swap if dragged card is close enough to another card (within 50% of card width)
+      const swapThreshold = (draggedT.baseCardW || 1280) * WORLD_SCALE * 0.5;
+      if (closestName && closestDist < swapThreshold) {
+        // Find current slot assignments for both cards
+        const draggedSlot = slotOrder.get(_moveCardSession);
+        const targetSlot = slotOrder.get(closestName);
+        // If neither has a pinned slot, we need to figure out their current indices
+        // from the last layout run. For simplicity: swap whatever they have, or
+        // assign based on current positions in the focused set.
+        const names = [...focusedSessions];
+        const draggedIdx = draggedSlot != null ? draggedSlot : names.indexOf(_moveCardSession);
+        const targetIdx = targetSlot != null ? targetSlot : names.indexOf(closestName);
+        slotOrder.set(_moveCardSession, targetIdx);
+        slotOrder.set(closestName, draggedIdx);
+        // Reset user-positioned and re-run layout so both cards morph to swapped slots
+        draggedT._userPositioned = false;
+        const targetT = terminals.get(closestName);
+        if (targetT) targetT._userPositioned = false;
+        calculateFocusedLayout();
+      }
+    }
+  }
   // After resize drag, calculate cols/rows proportionally.
   // Same text size: cell pixel size stays constant, so cols/rows scale with card size.
   if (dragMode === 'resize' && activeInputSession) {
@@ -4015,6 +4077,7 @@ function focusTerminal(sessionName) {
 // Add a terminal to the multi-focus set (ctrl+click)
 function addToFocus(sessionName) {
   activeLayout = 'auto';  // reset to default layout when focus group changes
+  slotOrder.clear(); // reset card-to-slot assignments when group changes
   const t = terminals.get(sessionName);
   if (!t) return;
 
