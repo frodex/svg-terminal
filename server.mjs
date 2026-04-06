@@ -787,6 +787,24 @@ function bridgeClaudeProxySession(session, cpUser) {
   const handler = (cpMsg) => {
     if (cpMsg.sessionId !== session) return;
 
+    // Session settings changed — update permission cache
+    if (cpMsg.event === 'session-settings-changed' && cpMsg.data && cpMsg.data.access) {
+      const a = cpMsg.data.access;
+      sessionPermCache.set(session, {
+        owner: a.owner || CP_DEFAULT_USER,
+        public: a.public !== false,
+        allowedUsers: a.allowedUsers || [],
+        allowedGroups: a.allowedGroups || [],
+        viewOnly: !!a.viewOnly,
+      });
+      // Notify dashboard clients so they can update card state (e.g. viewOnly indicator)
+      const settingsMsg = JSON.stringify({ type: 'session-settings', session, access: a });
+      for (const ws of watcher.subscribers) {
+        if (ws.readyState === 1) ws.send(settingsMsg);
+      }
+      return;
+    }
+
     // Session ended — broadcast session-remove and clean up
     if (cpMsg.event === 'session-end') {
       const removeMsg = JSON.stringify({ type: 'session-remove', session });
