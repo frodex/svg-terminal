@@ -546,11 +546,43 @@ function bridgeClaudeProxySession(session, cpUser) {
     if (!existing._cpTerminalHandler) {
       process.stderr.write(`[svg-terminal] upgrading watcher for ${session} to cp bridge\n`);
       const handler = (cpMsg) => {
-        if (cpMsg.event !== 'terminal' || cpMsg.sessionId !== session) return;
+        if (cpMsg.sessionId !== session) return;
+
+        // Session settings changed — update permission cache
+        if (cpMsg.event === 'session-settings-changed' && cpMsg.data && cpMsg.data.access) {
+          const a = cpMsg.data.access;
+          sessionPermCache.set(session, {
+            owner: a.owner || CP_DEFAULT_USER,
+            public: a.public !== false,
+            allowedUsers: a.allowedUsers || [],
+            allowedGroups: a.allowedGroups || [],
+            viewOnly: !!a.viewOnly,
+          });
+          const settingsMsg = JSON.stringify({ type: 'session-settings', session, access: a });
+          for (const ws of existing.subscribers) {
+            if (ws.readyState === 1) ws.send(settingsMsg);
+          }
+          return;
+        }
+
+        // Session ended — broadcast session-remove and clean up
+        if (cpMsg.event === 'session-end') {
+          const removeMsg = JSON.stringify({ type: 'session-remove', session });
+          for (const ws of existing.subscribers) {
+            if (ws.readyState === 1) ws.send(removeMsg);
+          }
+          cpUnregisterTerminal(session, handler);
+          sessionWatchers.delete(key);
+          sessionPermCache.delete(session);
+          return;
+        }
+
+        if (cpMsg.event !== 'terminal') return;
         const inner = cpMsg.data;
         if (inner == null) return;
         const base = typeof inner === 'object' && !Array.isArray(inner) ? inner : {};
         const msg = { ...base, session, pane: '0' };
+        if (msg.type === 'screen') existing._lastScreen = msg;
         const json = JSON.stringify(msg);
         for (const ws of existing.subscribers) {
           if (ws.readyState === 1) ws.send(json);
