@@ -471,10 +471,6 @@ function mapCpErrorToStatus(err) {
 // SessionWatcher — shared capture per session, broadcast to subscribers
 // ---------------------------------------------------------------------------
 
-// Focused terminals get fast capture; unfocused ones slow down to save CPU.
-// Dashboard sends focus state over WS; new watchers start unfocused.
-const CAPTURE_INTERVAL_FOCUSED = Number(process.env.CAPTURE_INTERVAL_FOCUSED) || 20;
-const CAPTURE_INTERVAL_UNFOCUSED = Number(process.env.CAPTURE_INTERVAL_UNFOCUSED) || 500;
 const sessionWatchers = new Map(); // key = "session:pane", value = watcher
 const dashboardClients = new Set(); // all /ws/dashboard connections
 const sudoWindows = new Map(); // email → expiry timestamp
@@ -585,7 +581,9 @@ function bridgeClaudeProxySession(session, cpUser) {
         if (msg.type === 'screen') existing._lastScreen = msg;
         const json = JSON.stringify(msg);
         for (const ws of existing.subscribers) {
-          if (ws.readyState === 1) ws.send(json);
+          if (ws.readyState !== 1) continue;
+          if (msg.type === 'delta' && ws.bufferedAmount > 65536) continue;
+          ws.send(json);
         }
       };
       existing._cpTerminalHandler = handler;
@@ -650,7 +648,12 @@ function bridgeClaudeProxySession(session, cpUser) {
     if (msg.type === 'screen') watcher._lastScreen = msg;
     const json = JSON.stringify(msg);
     for (const ws of watcher.subscribers) {
-      if (ws.readyState === 1) ws.send(json);
+      if (ws.readyState !== 1) continue;
+      // Backpressure: if WS send buffer is backed up, skip delta messages.
+      // The next screen or delta will carry current state. Prevents growing
+      // lag on slow connections (e.g. second browser through Cloudflare tunnel).
+      if (msg.type === 'delta' && ws.bufferedAmount > 65536) continue;
+      ws.send(json);
     }
   };
   watcher._cpTerminalHandler = handler;
@@ -975,18 +978,9 @@ async function handleDashboardWs(ws, req) {
         return;
       }
 
-      // Focus message — adjust capture rates for all watchers
-      if (msg.type === 'focus') {
-        const focused = new Set(msg.sessions || []);
-        for (const [key, watcher] of sessionWatchers) {
-          if (!watcher.timer) continue; // cp bridges have no timer
-          const isFocused = focused.has(watcher.session);
-          const interval = isFocused ? CAPTURE_INTERVAL_FOCUSED : CAPTURE_INTERVAL_UNFOCUSED;
-          clearInterval(watcher.timer);
-          watcher.timer = setInterval(watcher._captureAndBroadcast, interval);
-        }
-        return;
-      }
+      // Focus message — currently a no-op (all sessions are cp-bridged, no local timers).
+      // TODO: Forward focus state to claude-proxy so TerminalMirror can adjust poll rate.
+      if (msg.type === 'focus') return;
 
       const session = msg.session;
       if (!session || !validateParam(session)) {

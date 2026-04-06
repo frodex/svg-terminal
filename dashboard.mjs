@@ -1588,31 +1588,26 @@ function routeEmbedMessageToSvg(t, obj, msg, opt) {
   }
 }
 
+// Invalidate CSS3D texture so compositor picks up SVG content changes.
+// Single rAF — animate() loop renders every frame, no explicit render needed.
+// Was double-rAF + renderer.render() which added ~32ms latency per update.
 function scheduleTerminalSurfaceRepaint(obj, t) {
   if (!obj) return;
   requestAnimationFrame(function() {
-    requestAnimationFrame(function() {
-      function bumpTranslateZ(el) {
-        if (!el) return;
-        el.style.transform = 'translateZ(0)';
-        void el.offsetHeight;
-        el.style.transform = '';
+    // translateZ bump forces CSS3D compositor to re-rasterize the <object>
+    obj.style.transform = 'translateZ(0)';
+    void obj.offsetHeight;
+    obj.style.transform = '';
+    // outline bump on inner container catches cases translateZ misses
+    if (t && t.dom) {
+      var inner = t.dom.querySelector('.terminal-inner');
+      if (inner) {
+        var o = inner.style.outline;
+        inner.style.outline = '1px solid transparent';
+        void inner.offsetHeight;
+        inner.style.outline = o;
       }
-      function bumpOutline(el) {
-        if (!el) return;
-        var o = el.style.outline;
-        el.style.outline = '1px solid transparent';
-        void el.offsetHeight;
-        el.style.outline = o;
-      }
-      bumpTranslateZ(obj);
-      if (t && t.dom) {
-        bumpOutline(t.dom.querySelector('.terminal-inner'));
-      }
-      if (renderer && scene && camera) {
-        renderer.render(scene, camera);
-      }
-    });
+    }
   });
 }
 
@@ -4221,6 +4216,9 @@ function unfocusTerminal() {
 // === Animation Loop ===
 function animate() {
   requestAnimationFrame(animate);
+
+  // Skip rendering when tab is hidden — saves 100% GPU/CPU in background
+  if (document.hidden) return;
 
   const time = clock.getElapsedTime();
   clock.getDelta(); // advance clock internal state (side effect needed for accurate getElapsedTime)
