@@ -278,6 +278,11 @@ function setActiveLayoutFromMenu(layoutKey) {
   if (focusedSessions.size < 2) return;
   if (!LAYOUTS[layoutKey]) return;
   activeLayout = layoutKey;
+  // Clear user-positioned flag so all cards participate in the new layout
+  for (const name of focusedSessions) {
+    const t = terminals.get(name);
+    if (t) t._userPositioned = false;
+  }
   calculateFocusedLayout();
   showLayoutIndicator();
   updateTopBarLayoutLabel();
