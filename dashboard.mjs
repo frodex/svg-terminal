@@ -879,6 +879,9 @@ function optimizeTermToCard(t) {
         const newRows = Math.max(5, Math.round(cardH / (cellH * fitScale)));
         // Lock the card size so updateCardForNewSize doesn't recalculate it.
         // The user's card size is the authority — terminal adapts to it.
+        console.log('[FIT]', 'card='+cardW+'x'+cardH, 'cell='+cellW.toFixed(2)+'x'+cellH.toFixed(2),
+          'cur='+cols+'x'+rows, 'scale='+scaleW.toFixed(2)+'/'+scaleH.toFixed(2), 'fit='+fitScale.toFixed(2),
+          'new='+newCols+'x'+newRows);
         t._lockCardSize = true;
         t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
         // Reset the original ratio so +/- preserves this new shape
@@ -4934,7 +4937,7 @@ document.addEventListener('keydown', function(e) {
   // Don't interfere with bare modifier presses
   if (e.key === 'Control' || e.key === 'Shift' || e.key === 'Alt' || e.key === 'Meta') return;
 
-  // Escape: clear keyboard selection first, then unfocus
+  // Escape: clear keyboard selection if active, otherwise send to terminal
   if (e.key === 'Escape') {
     if (selMode === 'keyboard' || selMode === 'keyboard-fading') {
       clearSel();
@@ -4942,7 +4945,8 @@ document.addEventListener('keydown', function(e) {
       e.preventDefault();
       return;
     }
-    return;
+    // Send Escape to the terminal (e.g., Claude Code cancel prompts)
+    // Fall through to the sendInput path below
   }
 
   // Shift+Tab: cycle focused terminals (handled by onKeyDown)

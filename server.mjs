@@ -174,7 +174,7 @@ process.stderr.write('[SERVER] Client version: ' + CLIENT_VERSION + '\n');
 // Validation
 // ---------------------------------------------------------------------------
 
-const SAFE_PARAM = /^[a-zA-Z0-9_:%-]+$/;
+const SAFE_PARAM = /^[a-zA-Z0-9_:%.\-]+$/;
 
 function validateParam(value) {
   return typeof value === 'string' && SAFE_PARAM.test(value);
