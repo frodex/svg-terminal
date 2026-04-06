@@ -39,6 +39,7 @@ body {
 
 #session-dropdown {
   flex: 1;
+  min-width: 0; /* allow shrinking below content width */
   background: #0f3460;
   color: #e0e0e0;
   border: 1px solid #533483;
@@ -47,11 +48,14 @@ body {
   font-size: 0.9rem;
   -webkit-appearance: none;
   appearance: none;
+  text-overflow: ellipsis;
+  overflow: hidden;
 }
 
 #text-size-controls {
   display: flex;
   gap: 4px;
+  flex-shrink: 0; /* never hide +/- buttons */
 }
 
 #text-size-controls button {

@@ -313,33 +313,23 @@ window.addEventListener('orientationchange', function() {
   setTimeout(fitTerminalToWidth, 200);
 });
 
-// --- +/- Text size (resize terminal) — Task 8 ---
+// --- +/- Text size (resize terminal cols/rows, same as desktop) ---
 
 document.getElementById('size-decrease').addEventListener('click', function() {
-  // "Decrease text size" = smaller chars = more cols fit
-  terminalCols = Math.min(terminalCols + 10, 200);
-  terminalRows = calculateRows(terminalCols);
+  // Smaller text = more cols fit
+  terminalCols = Math.min(terminalCols + 4, 300);
+  terminalRows = Math.max(5, Math.min(100, Math.round(terminalCols / ((terminalCols - 4) / (terminalRows || 24)))));
   sendResize();
-  this.blur(); // prevent focus stealing (same pattern as desktop fix)
+  this.blur();
 });
 
 document.getElementById('size-increase').addEventListener('click', function() {
-  // "Increase text size" = larger chars = fewer cols
-  terminalCols = Math.max(terminalCols - 10, 40);
-  terminalRows = calculateRows(terminalCols);
+  // Bigger text = fewer cols
+  terminalCols = Math.max(20, terminalCols - 4);
+  terminalRows = Math.max(5, Math.min(100, Math.round(terminalCols / ((terminalCols + 4) / (terminalRows || 24)))));
   sendResize();
-  this.blur(); // prevent focus stealing
+  this.blur();
 });
-
-function calculateRows(cols) {
-  // Calculate rows based on terminal area aspect ratio and font metrics
-  // Monospace chars are ~0.6 width:height ratio, so charAspect (h/w) ~1.67, round to 2.0
-  const area = document.getElementById('terminal-area');
-  if (!area || !area.clientWidth || !area.clientHeight) return 24;
-  const aspectRatio = area.clientHeight / area.clientWidth;
-  const charAspect = 2.0;
-  return Math.max(Math.floor(cols * aspectRatio / charAspect), 10);
-}
 
 function sendResize() {
   if (!currentSession) return;
