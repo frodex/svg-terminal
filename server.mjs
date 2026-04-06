@@ -1055,11 +1055,13 @@ async function handleDashboardWs(ws, req) {
               rows: fwd.rows,
             });
           } else if (fwd.type === 'scroll') {
-            await cpRequest('scroll', {
+            // Fire-and-forget: don't await — scroll response arrives as screen
+            // message via TerminalMirror. Awaiting serializes rapid scroll events.
+            cpRequest('scroll', {
               sessionId: session,
               user: cpUserDash,
               offset: fwd.offset,
-            });
+            }).catch(err => process.stderr.write('[cp scroll] ' + (err.message || err) + '\n'));
           }
         } catch (err) {
           process.stderr.write('[ws/dashboard] cp-bridge error: ' + (err.message || err) + '\n');
