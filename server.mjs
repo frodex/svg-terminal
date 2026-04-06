@@ -431,7 +431,12 @@ function buildCreateSessionPayload(body, autoName) {
 
   const payload = { name, launchProfile };
 
-  if (body.runAsUser && String(body.runAsUser).trim()) payload.runAsUser = String(body.runAsUser).trim();
+  // runAsUser: explicit value from form, or default to the authenticated user's linux_user.
+  // Without this, sessions run as the server's default user (root).
+  if (body.runAsUser && String(body.runAsUser).trim()) {
+    payload.runAsUser = String(body.runAsUser).trim();
+  }
+  // workingDir: explicit value, or default to ~ (user's home directory via su -)
   if (body.workingDir && String(body.workingDir).trim()) payload.workingDir = String(body.workingDir).trim();
   if (body.remoteHost && String(body.remoteHost).trim()) payload.remoteHost = String(body.remoteHost).trim();
   if (typeof body.hidden === 'boolean') payload.hidden = body.hidden;
@@ -893,6 +898,8 @@ async function handleDashboardWs(ws, req) {
           const linuxUser = user.linux_user || CP_DEFAULT_USER;
           const autoName = 'svg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
           const payload = buildCreateSessionPayload(msg.payload || {}, autoName);
+          // Default runAsUser to the authenticated user — prevents sessions running as root
+          if (!payload.runAsUser) payload.runAsUser = linuxUser;
           const result = await cpRequest('createSession', { user: linuxUser, body: payload }, 120000);
           notifyDashboardCpSessionCreated(result, linuxUser);
           if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'create-session-result', ok: true, session: result }));
