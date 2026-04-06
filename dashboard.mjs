@@ -1633,9 +1633,11 @@ function routeDashboardMessage(msg) {
     if (_serverVersion === null) {
       _serverVersion = msg.version; // first connect — remember server version
     } else if (_serverVersion !== msg.version) {
-      // Server restarted with new code — our JS is stale
-      console.warn('[Dashboard] Server version changed: ' + _serverVersion + ' → ' + msg.version + ' — update required');
-      showUpdateBanner();
+      // Server restarted with new code — force reload to avoid stale code flooding deprecated endpoints
+      console.warn('[Dashboard] Server version changed: ' + _serverVersion + ' → ' + msg.version + ' — reloading');
+      if (window._saveLayout) window._saveLayout();
+      location.reload();
+      return;
     }
     return;
   }
