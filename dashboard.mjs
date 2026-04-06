@@ -505,10 +505,17 @@ function fitAllFocused() {
 
 function maxAllFocused() {
   if (focusedSessions.size < 2) return;
+  // Pin current slot assignments so layout doesn't re-sort after resize
+  for (var [fn, ft] of terminals) {
+    if (focusedSessions.has(fn) && ft._slotIndex != null) {
+      slotOrder.set(fn, ft._slotIndex);
+    }
+  }
   for (var name of focusedSessions) {
     var t = terminals.get(name);
-    if (t) maximizeCardToSlot(t);
+    if (t) maximizeCardToSlot(t, true); // batch mode — skip individual layout recalc
   }
+  calculateFocusedLayout(); // one layout recalc for all
 }
 
 // --- POV-FONT-SIZE equalization ---
@@ -641,13 +648,19 @@ function wireTopBar() {
   if (maxAll) maxAll.addEventListener('click', function() { maxAllFocused(); maxAll.blur(); });
   var eqBtn = document.getElementById('top-equalize');
   var povInput = document.getElementById('pov-font-input');
+  var povLabel = document.getElementById('pov-font-label');
+  function updatePovLabel() {
+    if (povLabel) povLabel.style.fontSize = _povFontTarget + 'px';
+  }
   if (povInput) {
     povInput.value = _povFontTarget;
+    updatePovLabel();
     povInput.addEventListener('change', function() {
       var val = parseFloat(povInput.value);
       if (val >= 4 && val <= 24) {
         _povFontTarget = val;
         localStorage.setItem('pov-font-target', String(val));
+        updatePovLabel();
       }
     });
   }
@@ -902,43 +915,52 @@ function optimizeCardToTerm(t) {
   }
 }
 
-// Maximize card→slot: resize card DOM to fill its assigned layout slot.
-// Card takes on the slot's aspect ratio. Terminal content letterboxes inside
-// (the SVG's preserveAspectRatio=meet handles this automatically).
-// Per-browser only — doesn't affect co-browsers or tmux.
-function maximizeCardToSlot(t) {
-  if (!t._layoutSlot) return;
+// Maximize card→slot: eliminate letterbox by filling the slot completely.
+// 1. Determine which dimension is unconstrained (letterboxed)
+// 2. Increase terminal cols or rows to stretch into the letterbox
+// 3. Card DOM updates from the resize (updateCardForNewSize), layout re-runs
+function maximizeCardToSlot(t, batch) {
+  if (!t._slotRect && !t._layoutSlot) return;
+  var slot = t._slotRect || t._layoutSlot;
 
-  var slot = t._layoutSlot;
+  var m = getMeasuredCellSize(t);
+  var cellW = m ? m.cellW : SVG_CELL_W;
+  var cellH = m ? m.cellH : SVG_CELL_H;
+
+  var currentCols = t.screenCols || 80;
+  var currentRows = t.screenRows || 24;
+
+  // Current card aspect (from terminal content, excluding header)
+  var cardContentAspect = (currentCols * cellW) / (currentRows * cellH);
   var slotAspect = slot.w / slot.h;
 
-  // Compute card DOM dimensions that match the slot's aspect ratio.
-  // Use TARGET_WORLD_AREA for consistent visual weight.
-  var worldW = Math.sqrt(TARGET_WORLD_AREA * slotAspect);
-  var worldH = TARGET_WORLD_AREA / worldW;
-  var cardW = Math.round(worldW * DOM_SCALE);
-  var cardH = Math.round(worldH * DOM_SCALE) + HEADER_H;
-  cardW = Math.max(MIN_CARD_W, Math.min(MAX_CARD_W, cardW));
-  cardH = Math.max(MIN_CARD_H, Math.min(MAX_CARD_H, cardH));
+  var newCols = currentCols;
+  var newRows = currentRows;
 
-  // Apply new card size
-  t.baseCardW = cardW;
-  t.baseCardH = cardH;
-  t.dom.style.width = cardW + 'px';
-  t.dom.style.height = cardH + 'px';
-  var inner = t.dom.querySelector('.terminal-inner');
-  if (inner) {
-    inner.style.width = cardW + 'px';
-    inner.style.height = cardH + 'px';
+  if (cardContentAspect > slotAspect) {
+    // Card is wider than slot → width-constrained, height has letterbox.
+    // Increase rows to fill the height (make card taller).
+    newRows = Math.round(currentCols * cellW / (slotAspect * cellH));
+  } else {
+    // Card is taller than slot → height-constrained, width has letterbox.
+    // Increase cols to fill the width (make card wider).
+    newCols = Math.round(currentRows * slotAspect * cellH / cellW);
   }
 
-  // Reset +/- ratio to new card shape
-  var cols = t.screenCols || 80;
-  var rows = t.screenRows || 24;
-  t._origColRowRatio = cols / rows;
+  // Clamp
+  newCols = Math.max(20, Math.min(300, newCols));
+  newRows = Math.max(5, Math.min(100, newRows));
 
-  // Re-run layout to reposition at correct Z-depth for new world size
-  calculateFocusedLayout();
+  t._origColRowRatio = newCols / newRows;
+
+  if (newCols !== currentCols || newRows !== currentRows) {
+    t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
+  }
+
+  // Layout re-runs when the resize response arrives via _screenCallback →
+  // updateCardForNewSize → calculateFocusedLayout. No explicit call needed here
+  // unless in batch mode where we trigger one layout at the end.
+  if (!batch) calculateFocusedLayout();
 }
 
 // === Constants ===
@@ -5407,6 +5429,16 @@ init();
     }
     return state;
   };
+
+  // Test hooks — expose internals for puppeteer/console debugging
+  window._terminals = terminals;
+  window._focusedSessions = focusedSessions;
+  window._focusTerminal = focusTerminal;
+  window._addToFocus = addToFocus;
+  window._setActiveLayoutFromMenu = setActiveLayoutFromMenu;
+  window._maxAllFocused = maxAllFocused;
+  window._equalizeAllFocused = equalizeAllFocused;
+  window._getMeasuredCellSize = getMeasuredCellSize;
 
   window._saveLayout = function() {
     const state = window._getLayoutState();
