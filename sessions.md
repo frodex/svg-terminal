@@ -83,14 +83,60 @@
 [2026-04-04] Top menu bar implementation (plan: docs/superpowers/plans/2026-04-04-top-menu-bar.md)
 [2026-04-04] Re-arm background FPS sampler on addTerminal (gap: new terminals increase load but don't trigger re-evaluation)
 [2026-04-04] **claude-forker:** Implement v0.8 source-verified fix plan — `claude-forker/docs/2026-04-04-v0.8-source-verified-fix-plan.md` (tool `0.2.0`, SPEC `v0.0.9`, `tests/test-fork.sh`, `docs/migration.md`). Next agent owns implementation; journal: `docs/research/2026-04-04-v0.1-claude-forker-v0.8-plan-handoff-journal.md`.
-[2026-04-05] ~~**Legacy cleanup:**~~ DONE — HTTP endpoints removed, WS-only data paths, dead code cleaned up. Session-end and settings-changed events now event-driven from claude-proxy.
-[2026-04-05] **Message pipeline redesign:** Current `cpOnDataChunk` processes messages sequentially in arrival order with no fairness or priority. Needs: per-session message queues, control message priority (kill/permissions before screen diffs), staleness detection (skip intermediate diffs, only send latest), fairness across sessions (round-robin, no chatty-session starvation). This is a core data pipeline change — requires research + plan.
+[2026-04-05] ~~**Legacy cleanup:**~~ DONE — HTTP endpoints removed, WS-only data paths, dead code cleaned up. Path B (direct tmux) fully removed — all sessions via claude-proxy.
+[2026-04-05] **Message pipeline spec:** Verified flow tmux PTY → TerminalMirror (30ms poll) → Unix socket → cpOnDataChunk → WS → browser. Journal v0.2 confirmed. Spec in progress — event-driven TerminalMirror, focus-aware polling, backpressure handling.
+[2026-04-05] **Session settings dashboard handler:** Design in progress. ViewOnly air-gapped router (intent table with validate/encode), card title bar authorization badges ([OWNER], [VIEW ONLY], etc.), access revocation with content clearing + 10s countdown. Missing: dashboard handler for `session-settings` WS messages.
+[2026-04-05] **Hierarchical group permissions:** Design needed. cp-root group, per-group owner/admin, composable group access. Separate brainstorm phase.
+[2026-04-05] **claude-proxy auth fix:** DONE — admin bypass + cp-users gate in listSessionsForUser and canUserAccessSession (bd42aae).
+[2026-04-05] **svg-terminal authorizeSession:** Needs update — missing allowedGroups check, should mirror claude-proxy's canUserAccessSession logic including cp-users gate.
+[2026-04-05] **Button factory consolidation:** Pending — mkHdrBtn, static HTML buttons, sidebar divs need unified approach. Action buttons (auto-blur) vs UI buttons (hold focus). Needed before adding search UI.
 [2026-04-05] **Future card types:** File viewer and file transfer cards planned — all via WebSocket, no HTTP endpoints.
 [2026-04-05] **Fork menu item on cards:** Backend exists (WS fork-session), needs UI — right-click or menu on terminal card to fork.
+[2026-04-05] **Idle time tracking:** claude-proxy composeTitle tracks connected SSH clients but WS viewers don't register. Idle time not updated on WS input path.
 
 ---
 
 ## Session History (most recent first)
+
+### Session 2026-04-05 (late) — Path B Removal, Auth Fixes, Pipeline Research
+
+**Part 1: Path B (Direct Tmux) Removal**
+- Removed ALL direct tmux code from svg-terminal (361 lines, 2450→2089)
+- tmuxAsync, capturePane, capturePaneAt, diffState, getOrCreateWatcher, subscribeToSession, triggerCapture, scroll offsets, resize locks, execFile/parseLine imports — all deleted
+- All WS handlers simplified to cp-only: subscribe, create-session, get-screen, get-sessions, input/resize/scroll
+- sendSessionDiscovery rewritten — single source from cpRequest('listSessions')
+- **Result:** Fast repeat keys in terminal — chunky input was caused by execFile child process spawning
+
+**Part 2: Bug Fixes**
+- +/- and all header buttons stealing focus: `btn.blur()` in mkHdrBtn factory
+- Top-bar Fit All / Max All same issue: blur after click
+- Version hash expanded to include server.mjs and index.html (not just dashboard.mjs)
+- Fire-and-forget on cp input: don't await cpRequest('input'), screen updates arrive via TerminalMirror
+- Upgrade handler bug: bridgeClaudeProxySession "upgrade watcher" path dropped session-end and session-settings-changed events — cards for ended sessions stayed visible
+
+**Part 3: Auth Fixes (claude-proxy)**
+- Root couldn't see sessions owned by other users (cp-frodex's TMUX-cleanup invisible to root)
+- Root cause: listSessionsForUser had no admin bypass, root not in cp-users group
+- Fix: admin bypass (root + cp-admins see all) + cp-users gate (non-members see nothing except own)
+- Applied to both listSessionsForUser and canUserAccessSession
+
+**Part 4: Pipeline Research**
+- Verified complete data flow: PTY → TerminalMirror (30ms poll) → Unix socket → cpOnDataChunk → WS → browser
+- All claims from v0.1 journal verified against code, corrected, and documented in v0.2
+- Identified improvements: event-driven TerminalMirror, focus-aware polling, backpressure handling
+- Found gap: dashboard has no handler for session-settings messages (permission changes invisible to browser)
+
+**Part 5: Design Work (in progress)**
+- Session settings dashboard handler: viewOnly air-gapped router, card title bar authorization badges, access revocation UX
+- Hierarchical group permissions: identified need for cp-root group, per-group owner/admin — deferred to future brainstorm
+
+**Artifacts:**
+- docs/research/2026-04-05-v0.1-path-b-removal-journal.md
+- docs/research/2026-04-05-v0.1-ws-only-first-principles-review-journal.md
+- docs/research/2026-04-05-v0.2-message-pipeline-architecture-journal.md
+- docs/superpowers/plans/2026-04-05-v0.1-path-b-removal.md
+- docs/superpowers/plans/2026-04-05-v0.1-admin-bypass-listSessions.md
+- docs/superpowers/plans/2026-04-05-v0.2-admin-bypass-listSessions.md
 
 ### Session 2026-04-05 — OAuth, Security Hardening, Session Authorization, Admin Panel
 
