@@ -974,6 +974,10 @@ function maximizeCardToSlot(t, batch) {
   newRows = Math.max(5, Math.min(100, newRows));
 
   t._origColRowRatio = newCols / newRows;
+  // Tell updateCardForNewSize to bypass TARGET_WORLD_AREA when the resize arrives.
+  // Store target cols/rows so the flag only activates for the correct resize response,
+  // not for stale layout re-runs that fire before the response arrives.
+  t._fillSlot = { cols: newCols, rows: newRows };
 
   if (newCols !== currentCols || newRows !== currentRows) {
     t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
@@ -1446,6 +1450,12 @@ function calculateSlotLayout(slots) {
     t._slotIndex = a.slotIndex;
     t._slotRect = { x: slotPxX, y: slotPxY, w: slotPxW, h: slotPxH };
     t._slotFit = { fitW: fitW, fitH: fitH, constrainedBy: constrainedBy, slotW: slotPxW, slotH: slotPxH };
+    console.log('[LAYOUT]', a.name.substring(0,20), 'cols='+t.screenCols, 'rows='+t.screenRows,
+      'termAspect='+(card.aspect).toFixed(3), 'slotAspect='+(slotPxW/slotPxH).toFixed(3),
+      'constrained='+constrainedBy, 'fit='+Math.round(fitW)+'x'+Math.round(fitH),
+      'slot='+Math.round(slotPxW)+'x'+Math.round(slotPxH),
+      'cardDOM='+t.baseCardW+'x'+t.baseCardH, 'worldW='+card.worldW.toFixed(1), 'worldH='+card.worldH.toFixed(1),
+      'fillSlot='+(t._fillSlot ? JSON.stringify(t._fillSlot) : 'no'));
     placements.push({ name: a.name, cx: cx, cy: cy, fitW: fitW, fitH: fitH, depth: depth, worldW: card.worldW, worldH: card.worldH });
   }
 
@@ -2496,7 +2506,10 @@ function onMouseDown(e) {
       const sessionName = headerHitSession;
       if (sessionName && focusedSessions.has(sessionName)) {
         isDragging = true;
-        dragMode = (e.ctrlKey || ctrlHeld) ? 'dollyCard' : 'moveCard';
+        // Use only e.ctrlKey from the actual event — ctrlHeld can be stale
+        // (e.g., Ctrl released in another tab/window). On Mac, Ctrl+click = right-click,
+        // so Mac users use this rarely; moveCard is the default.
+        dragMode = e.ctrlKey ? 'dollyCard' : 'moveCard';
         dragDistance = 0;
         dragStart.x = e.clientX;
         dragStart.y = e.clientY;
@@ -3147,6 +3160,12 @@ function createCardDOM(config) {
     inner.appendChild(config.contentEl);
   }
 
+  // Paused overlay — shown when terminal subscription is muted
+  const pausedOverlay = document.createElement('div');
+  pausedOverlay.className = 'card-paused-overlay';
+  pausedOverlay.textContent = '⏸ PAUSED';
+  inner.appendChild(pausedOverlay);
+
   el.appendChild(inner);
   return el;
 }
@@ -3254,6 +3273,36 @@ function createThumbnail(sessionName) {
     removeFromFocus(sessionName);
   });
   item.appendChild(minBtn);
+
+  // Mute/unmute button — toggles subscription to this session's data stream
+  const muteBtn = document.createElement('div');
+  muteBtn.className = 'thumb-mute';
+  muteBtn.textContent = '⏸';
+  muteBtn.title = 'Pause live updates';
+  muteBtn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    var t = terminals.get(sessionName);
+    if (!t) return;
+    var overlay = t.dom ? t.dom.querySelector('.card-paused-overlay') : null;
+    if (t._muted) {
+      // Re-subscribe
+      sendDashboardMessage({ type: 'subscribe', session: sessionName, source: 'claude-proxy' });
+      t._muted = false;
+      muteBtn.textContent = '⏸';
+      muteBtn.title = 'Pause live updates';
+      item.classList.remove('muted');
+      if (overlay) overlay.classList.remove('visible');
+    } else {
+      // Unsubscribe
+      sendDashboardMessage({ type: 'unsubscribe', session: sessionName });
+      t._muted = true;
+      muteBtn.textContent = '▶';
+      muteBtn.title = 'Resume live updates';
+      item.classList.add('muted');
+      if (overlay) overlay.classList.add('visible');
+    }
+  });
+  item.appendChild(muteBtn);
 
   const pre = document.createElement('pre');
   pre.style.cssText = 'margin:0;padding:2px;font-family:monospace;font-size:2px;line-height:1.2;' +
@@ -4056,9 +4105,38 @@ function updateCardForNewSize(t, newCols, newRows) {
   // Use measured cell dimensions from SVG when available — card aspect matches SVG exactly.
   var measured = getMeasuredCellSize(t);
   if (measured) t._needsMeasuredCorrection = false; // correction applied
-  const { cardW, cardH } = measured
-    ? calcCardSize(newCols, newRows, measured.cellW, measured.cellH)
-    : calcCardSize(newCols, newRows);
+
+  var cardW, cardH;
+  // Check if this is the Max All resize response (cols/rows match the target)
+  var fillSlotActive = t._fillSlot && t._slotRect
+    && newCols === t._fillSlot.cols && newRows === t._fillSlot.rows;
+
+  console.log('[updateCardForNewSize]', 'cols='+newCols, 'rows='+newRows,
+    'fillSlot='+JSON.stringify(t._fillSlot), 'match='+fillSlotActive,
+    'oldCard='+parseInt(t.dom.style.width)+'x'+parseInt(t.dom.style.height));
+  if (fillSlotActive) {
+    // Max All mode: size card to fill its slot, bypassing TARGET_WORLD_AREA.
+    // Set card DOM so the terminal's aspect fills the slot.
+    // The frustum projection will then position it at the Z-depth where it fills edge-to-edge.
+    var slot = t._slotRect;
+    var cw = measured ? measured.cellW : SVG_CELL_W;
+    var ch = measured ? measured.cellH : SVG_CELL_H;
+    var termAspect = (newCols * cw) / (newRows * ch);
+    // Scale card DOM so the content area matches the slot's aspect.
+    // Use a consistent base height, then derive width from aspect.
+    var baseH = 1200; // DOM pixels — large enough for crisp rendering
+    cardH = baseH + HEADER_H;
+    cardW = Math.round(baseH * termAspect);
+    cardW = Math.max(MIN_CARD_W, Math.min(MAX_CARD_W, cardW));
+    cardH = Math.max(MIN_CARD_H, Math.min(MAX_CARD_H, cardH));
+    t._fillSlot = null; // consumed
+  } else {
+    var size = measured
+      ? calcCardSize(newCols, newRows, measured.cellW, measured.cellH)
+      : calcCardSize(newCols, newRows);
+    cardW = size.cardW;
+    cardH = size.cardH;
+  }
   // Compensate 3D position so the anchor point stays fixed when resizing.
   // CSS3DObject origin is center — changing DOM size shifts all edges equally.
   // The anchor point (fx, fy) is the fraction of the card where the user clicked.
@@ -4369,8 +4447,9 @@ function focusTerminal(sessionName) {
 
 // Add a terminal to the multi-focus set (ctrl+click)
 function addToFocus(sessionName) {
-  activeLayout = 'auto';  // reset to default layout when focus group changes
-  slotOrder.clear(); // reset card-to-slot assignments when group changes
+  // Keep current layout — new card gets assigned to next available slot.
+  // Only clear slotOrder so the new card can be assigned by the default sort.
+  slotOrder.clear();
   const t = terminals.get(sessionName);
   if (!t) return;
 

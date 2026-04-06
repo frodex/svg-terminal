@@ -242,13 +242,109 @@
 
       function rebuildLinkLayer(lines) {
         while (linkLayer.firstChild) linkLayer.removeChild(linkLayer.firstChild);
+
+        // Build full text per line for multi-line URL detection
+        var lineTexts = [];
+        for (var li = 0; li < lines.length; li++) {
+          var lt = '';
+          var sp = lines[li].spans;
+          for (var si = 0; si < sp.length; si++) lt += sp[si].text;
+          lineTexts.push(lt);
+        }
+
+        // Detect multi-line URLs: if a URL starts on one line and the line ends at
+        // the terminal width (no trailing whitespace), continue concatenating the next
+        // line(s) until we hit whitespace or an empty/short line.
+        var multiLineUrls = [];
+        // Get terminal width from viewBox (reliable) — not from text length
+        var vb = document.getElementById('root').getAttribute('viewBox');
+        var termCols = 80;
+        if (vb) {
+          var vbParts = vb.split(/\s+/);
+          if (CELL_W > 0) termCols = Math.round(parseFloat(vbParts[2]) / CELL_W);
+        }
+        for (var row = 0; row < lineTexts.length; row++) {
+          var text = lineTexts[row];
+          if (text.indexOf('http') >= 0) {
+            console.log('[URL-scan] row=' + row + ' len=' + text.length + ' text="' + text.substring(0, 80) + '"');
+          }
+          var httpIdx = text.indexOf('https://');
+          if (httpIdx < 0) httpIdx = text.indexOf('http://');
+          if (httpIdx < 0) continue;
+          // Build URL by concatenating this line from httpIdx to end, then
+          // subsequent lines that look like URL continuation (no leading space,
+          // non-empty, and the URL text has no whitespace break)
+          var urlText = text.slice(httpIdx).trimEnd();
+          var endRow = row;
+          while (endRow < lineTexts.length - 1) {
+            var nextText = lineTexts[endRow + 1];
+            if (!nextText || nextText.length === 0) break;
+            // If current URL text ends with a URL-safe char and next line starts
+            // with a URL-safe char (no space), it's a continuation
+            var lastChar = urlText[urlText.length - 1];
+            var firstChar = nextText[0];
+            if (/\s/.test(firstChar)) break; // next line starts with space — not continuation
+            if (/\s/.test(lastChar)) break;  // current ends with space — URL ended
+            endRow++;
+            urlText += nextText.trimEnd();
+          }
+          // Find actual URL end in concatenated text
+          var urlEnd = 0;
+          while (urlEnd < urlText.length && !/[\s<>"']/.test(urlText[urlEnd])) urlEnd++;
+          while (urlEnd > 0 && /[.,;:!?)}\]]/.test(urlText[urlEnd - 1])) urlEnd--;
+          if (urlEnd <= 7) continue;
+          var fullUrl = urlText.slice(0, urlEnd);
+          console.log('[URL] rows ' + row + '-' + endRow + ' len=' + fullUrl.length + ' url=' + fullUrl.substring(0, 60) + '...');
+          // Build segments per line
+          var segments = [];
+          var remaining = urlEnd;
+          var segStartCol = httpIdx;
+          for (var sr = row; sr <= endRow && remaining > 0; sr++) {
+            var lineLen = lineTexts[sr].length;
+            var segEnd = Math.min(segStartCol + remaining, lineLen);
+            segments.push({ row: sr, startCol: segStartCol, endCol: segEnd });
+            remaining -= (segEnd - segStartCol);
+            segStartCol = 0; // subsequent lines start at col 0
+          }
+          multiLineUrls.push({ url: fullUrl, startRow: row, segments: segments });
+          row = endRow; // skip processed lines
+        }
+
+        // Draw underlines for multi-line URLs
+        for (var mi = 0; mi < multiLineUrls.length; mi++) {
+          var mlu = multiLineUrls[mi];
+          for (var si = 0; si < mlu.segments.length; si++) {
+            var seg = mlu.segments[si];
+            var ul = document.createElementNS(SVG_NS, 'line');
+            ul.setAttribute('x1', (seg.startCol * CELL_W).toFixed(2));
+            ul.setAttribute('y1', ((seg.row + 1) * CELL_H - 1).toFixed(2));
+            ul.setAttribute('x2', (seg.endCol * CELL_W).toFixed(2));
+            ul.setAttribute('y2', ((seg.row + 1) * CELL_H - 1).toFixed(2));
+            ul.setAttribute('stroke', '#5c8fff');
+            ul.setAttribute('stroke-width', '1');
+            ul.setAttribute('opacity', '0.6');
+            ul.setAttribute('data-url', mlu.url);
+            ul.appendChild(document.createElementNS(SVG_NS, 'title')); // tooltip
+            ul.lastChild.textContent = mlu.url;
+            linkLayer.appendChild(ul);
+          }
+        }
+
+        // Also do per-line detection for single-line URLs not caught above
+        var multiLineRows = new Set();
+        for (var mi = 0; mi < multiLineUrls.length; mi++) {
+          for (var si = 0; si < multiLineUrls[mi].segments.length; si++) {
+            multiLineRows.add(multiLineUrls[mi].segments[si].row);
+          }
+        }
+
         for (var row = 0; row < lines.length; row++) {
+          if (multiLineRows.has(row)) continue; // already handled by multi-line detection
           var spans = lines[row].spans;
           var colOffset = 0;
           for (var s = 0; s < spans.length; s++) {
             var span = spans[s];
             if (span.url) {
-              // Server already tagged this span as a URL
               var underline = document.createElementNS(SVG_NS, 'line');
               underline.setAttribute('x1', (colOffset * CELL_W).toFixed(2));
               underline.setAttribute('y1', ((row + 1) * CELL_H - 1).toFixed(2));
@@ -260,8 +356,6 @@
               underline.setAttribute('data-url', span.url);
               linkLayer.appendChild(underline);
             } else {
-              // Client-side URL detection for spans not tagged by server
-              // (e.g., claude-proxy sessions using screen-renderer.ts without tagPlainUrls)
               var found = findUrlsInText(span.text);
               for (var u = 0; u < found.length; u++) {
                 var ul = document.createElementNS(SVG_NS, 'line');
