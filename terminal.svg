@@ -266,7 +266,6 @@
         for (var row = 0; row < lineTexts.length; row++) {
           var text = lineTexts[row];
           if (text.indexOf('http') >= 0) {
-            console.log('[URL-scan] row=' + row + ' len=' + text.length + ' text="' + text.substring(0, 80) + '"');
           }
           var httpIdx = text.indexOf('https://');
           if (httpIdx < 0) httpIdx = text.indexOf('http://');
@@ -294,7 +293,6 @@
           while (urlEnd > 0 && /[.,;:!?)}\]]/.test(urlText[urlEnd - 1])) urlEnd--;
           if (urlEnd <= 7) continue;
           var fullUrl = urlText.slice(0, urlEnd);
-          console.log('[URL] rows ' + row + '-' + endRow + ' len=' + fullUrl.length + ' url=' + fullUrl.substring(0, 60) + '...');
           // Build segments per line
           var segments = [];
           var remaining = urlEnd;

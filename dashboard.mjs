@@ -1450,12 +1450,6 @@ function calculateSlotLayout(slots) {
     t._slotIndex = a.slotIndex;
     t._slotRect = { x: slotPxX, y: slotPxY, w: slotPxW, h: slotPxH };
     t._slotFit = { fitW: fitW, fitH: fitH, constrainedBy: constrainedBy, slotW: slotPxW, slotH: slotPxH };
-    console.log('[LAYOUT]', a.name.substring(0,20), 'cols='+t.screenCols, 'rows='+t.screenRows,
-      'termAspect='+(card.aspect).toFixed(3), 'slotAspect='+(slotPxW/slotPxH).toFixed(3),
-      'constrained='+constrainedBy, 'fit='+Math.round(fitW)+'x'+Math.round(fitH),
-      'slot='+Math.round(slotPxW)+'x'+Math.round(slotPxH),
-      'cardDOM='+t.baseCardW+'x'+t.baseCardH, 'worldW='+card.worldW.toFixed(1), 'worldH='+card.worldH.toFixed(1),
-      'fillSlot='+(t._fillSlot ? JSON.stringify(t._fillSlot) : 'no'));
     placements.push({ name: a.name, cx: cx, cy: cy, fitW: fitW, fitH: fitH, depth: depth, worldW: card.worldW, worldH: card.worldH });
   }
 
@@ -2937,14 +2931,79 @@ function getUrlAtCell(t, row, col) {
   let match;
   while ((match = urlRegex.exec(fullLine)) !== null) {
     let url = match[0];
-    // Strip trailing punctuation
     while (/[.,;:!?)}\]]$/.test(url)) url = url.slice(0, -1);
     const start = match.index;
     const end = start + url.length;
     if (col >= start && col < end) {
-      return url;
+      // Check if URL continues on subsequent lines (multi-line wrapped URL)
+      let fullUrl = url;
+      let nextRow = row + 1;
+      while (nextRow < (t.screenLines || []).length) {
+        const nextLine = t.screenLines[nextRow];
+        if (!nextLine || !nextLine.spans) break;
+        const nextText = nextLine.spans.map(s => s.text).join('').trimEnd();
+        if (!nextText || /^\s/.test(nextText)) break;
+        // URL chars continue — no space at start
+        let ext = '';
+        for (let ci = 0; ci < nextText.length; ci++) {
+          if (/[\s<>"']/.test(nextText[ci])) break;
+          ext += nextText[ci];
+        }
+        if (!ext) break;
+        while (/[.,;:!?)}\]]$/.test(ext)) ext = ext.slice(0, -1);
+        fullUrl += ext;
+        if (ext.length < nextText.length) break; // hit a space/break mid-line
+        nextRow++;
+      }
+      return fullUrl;
     }
   }
+
+  // Multi-line URL: clicked row might be a continuation (no https:// on this line).
+  // Build the full URL by scanning backwards to find the https:// start,
+  // then forward to the end of the URL.
+  {
+    // Step 1: find the URL-starting row by scanning backwards
+    let startRow = -1;
+    let httpCol = -1;
+    for (let sr = row; sr >= Math.max(0, row - 10); sr--) {
+      const sl = t.screenLines[sr];
+      if (!sl || !sl.spans) break;
+      const st = sl.spans.map(s => s.text).join('');
+      const hi = Math.max(st.indexOf('https://'), st.indexOf('http://'));
+      if (hi >= 0) {
+        startRow = sr;
+        httpCol = hi;
+        break;
+      }
+      // If this line starts with space, it's not a URL continuation — stop
+      if (sr < row && /^\s/.test(st)) break;
+    }
+    if (startRow >= 0 && startRow <= row) {
+      // Step 2: concatenate from startRow forward, building the full URL
+      let urlText = '';
+      for (let cr = startRow; cr < (t.screenLines || []).length; cr++) {
+        const cl = t.screenLines[cr];
+        if (!cl || !cl.spans) break;
+        let ct = cl.spans.map(s => s.text).join('');
+        if (cr === startRow) ct = ct.slice(httpCol); // start from https://
+        // Check if this line continues the URL (no leading space, non-empty)
+        if (cr > startRow) {
+          if (!ct || /^\s/.test(ct)) break;
+        }
+        urlText += ct.trimEnd();
+      }
+      // Extract the URL (stop at whitespace/delimiter)
+      let fullUrl = '';
+      for (let ci = 0; ci < urlText.length; ci++) {
+        if (/[\s<>"']/.test(urlText[ci])) break;
+        fullUrl += urlText[ci];
+      }
+      while (/[.,;:!?)}\]]$/.test(fullUrl)) fullUrl = fullUrl.slice(0, -1);
+      if (fullUrl.length > 7) return fullUrl;
+    }
+  }
+
   return null;
 }
 
@@ -4111,9 +4170,6 @@ function updateCardForNewSize(t, newCols, newRows) {
   var fillSlotActive = t._fillSlot && t._slotRect
     && newCols === t._fillSlot.cols && newRows === t._fillSlot.rows;
 
-  console.log('[updateCardForNewSize]', 'cols='+newCols, 'rows='+newRows,
-    'fillSlot='+JSON.stringify(t._fillSlot), 'match='+fillSlotActive,
-    'oldCard='+parseInt(t.dom.style.width)+'x'+parseInt(t.dom.style.height));
   if (fillSlotActive) {
     // Max All mode: size card to fill its slot, bypassing TARGET_WORLD_AREA.
     // Set card DOM so the terminal's aspect fills the slot.
