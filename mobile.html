@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>svg-terminal (mobile)</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" id="favicon">
+  <link rel="stylesheet" href="/mobile.css">
+</head>
+<body>
+  <!-- Top bar -->
+  <header id="top-bar">
+    <button id="hamburger-btn" aria-label="Menu">&#9776;</button>
+    <select id="session-dropdown">
+      <option value="">No sessions</option>
+    </select>
+    <div id="text-size-controls">
+      <button id="size-decrease" aria-label="Decrease text size">&minus;</button>
+      <button id="size-increase" aria-label="Increase text size">&plus;</button>
+    </div>
+  </header>
+
+  <!-- Hamburger menu (hidden by default) -->
+  <nav id="hamburger-menu" class="hidden">
+    <a href="/desktop">Desktop view</a>
+    <a href="/login">Logout</a>
+  </nav>
+
+  <!-- Terminal area -->
+  <main id="terminal-area">
+    <object id="terminal-obj" type="image/svg+xml" data="/terminal.svg"
+            aria-label="Terminal"></object>
+    <!-- Touch overlay — captures touch events that <object> would swallow -->
+    <div id="touch-overlay"></div>
+    <!-- Session name overlay (shown during swipe transitions) -->
+    <div id="session-overlay" class="hidden"></div>
+  </main>
+
+  <!-- Input area — fixed to bottom of visual viewport, floats above keyboard -->
+  <div id="input-area">
+    <!-- Special key row -->
+    <div id="special-keys">
+      <button data-key="ctrl-c">Ctrl+C</button>
+      <button data-key="tab">Tab</button>
+      <button data-key="arrow-up">&uarr;</button>
+      <button data-key="arrow-down">&darr;</button>
+      <button data-key="escape">Esc</button>
+      <button data-key="ctrl-z">Ctrl+Z</button>
+      <button data-key="ctrl-d">Ctrl+D</button>
+      <button data-key="ctrl-l">Ctrl+L</button>
+    </div>
+
+    <!-- Input bar -->
+    <footer id="input-bar">
+      <input type="text" id="text-input" placeholder="Type command..."
+             autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+      <button id="voice-btn" aria-label="Voice input">&#127908;</button>
+    </footer>
+  </div>
+
+  <script src="/mobile.mjs" type="module"></script>
+</body>
+</html>

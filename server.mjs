@@ -163,6 +163,8 @@ const CLIENT_VERSION = (() => {
     hash.update(readFileSync(staticPath('dashboard.mjs')));
     hash.update(readFileSync(staticPath('index.html')));
     hash.update(readFileSync(import.meta.filename));  // server.mjs itself
+    try { hash.update(readFileSync(staticPath('mobile.mjs'))); } catch {}
+    try { hash.update(readFileSync(staticPath('mobile.html'))); } catch {}
     return hash.digest('hex').slice(0, 8);
   } catch { return 'unknown'; }
 })();
@@ -363,6 +365,25 @@ function handleRoot(req, res) {
     res.end(content);
   } catch (err) {
     sendError(res, 500, 'Failed to read index.html');
+  }
+}
+
+function handleMobile(req, res) {
+  try {
+    let content = readFileSync(staticPath('mobile.html'), 'utf8');
+    content = content.replace(
+      'src="/mobile.mjs"',
+      'src="/mobile.mjs?v=' + CLIENT_VERSION + '"'
+    );
+    setCors(res);
+    res.setHeader('Content-Type', 'text/html');
+    res.setHeader('Content-Security-Policy', CSP_HEADER);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.writeHead(200);
+    res.end(content);
+  } catch (err) {
+    sendError(res, 500, 'Failed to read mobile.html');
   }
 }
 
@@ -839,6 +860,29 @@ async function handleDashboardWs(ws, req) {
               ws.send(JSON.stringify(watcher._lastScreen));
             }
           }
+        }
+        return;
+      }
+
+      // Unsubscribe from a single session (mobile session switching, selective cleanup)
+      if (msg.type === 'unsubscribe') {
+        const session = msg.session;
+        if (session && validateParam(session)) {
+          const key = session + ':0';
+          const watcher = sessionWatchers.get(key);
+          if (watcher) {
+            watcher.subscribers.delete(ws);
+            if (watcher.subscribers.size === 0) {
+              if (watcher.timer) clearInterval(watcher.timer);
+              if (watcher._cpTerminalHandler) {
+                cpUnregisterTerminal(watcher.session, watcher._cpTerminalHandler);
+              }
+              cpMaybeUnsub(watcher.session).catch(() => {});
+              sessionWatchers.delete(key);
+            }
+          }
+          const keys = wsToWatcherKeys.get(ws);
+          if (keys) keys.delete(key);
         }
         return;
       }
@@ -1928,6 +1972,36 @@ function router(req, res) {
           return;
         }
       }
+      // Auto-redirect mobile User-Agents to /mobile
+      const ua = (req.headers['user-agent'] || '').toLowerCase();
+      const isMobile = /mobile|android|iphone|ipad|ipod|webos|blackberry|opera mini|iemobile/i.test(ua);
+      if (isMobile) {
+        res.writeHead(302, { Location: '/mobile' });
+        res.end();
+        return;
+      }
+      return handleRoot(req, res);
+    }
+    if (pathname === '/mobile') {
+      if (AUTH_ENABLED) {
+        const user = getAuthUser(req);
+        if (!user || user.status !== 'approved') {
+          res.writeHead(302, { Location: '/login' });
+          res.end();
+          return;
+        }
+      }
+      return handleMobile(req, res);
+    }
+    if (pathname === '/desktop') {
+      if (AUTH_ENABLED) {
+        const user = getAuthUser(req);
+        if (!user || user.status !== 'approved') {
+          res.writeHead(302, { Location: '/login' });
+          res.end();
+          return;
+        }
+      }
       return handleRoot(req, res);
     }
     if (pathname === '/terminal.svg') {
@@ -2032,6 +2106,30 @@ function router(req, res) {
         res.end(content);
       } catch (err) {
         sendError(res, 500, 'Failed to read polyhedra.mjs');
+      }
+      return;
+    }
+    if (pathname === '/mobile.css') {
+      try {
+        const content = readFileSync(staticPath('mobile.css'));
+        setCors(res);
+        res.setHeader('Content-Type', 'text/css');
+        res.writeHead(200);
+        res.end(content);
+      } catch (err) {
+        sendError(res, 500, 'Failed to read mobile.css');
+      }
+      return;
+    }
+    if (pathname === '/mobile.mjs') {
+      try {
+        const content = readFileSync(staticPath('mobile.mjs'));
+        setCors(res);
+        res.setHeader('Content-Type', 'application/javascript');
+        res.writeHead(200);
+        res.end(content);
+      } catch (err) {
+        sendError(res, 500, 'Failed to read mobile.mjs');
       }
       return;
     }

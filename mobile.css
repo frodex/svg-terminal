@@ -1,0 +1,243 @@
+/* Mobile single-card terminal — full viewport layout */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  overflow: hidden; /* no body scroll — terminal handles scrolling */
+  background: #1a1a2e;
+  color: #e0e0e0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh; /* dynamic viewport height — accounts for mobile browser chrome */
+}
+
+/* --- Top bar --- */
+#top-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #16213e;
+  border-bottom: 1px solid #0f3460;
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+#hamburger-btn {
+  background: none;
+  border: none;
+  color: #e0e0e0;
+  font-size: 1.4rem;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+#session-dropdown {
+  flex: 1;
+  background: #0f3460;
+  color: #e0e0e0;
+  border: 1px solid #533483;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 0.9rem;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+#text-size-controls {
+  display: flex;
+  gap: 4px;
+}
+
+#text-size-controls button {
+  background: #0f3460;
+  color: #e0e0e0;
+  border: 1px solid #533483;
+  border-radius: 4px;
+  width: 32px;
+  height: 32px;
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* --- Hamburger menu --- */
+#hamburger-menu {
+  position: absolute;
+  top: 44px;
+  left: 0;
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 0 0 8px 0;
+  padding: 8px 0;
+  z-index: 20;
+  min-width: 180px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+#hamburger-menu a {
+  display: block;
+  padding: 10px 16px;
+  color: #e0e0e0;
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+#hamburger-menu a:active {
+  background: #0f3460;
+}
+
+#hamburger-menu.hidden {
+  display: none;
+}
+
+/* --- Terminal area --- */
+#terminal-area {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  touch-action: none; /* prevent browser gestures — we handle all touch */
+  background: #0d1117;
+}
+
+#terminal-obj {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+
+#session-overlay {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-size: 1.2rem;
+  font-weight: 600;
+  pointer-events: none;
+  transition: opacity 0.3s;
+}
+
+#session-overlay.hidden {
+  display: none;
+}
+
+/* --- Special key row --- */
+/* Input area (special keys + input bar) floats at bottom of visual viewport.
+   Uses position:fixed so the keyboard pushes it up without reflowing the terminal. */
+#input-area {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: #16213e;
+  border-top: 1px solid #0f3460;
+}
+
+#special-keys {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #16213e;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  flex-shrink: 0;
+  scrollbar-width: none; /* Firefox */
+}
+
+#special-keys::-webkit-scrollbar {
+  display: none; /* Chrome/Safari */
+}
+
+#special-keys button {
+  background: #0f3460;
+  color: #e0e0e0;
+  border: 1px solid #533483;
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+#special-keys button:active {
+  background: #533483;
+}
+
+/* --- Input bar --- */
+#input-bar {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #16213e;
+  flex-shrink: 0;
+}
+
+/* Touch overlay — transparent layer over <object> to capture touch events */
+#touch-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  touch-action: none;
+}
+
+/* Terminal area needs bottom padding to not be hidden behind the fixed input area */
+#terminal-area {
+  padding-bottom: var(--input-area-height, 90px);
+}
+
+#text-input {
+  flex: 1;
+  background: #0d1117;
+  color: #e0e0e0;
+  border: 1px solid #533483;
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 1rem;
+  font-family: 'Cascadia Code', 'Fira Code', 'SF Mono', monospace;
+  outline: none;
+}
+
+#text-input:focus {
+  border-color: #e94560;
+}
+
+#voice-btn {
+  background: #0f3460;
+  color: #e0e0e0;
+  border: 1px solid #533483;
+  border-radius: 4px;
+  width: 44px;
+  font-size: 1.2rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#voice-btn:active,
+#voice-btn.listening {
+  background: #e94560;
+  border-color: #e94560;
+}
+
+#voice-btn.unsupported {
+  opacity: 0.3;
+  pointer-events: none;
+}
