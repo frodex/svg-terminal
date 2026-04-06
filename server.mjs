@@ -324,49 +324,6 @@ async function cpResubscribeAll() {
   await cpPushFullScreensAfterCpResubscribe();
 }
 
-/** Legacy /ws/terminal path: bridge browser WebSocket to claude-proxy via Unix socket */
-function attachCpToTerminalWs(clientWs, sessionId, linuxUser) {
-  const u = linuxUser || CP_DEFAULT_USER;
-  const handler = (cpMsg) => {
-    if (cpMsg.event !== 'terminal' || cpMsg.sessionId !== sessionId) return;
-    const inner = cpMsg.data;
-    if (inner == null) return;
-    const payload = typeof inner === 'object' && !Array.isArray(inner) ? { ...inner } : { value: inner };
-    if (clientWs.readyState === 1) clientWs.send(JSON.stringify(payload));
-  };
-  cpRegisterTerminal(sessionId, handler);
-  void cpEnsureSubscribed(sessionId, u).catch(() => {
-    try { clientWs.close(); } catch { /* ignore */ }
-  });
-  clientWs.on('message', async (data) => {
-    try {
-      const msg = JSON.parse(typeof data === 'string' ? data : data.toString());
-      if (msg.type === 'input') {
-        await cpRequest('input', {
-          sessionId,
-          user: u,
-          body: { keys: msg.keys, specialKey: msg.specialKey, ctrl: msg.ctrl, alt: msg.alt, repeat: msg.repeat },
-        });
-      } else if (msg.type === 'resize') {
-        await cpRequest('resize', { sessionId, user: u, cols: msg.cols, rows: msg.rows });
-      } else if (msg.type === 'scroll') {
-        await cpRequest('scroll', { sessionId, user: u, offset: msg.offset });
-      }
-    } catch (e) {
-      process.stderr.write('[ws/terminal] input error: ' + (e.message || e) + '\n');
-      if (clientWs.readyState === 1) {
-        clientWs.send(JSON.stringify({ type: 'error', message: 'Input processing error [attachCpToTerminalWs]' }));
-      }
-    }
-  });
-  const onDone = () => {
-    cpUnregisterTerminal(sessionId, handler);
-    void cpMaybeUnsub(sessionId);
-  };
-  clientWs.on('close', onDone);
-  clientWs.on('error', onDone);
-}
-
 // ---------------------------------------------------------------------------
 // Response helpers
 // ---------------------------------------------------------------------------
@@ -503,63 +460,6 @@ async function capturePaneAt(session, pane, offset) {
            path, command, pid, historySize, dead, lines };
 }
 
-// DEPRECATED (PRD v0.5.0 §3.2): HTTP polling endpoint, replaced by WebSocket screen/delta via /ws/dashboard
-async function handlePane(req, res, params) {
-  const session = params.get('session');
-  const pane = params.get('pane') || '0';
-  if (!session) return sendError(res, 400, 'Missing session parameter');
-  if (!validateParam(session)) return sendError(res, 400, 'Invalid session name');
-  if (!validateParam(pane)) return sendError(res, 400, 'Invalid pane identifier');
-
-  const auth = getAuthUser(req);
-  if (STRICT_SESSION_AUTHZ) {
-    if (!authorizeSession(auth, session)) {
-      sendError(res, 403, 'Not authorized for this session');
-      return;
-    }
-  }
-
-  // Check if session is on local tmux (default server)
-  let isLocal = false;
-  try {
-    await tmuxAsync('has-session', '-t', session);
-    isLocal = true;
-  } catch {}
-
-  if (isLocal) {
-    // Local tmux — direct capture
-    try {
-      const state = await capturePane(session, pane);
-      sendJson(res, 200, state);
-    } catch (err) {
-      sendError(res, 500, 'tmux error: ' + err.message);
-    }
-  } else {
-    // Claude-proxy session — screen via Unix socket JSON-RPC
-    try {
-      const cpUser = (auth ? (auth.linux_user || CP_DEFAULT_USER) : CP_DEFAULT_USER);
-      const state = await cpRequest('getSessionScreen', {
-        sessionId: session,
-        user: cpUser,
-      }, 3000);
-      state.path = state.path || '';
-      state.command = state.command || '';
-      state.pid = state.pid || 0;
-      state.historySize = state.historySize || 0;
-      state.dead = false;
-      sendJson(res, 200, state);
-    } catch (err) {
-      if (err.code === 'NOT_FOUND') {
-        return sendError(res, 404, err.message || 'Session not found');
-      }
-      const m = String(err.message || err);
-      if (/ECONNREFUSED|ENOENT|not connect|socket/i.test(m)) {
-        return sendError(res, 503, 'claude-proxy unavailable: ' + m);
-      }
-      sendError(res, 502, 'claude-proxy: ' + m);
-    }
-  }
-}
 
 const ALLOWED_SPECIAL_KEYS = new Set([
   'Enter', 'Tab', 'Escape', 'BSpace', 'DC', 'IC',
@@ -586,73 +486,6 @@ function isAllowedKey(key) {
   return ALLOWED_SPECIAL_KEYS.has(key) || Object.keys(CP_TO_TMUX_KEYS).includes(key) || /^C-[a-z]$/.test(key);
 }
 
-async function handleSessions(req, res) {
-  const seen = new Set();
-  const sessions = [];
-
-  // Source 1: local tmux (default server)
-  try {
-    const raw = (await tmuxAsync(
-      'list-sessions', '-F', '#{session_name} #{session_windows} #{window_width} #{window_height}'
-    )).trim();
-
-    for (const line of raw.split('\n').filter(Boolean)) {
-      const parts = line.split(' ');
-      const height = parseInt(parts.pop(), 10);
-      const width = parseInt(parts.pop(), 10);
-      const windows = parseInt(parts.pop(), 10);
-      const name = parts.join(' ');
-      sessions.push({ name, windows, cols: width, rows: height, source: 'tmux' });
-      seen.add(name);
-    }
-  } catch (err) {
-    // tmux not running or no sessions — continue with claude-proxy source
-  }
-
-  // Source 2: claude-proxy (Unix socket)
-  // CP sessions also appear in local tmux (same tmux server).  Override source
-  // so input is routed through claude-proxy's mode-aware sendInput, not tmux send-keys.
-  // NOTE: Intentionally uses CP_DEFAULT_USER — this is the server's own session discovery
-  // at startup, not a user request. User-facing discovery in sendSessionDiscovery() uses
-  // the authenticated user's linux_user.
-  try {
-    const cpSessions = await cpRequest('listSessions', { user: CP_DEFAULT_USER }, 2000);
-    for (const s of cpSessions || []) {
-      const name = s.id || s.name;
-      const existing = sessions.find(e => e.name === name);
-      if (existing) {
-        existing.source = 'claude-proxy';
-        existing.cpId = s.id || name;
-        existing.displayName = s.name || s.id;
-        existing.title = s.title || name;
-        existing.launchProfile = s.launchProfile;
-      } else {
-        sessions.push({
-          name,
-          cpId: s.id || name,
-          displayName: s.name || s.id,
-          windows: 1,
-          cols: s.cols || 80,
-          rows: s.rows || 24,
-          title: s.title || name,
-          source: 'claude-proxy',
-          launchProfile: s.launchProfile
-        });
-      }
-      seen.add(name);
-    }
-  } catch (err) {
-    // claude-proxy not running or unreachable — that's fine
-  }
-
-  if (STRICT_SESSION_AUTHZ) {
-    const auth = getAuthUser(req);
-    const filtered = sessions.filter(s => authorizeSession(auth, typeof s === 'string' ? s : s.name));
-    sendJson(res, 200, filtered);
-  } else {
-    sendJson(res, 200, sessions);
-  }
-}
 
 /** Build createSession body for claude-proxy — mirrors CreateSessionRequest / session-form field mapping. */
 function buildCreateSessionPayload(body, autoName) {
@@ -720,144 +553,8 @@ function mapCpErrorToStatus(err) {
   return 502;
 }
 
-async function handleCpDeadSessions(req, res) {
-  const auth = getAuthUser(req);
-  const linuxUser = auth && auth.linux_user ? auth.linux_user : CP_DEFAULT_USER;
-  try {
-    const data = await cpRequest('listDeadSessions', { user: linuxUser }, 8000);
-    return sendJson(res, 200, Array.isArray(data) ? data : []);
-  } catch (err) {
-    process.stderr.write('[svg-terminal] listDeadSessions: ' + (err && err.message ? err.message : err) + '\n');
-    return sendError(res, 502, err.message || String(err));
-  }
-}
 
-async function handleRestartSession(req, res) {
-  const auth = getAuthUser(req);
-  const linuxUser = auth && auth.linux_user ? auth.linux_user : CP_DEFAULT_USER;
-  let body = {};
-  try {
-    const raw = await readBody(req);
-    if (raw) body = JSON.parse(raw);
-  } catch (e) {
-    return sendError(res, 400, 'Invalid JSON');
-  }
-  const deadId = body.deadSessionId || body.sessionId;
-  if (!deadId || typeof deadId !== 'string') {
-    return sendError(res, 400, 'deadSessionId is required');
-  }
-  const settings = buildRestartForkSettings(body);
-  try {
-    const result = await cpRequest(
-      'restartSession',
-      { user: linuxUser, sessionId: deadId, settings },
-      120000
-    );
-    notifyDashboardCpSessionCreated(result, linuxUser);
-    return sendJson(res, 201, { ok: true, source: 'claude-proxy', session: result });
-  } catch (err) {
-    process.stderr.write('[svg-terminal] restartSession: ' + (err && err.message ? err.message : err) + '\n');
-    return sendError(res, mapCpErrorToStatus(err), err.message || String(err));
-  }
-}
 
-async function handleForkSession(req, res) {
-  const auth = getAuthUser(req);
-  const linuxUser = auth && auth.linux_user ? auth.linux_user : CP_DEFAULT_USER;
-  let body = {};
-  try {
-    const raw = await readBody(req);
-    if (raw) body = JSON.parse(raw);
-  } catch (e) {
-    return sendError(res, 400, 'Invalid JSON');
-  }
-  const sourceId = body.sourceSessionId || body.sessionId;
-  if (!sourceId || typeof sourceId !== 'string') {
-    return sendError(res, 400, 'sourceSessionId is required');
-  }
-  const settings = buildRestartForkSettings(body);
-  try {
-    const result = await cpRequest(
-      'forkSession',
-      { user: linuxUser, sessionId: sourceId, settings },
-      120000
-    );
-    notifyDashboardCpSessionCreated(result, linuxUser);
-    return sendJson(res, 201, { ok: true, source: 'claude-proxy', session: result });
-  } catch (err) {
-    process.stderr.write('[svg-terminal] forkSession: ' + (err && err.message ? err.message : err) + '\n');
-    return sendError(res, mapCpErrorToStatus(err), err.message || String(err));
-  }
-}
-
-/**
- * Create session: claude-proxy `createSession` via Unix socket; optional tmux fallback for shell-only.
- * POST JSON matches claude-proxy CreateSessionRequest (+ launchProfile shell|claude|cursor).
- */
-async function handleCreateSession(req, res) {
-  const auth = getAuthUser(req);
-  const linuxUser = auth && auth.linux_user ? auth.linux_user : CP_DEFAULT_USER;
-
-  let body = {};
-  try {
-    const raw = await readBody(req);
-    if (raw) body = JSON.parse(raw);
-  } catch (e) {
-    return sendError(res, 400, 'Invalid JSON');
-  }
-
-  const autoName = 'svg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
-  const payload = buildCreateSessionPayload(body, autoName);
-  const launchProfile = payload.launchProfile;
-
-  try {
-    const result = await cpRequest('createSession', { user: linuxUser, body: payload }, 120000);
-    notifyDashboardCpSessionCreated(result, linuxUser);
-    return sendJson(res, 201, { ok: true, source: 'claude-proxy', session: result });
-  } catch (err) {
-    process.stderr.write('[svg-terminal] createSession (cp): ' + (err && err.message ? err.message : err) + '\n');
-    if (launchProfile !== 'shell') {
-      const msg = err && err.message ? err.message : String(err);
-      return sendError(
-        res,
-        502,
-        'claude-proxy could not create this session (' + launchProfile + '). ' + msg
-      );
-    }
-  }
-
-  let tmuxName = payload.name;
-  try {
-    await tmuxAsync('has-session', '-t', tmuxName);
-    tmuxName = payload.name + '-' + Date.now().toString(36);
-  } catch (e) {
-    /* name free */
-  }
-
-  try {
-    await tmuxAsync('new-session', '-d', '-s', tmuxName, '-x', '80', '-y', '24');
-    return sendJson(res, 201, { ok: true, source: 'tmux', name: tmuxName });
-  } catch (err2) {
-    const msg = err2 && err2.message ? err2.message : String(err2);
-    return sendError(res, 500, 'Could not create session: ' + msg);
-  }
-}
-
-/** Proxy claude-proxy picklists for session form (same data as ANSI TUI). */
-async function handleCpPicklist(req, res, pathname) {
-  let method = null;
-  if (pathname === '/api/cp/remotes') method = 'listRemotes';
-  else if (pathname === '/api/cp/users') method = 'listUsers';
-  else if (pathname === '/api/cp/groups') method = 'listGroups';
-  else return sendError(res, 404, 'Not found');
-  try {
-    const data = await cpRequest(method, {}, 8000);
-    return sendJson(res, 200, data == null ? [] : data);
-  } catch (err) {
-    process.stderr.write(`[svg-terminal] ${method}: ` + (err && err.message ? err.message : err) + '\n');
-    return sendJson(res, 200, []);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // WebSocket helpers
@@ -1417,6 +1114,105 @@ async function handleDashboardWs(ws, req) {
         return;
       }
 
+      // Picklist data over WS (replaces GET /api/cp/users, /groups, /remotes, /dead-sessions)
+      if (msg.type === 'get-picklists') {
+        try {
+          const linuxUser = user.linux_user || CP_DEFAULT_USER;
+          const [users, groups, remotes, deadSessions] = await Promise.all([
+            cpRequest('listUsers', {}, 8000).catch(() => []),
+            cpRequest('listGroups', {}, 8000).catch(() => []),
+            cpRequest('listRemotes', {}, 8000).catch(() => []),
+            cpRequest('listDeadSessions', { user: linuxUser }, 8000).catch(() => []),
+          ]);
+          if (ws.readyState === 1) ws.send(JSON.stringify({
+            type: 'picklists',
+            users: Array.isArray(users) ? users : [],
+            groups: Array.isArray(groups) ? groups : [],
+            remotes: Array.isArray(remotes) ? remotes : [],
+            deadSessions: Array.isArray(deadSessions) ? deadSessions : [],
+          }));
+        } catch (err) {
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'picklists', users: [], groups: [], remotes: [], deadSessions: [] }));
+        }
+        return;
+      }
+
+      // Screen data over WS (replaces GET /api/pane for screen heal)
+      if (msg.type === 'get-screen') {
+        try {
+          const session = msg.session;
+          const pane = msg.pane || '0';
+          if (!session || !validateParam(session)) throw new Error('Invalid session');
+          if (!validateParam(pane)) throw new Error('Invalid pane');
+          if (STRICT_SESSION_AUTHZ && !authorizeSession(user, session)) {
+            throw new Error('Not authorized');
+          }
+          let isLocal = false;
+          try { await tmuxAsync('has-session', '-t', session); isLocal = true; } catch {}
+          let state;
+          if (isLocal) {
+            state = await capturePane(session, pane);
+          } else {
+            const cpUser = user.linux_user || CP_DEFAULT_USER;
+            state = await cpRequest('getSessionScreen', { sessionId: session, user: cpUser }, 3000);
+          }
+          if (ws.readyState === 1) {
+            state.type = 'screen';
+            state.session = session;
+            state.pane = pane;
+            state.scrollOffset = 0;
+            ws.send(JSON.stringify(state));
+          }
+        } catch (err) {
+          if (ws.readyState === 1) ws.send(JSON.stringify({
+            type: 'error', session: msg.session || null, message: 'Screen fetch failed'
+          }));
+        }
+        return;
+      }
+
+      // Session list over WS (replaces GET /api/sessions for fork/restart dialogs)
+      if (msg.type === 'get-sessions') {
+        try {
+          const cpUser = user.linux_user || CP_DEFAULT_USER;
+          const sessions = [];
+          // Local tmux
+          try {
+            const raw = (await tmuxAsync('list-sessions', '-F', '#{session_name} #{session_windows} #{window_width} #{window_height}')).trim();
+            for (const line of raw.split('\n').filter(Boolean)) {
+              const parts = line.split(' ');
+              const height = parseInt(parts.pop(), 10);
+              const width = parseInt(parts.pop(), 10);
+              const windows = parseInt(parts.pop(), 10);
+              const name = parts.join(' ');
+              sessions.push({ name, windows, cols: width, rows: height, source: 'tmux' });
+            }
+          } catch {}
+          // Claude-proxy
+          try {
+            const cpSessions = await cpRequest('listSessions', { user: cpUser }, 2000);
+            for (const s of cpSessions || []) {
+              const name = s.id || s.name;
+              if (!sessions.some(x => x.name === name)) {
+                sessions.push({
+                  name, cpId: s.id, displayName: s.name, windows: 1,
+                  cols: s.cols || 80, rows: s.rows || 24,
+                  title: s.title, source: 'claude-proxy', launchProfile: s.launchProfile,
+                });
+              }
+            }
+          } catch {}
+          // Filter by authZ
+          const filtered = STRICT_SESSION_AUTHZ
+            ? sessions.filter(s => authorizeSession(user, s.name))
+            : sessions;
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'sessions', sessions: filtered }));
+        } catch (err) {
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'sessions', sessions: [] }));
+        }
+        return;
+      }
+
       // Focus message — adjust capture rates for all watchers
       if (msg.type === 'focus') {
         const focused = new Set(msg.sessions || []);
@@ -1602,129 +1398,6 @@ function handleSSE(req, res) {
 
 const resizeLocks = new Map();
 const RESIZE_LOCK_MS = 500;
-
-// DEPRECATED (PRD v0.5.0 §3.4): Per-connection polling, replaced by SessionWatcher + /ws/dashboard
-// Kept for old pre-WebSocket tmux sessions during transition. Remove when old sessions terminated.
-async function handleTerminalWs(ws, session, pane) {
-  // If a shared watcher exists, skip the capture loop but keep the message
-  // handler so input still works as fallback if shared WS isn't delivering.
-  const hasSharedWatcher = sessionWatchers.has(session + ':' + pane);
-
-  let lastState = null;
-  let pollTimer = null;
-
-  // Capture pane at shared scroll offset and push to client
-  async function captureAndPush() {
-    // Self-terminate if a shared watcher took over (race: per-card WS connects before shared WS)
-    if (sessionWatchers.has(session + ':' + pane)) {
-      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-      return;
-    }
-    try {
-      const offset = getScrollOffset(session, pane);
-      let state;
-      if (offset > 0) {
-        state = await capturePaneAt(session, pane, offset);
-      } else {
-        state = await capturePane(session, pane);
-      }
-      const diff = diffState(lastState, state);
-      if (diff && ws.readyState === 1) {
-        diff.scrollOffset = offset;
-        ws.send(JSON.stringify(diff));
-        lastState = state;
-      }
-    } catch (err) {
-      process.stderr.write('[ws/terminal] capture error: ' + (err.message || err) + '\n');
-      if (ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'error', message: 'Terminal capture error' }));
-      }
-    }
-  }
-
-  if (!hasSharedWatcher) {
-    // Only run per-card capture loop if no shared watcher exists.
-    // Shared watcher handles capture + broadcast for this session.
-    await captureAndPush();
-    pollTimer = setInterval(captureAndPush, 30);
-  }
-
-  ws.on('message', async (data) => {
-    try {
-      const msg = JSON.parse(data);
-      if (msg.type === 'resize') {
-        const lock = resizeLocks.get(session);
-        if (lock && lock.ws !== ws && Date.now() < lock.expires) {
-          return; // another browser holds the lock
-        }
-        resizeLocks.set(session, { ws, expires: Date.now() + RESIZE_LOCK_MS });
-        const cols = Math.max(20, Math.min(500, parseInt(msg.cols) || 80));
-        const rows = Math.max(5, Math.min(200, parseInt(msg.rows) || 24));
-        try {
-          // Use resize-window, not resize-pane. resize-pane only works within
-          // the window's current size constraints. resize-window changes the
-          // window dimensions which then allows the pane to fill them.
-          await tmuxAsync('resize-window', '-t', session, '-x', String(cols), '-y', String(rows));
-        } catch (err) {
-          // resize may fail if session doesn't exist — ignore
-        }
-        // Force re-capture to get new dimensions
-        lastState = null;
-        setTimeout(captureAndPush, 10);
-        return;
-      }
-      if (msg.type === 'scroll') {
-        setScrollOffset(session, pane, Math.max(0, parseInt(msg.offset) || 0));
-        lastState = null;
-        await captureAndPush();
-        return;
-      }
-      if (msg.type === 'input') {
-        const target = session + ':' + pane;
-        if (msg.scrollTo != null) {
-          // Absolute scroll offset — set directly
-          setScrollOffset(session, pane, Math.max(0, msg.scrollTo));
-          lastState = null;
-          await captureAndPush();
-          return;
-        } else if (msg.specialKey && isAllowedKey(msg.specialKey)) {
-          // Any keystroke snaps back to live view
-          setScrollOffset(session, pane, 0);
-          // Support repeat count for cursor movement (click-to-position).
-          // Fires all send-keys in parallel (Promise.all) for speed — individual
-          // awaits were too slow and caused dropped keystrokes.
-          const repeat = Math.min(Math.max(1, parseInt(msg.repeat) || 1), 200);
-          if (repeat > 1) {
-            const promises = [];
-            for (let i = 0; i < repeat; i++) {
-              promises.push(tmuxAsync('send-keys', '-t', target, translateKeyForTmux(msg.specialKey)));
-            }
-            await Promise.all(promises);
-          } else {
-            await tmuxAsync('send-keys', '-t', target, translateKeyForTmux(msg.specialKey));
-          }
-        } else if (msg.keys != null) {
-          setScrollOffset(session, pane, 0);
-          if (msg.ctrl && msg.keys.length === 1) {
-            // Ctrl combo: { keys: "c", ctrl: true } → tmux "C-c"
-            await tmuxAsync('send-keys', '-t', target, 'C-' + msg.keys);
-          } else {
-            await tmuxAsync('send-keys', '-t', target, '-l', String(msg.keys));
-          }
-        }
-        setTimeout(captureAndPush, 5);
-      }
-    } catch (err) {
-      console.error('[ws/terminal-legacy] input error:', err);
-      if (ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'error', message: 'Input processing error [handleTerminalWs]' }));
-      }
-    }
-  });
-
-  ws.on('close', () => { clearInterval(pollTimer); setScrollOffset(session, pane, 0); });
-  ws.on('error', () => { clearInterval(pollTimer); });
-}
 
 // ---------------------------------------------------------------------------
 // Proxy handler — fetches external URL, strips X-Frame-Options/CSP headers
@@ -2526,51 +2199,9 @@ function router(req, res) {
     const user = requireAuth(req, res);
     if (!user) return;
 
-    // Session data endpoints require an active API key — cookie alone is not sufficient
-    // This prevents stale browsers with valid cookies from seeing session data
-    // without having the current JS loaded (which fetches an API key)
-    const isSessionDataEndpoint = pathname === '/api/sessions' || pathname === '/api/pane' ||
-      pathname === '/api/cp/dead-sessions' || pathname.startsWith('/api/sessions/');
-    if (isSessionDataEndpoint && apiKeyStore) {
-      const apiKeyHeader = req.headers['x-api-key'];
-      if (!apiKeyHeader || !apiKeyStore.validate(apiKeyHeader)) {
-        sendError(res, 401, 'API key required');
-        return;
-      }
-    }
   }
 
   if (pathname === '/admin-client.mjs') return serveJs(req, res, 'admin-client.mjs');
-
-  if (req.method === 'POST' && pathname === '/api/sessions/create') {
-    handleCreateSession(req, res).catch(err => sendCaughtError(res, err));
-    return;
-  }
-
-  if (req.method === 'POST' && pathname === '/api/sessions/restart') {
-    handleRestartSession(req, res).catch(err => sendCaughtError(res, err));
-    return;
-  }
-
-  if (req.method === 'POST' && pathname === '/api/sessions/fork') {
-    handleForkSession(req, res).catch(err => sendCaughtError(res, err));
-    return;
-  }
-
-  if (
-    req.method === 'GET' &&
-    (pathname === '/api/cp/remotes' ||
-      pathname === '/api/cp/users' ||
-      pathname === '/api/cp/groups' ||
-      pathname === '/api/cp/dead-sessions')
-  ) {
-    if (pathname === '/api/cp/dead-sessions') {
-      handleCpDeadSessions(req, res).catch(err => sendCaughtError(res, err));
-    } else {
-      handleCpPicklist(req, res, pathname).catch(err => sendCaughtError(res, err));
-    }
-    return;
-  }
 
   if (req.method === 'GET') {
     if (pathname === '/') {
@@ -2586,24 +2217,6 @@ function router(req, res) {
     }
     if (pathname === '/terminal.svg') {
       return handleSvg(req, res);
-    }
-    if (pathname === '/terminal') {
-      try {
-        const content = readFileSync(staticPath('terminal.html'));
-        setCors(res);
-        res.setHeader('Content-Type', 'text/html');
-        res.setHeader('Content-Security-Policy', CSP_HEADER);
-        res.setHeader('X-Content-Type-Options', 'nosniff');
-        res.writeHead(200);
-        res.end(content);
-      } catch (err) {
-        sendError(res, 500, 'Failed to read terminal.html');
-      }
-      return;
-    }
-    if (pathname === '/api/pane') {
-      handlePane(req, res, url.searchParams).catch(err => sendCaughtError(res, err));
-      return;
     }
     // STUB — TO BE FINISHED/COMPLETED: layout persistence per authenticated user.
     // Currently stores layout as JSON file keyed by user email.
@@ -2643,10 +2256,6 @@ function router(req, res) {
         return;
       }
       sendError(res, 405, 'GET or POST only');
-      return;
-    }
-    if (pathname === '/api/sessions') {
-      handleSessions(req, res).catch(err => sendCaughtError(res, err));
       return;
     }
     if (pathname === '/api/proxy') {

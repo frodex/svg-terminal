@@ -647,7 +647,7 @@
         // Per-card /ws/terminal removed (Task 8). Dashboard shared WS
         // delivers screen data via renderMessage(). Nothing to start here.
       } else if (!SESSION) {
-        startPolling(150);
+        // Standalone viewer removed — no polling needed
       }
     })();
   ]]>

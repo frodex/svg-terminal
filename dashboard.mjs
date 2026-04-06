@@ -1435,16 +1435,11 @@ function init() {
     .then(function(data) {
       _apiKey = data.key;
       connectDashboardWs();
-      // Start session polling AFTER API key is available
-      refreshSessions();
-      setInterval(refreshSessions, 30000);
     })
     .catch(function(e) {
       if (e.message !== 'not authenticated') {
         // API key fetch failed but we're authenticated — try without key
         connectDashboardWs();
-        refreshSessions();
-        setInterval(refreshSessions, 30000);
       }
     });
 
@@ -1452,17 +1447,7 @@ function init() {
   wireSessionFormPanel();
   wireRestartForkPanels();
   syncUiOverlayPointerBlock();
-  // DEPRECATED: titles arrive via WebSocket screen/delta messages
-  // setInterval(refreshTitles, 10000);
   animate();
-}
-
-// Authenticated fetch — adds API key header to session data requests
-function authFetch(url, opts) {
-  opts = opts || {};
-  opts.headers = opts.headers || {};
-  if (_apiKey) opts.headers['X-Api-Key'] = _apiKey;
-  return fetch(url, opts);
 }
 
 // === Shared Dashboard WebSocket ===
@@ -1590,21 +1575,7 @@ function routeEmbedMessageToSvg(t, obj, msg, opt) {
   if (msg.type === 'delta' && !t._screenAppliedToEmbed) {
     if (!t._screenHealRequested) {
       t._screenHealRequested = true;
-      authFetch('/api/pane?session=' + encodeURIComponent(msg.session) + '&pane=0')
-        .then(function(r) { return r.ok ? r.json() : null; })
-        .then(function(state) {
-          if (!state || !state.lines) return;
-          var t2 = terminals.get(msg.session);
-          if (!t2 || t2._screenAppliedToEmbed) return;
-          var obj2 = t2.dom ? t2.dom.querySelector('object') : null;
-          if (!obj2 || !obj2.contentWindow || typeof obj2.contentWindow.renderMessage !== 'function') return;
-          var healMsg = { type: 'screen', session: msg.session, pane: '0',
-            width: state.width || 80, height: state.height || 24,
-            cursor: state.cursor, lines: state.lines, scrollOffset: 0 };
-          routeEmbedMessageToSvg(t2, obj2, healMsg);
-        })
-        .catch(function() {})
-        .finally(function() { t._screenHealRequested = false; });
+      requestScreenHeal(msg.session, '0');
     }
     return;
   }
@@ -1677,6 +1648,21 @@ function routeDashboardMessage(msg) {
     // Save UI state before redirect
     if (window._saveLayout) window._saveLayout();
     showReconnectOverlay(0); // immediate — show login link
+    return;
+  }
+  if (msg.type === 'picklists') {
+    _lastPicklistData = msg;
+    var cbs = _picklistCallbacks;
+    _picklistCallbacks = [];
+    for (var i = 0; i < cbs.length; i++) {
+      try { cbs[i](msg); } catch (e) {}
+    }
+    return;
+  }
+  if (msg.type === 'sessions') {
+    // Response to get-sessions — used by fork/restart dialogs
+    // Store for callers that are waiting
+    if (_sessionsCallback) { _sessionsCallback(msg.sessions || []); _sessionsCallback = null; }
     return;
   }
   if (msg.type === 'session-add') {
@@ -1894,6 +1880,19 @@ function sendDashboardMessage(msg) {
     return true;
   }
   return false;
+}
+
+var _picklistCallbacks = [];
+var _lastPicklistData = null;
+var _sessionsCallback = null;
+
+function requestPicklists(callback) {
+  _picklistCallbacks.push(callback);
+  sendDashboardMessage({ type: 'get-picklists' });
+}
+
+function requestScreenHeal(session, pane) {
+  sendDashboardMessage({ type: 'get-screen', session: session, pane: pane || '0' });
 }
 
 function sendFocusState() {
@@ -3028,42 +3027,6 @@ window._terminals = terminals;
 window._focusTerminal = focusTerminal;
 window._activeInputSession = function() { return activeInputSession; };
 
-// === Session Discovery ===
-// DEPRECATED (PRD v0.5.0 §3.7): Session discovery replaced by session-add/session-remove WebSocket events
-// Kept as fallback during transition for old sessions not yet on shared WebSocket
-async function refreshSessions() {
-  try {
-    const res = await authFetch('/api/sessions');
-    if (!res.ok) return;
-    const sessions = await res.json();
-    const currentNames = new Set(sessions.map(function (s) { return s.name; }));
-    const existingNames = new Set(terminals.keys());
-
-    let changed = false;
-    for (const session of sessions) {
-      if (!existingNames.has(session.name)) {
-        addTerminal(session.name, session.cols, session.rows);
-        // Tell server to create a watcher for this session on the shared WS
-        sendDashboardMessage({ type: 'subscribe', session: session.name, source: session.source || 'tmux' });
-        changed = true;
-      } else {
-        // Update card size if tmux dimensions changed (e.g. resized from another client)
-        const t = terminals.get(session.name);
-        if (t) updateCardForNewSize(t, session.cols, session.rows);
-      }
-    }
-    for (const name of existingNames) {
-      if (!currentNames.has(name) && !name.startsWith('browser-')) {
-        removeTerminal(name);
-        changed = true;
-      }
-    }
-    if (changed) {
-      assignRings();
-      if (focusedSessions.size > 0) calculateFocusedLayout();
-    }
-  } catch (e) {}
-}
 
 /** Cached /auth/me for session form (admin-only fields). */
 var _authMeCache = null;
@@ -3134,67 +3097,51 @@ function updateSessionFormVisibility() {
 }
 
 async function loadSessionFormPicklists() {
-  var usersEl = document.getElementById('sf-users');
-  var groupsEl = document.getElementById('sf-groups');
-  var remoteEl = document.getElementById('sf-remote');
-  _sessionFormRemotesCount = 0;
+  return new Promise(function(resolve) {
+    requestPicklists(function(data) {
+      var usersEl = document.getElementById('sf-users');
+      var groupsEl = document.getElementById('sf-groups');
+      var remoteEl = document.getElementById('sf-remote');
+      _sessionFormRemotesCount = 0;
 
-  async function load(url) {
-    try {
-      var r = await fetch(url, { credentials: 'same-origin' });
-      if (!r.ok) return [];
-      return await r.json();
-    } catch (e) {
-      return [];
-    }
-  }
-
-  var users = await load('/api/cp/users');
-  if (usersEl) {
-    usersEl.innerHTML = '';
-    (Array.isArray(users) ? users : []).forEach(function(u) {
-      var opt = document.createElement('option');
-      opt.value = typeof u === 'string' ? u : (u.name || u);
-      opt.textContent = opt.value;
-      usersEl.appendChild(opt);
-    });
-  }
-
-  var groups = await load('/api/cp/groups');
-  if (groupsEl) {
-    groupsEl.innerHTML = '';
-    (Array.isArray(groups) ? groups : []).forEach(function(g) {
-      var opt = document.createElement('option');
-      var v = typeof g === 'string' ? g : (g.systemName || g.name);
-      opt.value = v;
-      opt.textContent = typeof g === 'string' ? g : (g.name || v);
-      groupsEl.appendChild(opt);
-    });
-  }
-
-  if (remoteEl) {
-    remoteEl.innerHTML = '';
-    var loc = document.createElement('option');
-    loc.value = '';
-    loc.textContent = 'local';
-    remoteEl.appendChild(loc);
-    var remotes = await load('/api/cp/remotes');
-    if (Array.isArray(remotes)) {
-      _sessionFormRemotesCount = remotes.length;
-      remotes.forEach(function(r) {
-        var opt = document.createElement('option');
-        if (typeof r === 'string') {
-          opt.value = r;
-          opt.textContent = r;
-        } else {
-          opt.value = r.host || r.name || r.id || '';
-          opt.textContent = r.label || r.name || r.host || opt.value;
+      if (usersEl) {
+        usersEl.innerHTML = '';
+        (data.users || []).forEach(function(u) {
+          var opt = document.createElement('option');
+          opt.value = typeof u === 'string' ? u : (u.name || u);
+          opt.textContent = opt.value;
+          usersEl.appendChild(opt);
+        });
+      }
+      if (groupsEl) {
+        groupsEl.innerHTML = '';
+        (data.groups || []).forEach(function(g) {
+          var opt = document.createElement('option');
+          var v = typeof g === 'string' ? g : (g.systemName || g.name);
+          opt.value = v;
+          opt.textContent = typeof g === 'string' ? g : (g.name || v);
+          groupsEl.appendChild(opt);
+        });
+      }
+      if (remoteEl) {
+        remoteEl.innerHTML = '';
+        var loc = document.createElement('option');
+        loc.value = ''; loc.textContent = 'local';
+        remoteEl.appendChild(loc);
+        if (Array.isArray(data.remotes)) {
+          _sessionFormRemotesCount = data.remotes.length;
+          data.remotes.forEach(function(r) {
+            var opt = document.createElement('option');
+            opt.value = typeof r === 'string' ? r : (r.host || r.name || '');
+            opt.textContent = typeof r === 'string' ? r : (r.label || r.name || r.host || opt.value);
+            if (opt.value) remoteEl.appendChild(opt);
+          });
         }
-        if (opt.value) remoteEl.appendChild(opt);
-      });
-    }
-  }
-  updateSessionFormVisibility();
+      }
+      updateSessionFormVisibility();
+      resolve();
+    });
+  });
 }
 
 function closeSessionFormPanel() {
@@ -3394,40 +3341,33 @@ function updateForkPanelVisibility() {
 }
 
 async function loadRestartForkPicklists() {
-  async function load(url) {
-    try {
-      var r = await fetch(url, { credentials: 'same-origin' });
-      if (!r.ok) return [];
-      return await r.json();
-    } catch (e) {
-      return [];
-    }
-  }
-
-  var users = await load('/api/cp/users');
-  ['rs-users', 'fk-users'].forEach(function(id) {
-    var usersEl = document.getElementById(id);
-    if (!usersEl) return;
-    usersEl.innerHTML = '';
-    (Array.isArray(users) ? users : []).forEach(function(u) {
-      var opt = document.createElement('option');
-      opt.value = typeof u === 'string' ? u : (u.name || u);
-      opt.textContent = opt.value;
-      usersEl.appendChild(opt);
-    });
-  });
-
-  var groups = await load('/api/cp/groups');
-  ['rs-groups', 'fk-groups'].forEach(function(id) {
-    var groupsEl = document.getElementById(id);
-    if (!groupsEl) return;
-    groupsEl.innerHTML = '';
-    (Array.isArray(groups) ? groups : []).forEach(function(g) {
-      var opt = document.createElement('option');
-      var v = typeof g === 'string' ? g : (g.systemName || g.name);
-      opt.value = v;
-      opt.textContent = typeof g === 'string' ? g : (g.name || v);
-      groupsEl.appendChild(opt);
+  return new Promise(function(resolve) {
+    requestPicklists(function(data) {
+      _lastPicklistData = data;
+      ['rs-users', 'fk-users'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.innerHTML = '';
+        (data.users || []).forEach(function(u) {
+          var opt = document.createElement('option');
+          opt.value = typeof u === 'string' ? u : (u.name || u);
+          opt.textContent = opt.value;
+          el.appendChild(opt);
+        });
+      });
+      ['rs-groups', 'fk-groups'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.innerHTML = '';
+        (data.groups || []).forEach(function(g) {
+          var opt = document.createElement('option');
+          var v = typeof g === 'string' ? g : (g.systemName || g.name);
+          opt.value = v;
+          opt.textContent = typeof g === 'string' ? g : (g.name || v);
+          el.appendChild(opt);
+        });
+      });
+      resolve();
     });
   });
 }
@@ -3447,31 +3387,25 @@ async function openRestartSessionPanel() {
     ph.value = '';
     ph.textContent = '— Select a dead session —';
     deadSel.appendChild(ph);
-    try {
-      var r = await fetch('/api/cp/dead-sessions', { credentials: 'same-origin' });
-      var list = r.ok ? await r.json() : [];
-      if (!Array.isArray(list)) list = [];
-      if (list.length === 0) {
-        if (emptyHint) emptyHint.hidden = false;
-        if (rsBtn) rsBtn.disabled = true;
-      } else {
-        if (emptyHint) emptyHint.hidden = true;
-        if (rsBtn) rsBtn.disabled = false;
-        list.forEach(function(d) {
-          var id = d.id || d.tmuxId;
-          if (!id) return;
-          var opt = document.createElement('option');
-          opt.value = id;
-          var lp = d.launchProfile || '';
-          opt.setAttribute('data-profile', lp);
-          opt.textContent = (d.name || id) + (lp ? ' (' + lp + ')' : '');
-          deadSel.appendChild(opt);
-        });
-        if (deadSel.options.length > 1) deadSel.selectedIndex = 1;
-      }
-    } catch (e) {
+    var list = (_lastPicklistData && Array.isArray(_lastPicklistData.deadSessions))
+      ? _lastPicklistData.deadSessions : [];
+    if (list.length === 0) {
       if (emptyHint) emptyHint.hidden = false;
       if (rsBtn) rsBtn.disabled = true;
+    } else {
+      if (emptyHint) emptyHint.hidden = true;
+      if (rsBtn) rsBtn.disabled = false;
+      list.forEach(function(d) {
+        var id = d.id || d.tmuxId;
+        if (!id) return;
+        var opt = document.createElement('option');
+        opt.value = id;
+        var lp = d.launchProfile || '';
+        opt.setAttribute('data-profile', lp);
+        opt.textContent = (d.name || id) + (lp ? ' (' + lp + ')' : '');
+        deadSel.appendChild(opt);
+      });
+      if (deadSel.options.length > 1) deadSel.selectedIndex = 1;
     }
   }
 
@@ -3511,29 +3445,28 @@ async function openForkSessionPanel() {
   var emptyHint = document.getElementById('fk-empty-hint');
   if (srcSel) {
     srcSel.innerHTML = '';
-    try {
-      var r = await authFetch('/api/sessions');
-      var list = r.ok ? await r.json() : [];
-      if (!Array.isArray(list)) list = [];
-      var cpOnly = list.filter(function(s) {
-        return s && s.source === 'claude-proxy';
-      });
-      if (cpOnly.length === 0) {
-        if (emptyHint) emptyHint.hidden = false;
-      } else {
-        if (emptyHint) emptyHint.hidden = true;
-        cpOnly.forEach(function(s) {
-          var opt = document.createElement('option');
-          opt.value = s.name;
-          opt.textContent = (s.title || s.displayName || s.name) + ' — ' + s.name;
-          srcSel.appendChild(opt);
-        });
-        if (activeInputSession && cpOnly.some(function(x) { return x.name === activeInputSession; })) {
-          srcSel.value = activeInputSession;
-        }
-      }
-    } catch (e) {
+    var list = await new Promise(function(resolve) {
+      _sessionsCallback = resolve;
+      sendDashboardMessage({ type: 'get-sessions' });
+      setTimeout(function() { if (_sessionsCallback) { _sessionsCallback([]); _sessionsCallback = null; } }, 5000);
+    });
+    if (!Array.isArray(list)) list = [];
+    var cpOnly = list.filter(function(s) {
+      return s && s.source === 'claude-proxy';
+    });
+    if (cpOnly.length === 0) {
       if (emptyHint) emptyHint.hidden = false;
+    } else {
+      if (emptyHint) emptyHint.hidden = true;
+      cpOnly.forEach(function(s) {
+        var opt = document.createElement('option');
+        opt.value = s.name;
+        opt.textContent = (s.title || s.displayName || s.name) + ' — ' + s.name;
+        srcSel.appendChild(opt);
+      });
+      if (activeInputSession && cpOnly.some(function(x) { return x.name === activeInputSession; })) {
+        srcSel.value = activeInputSession;
+      }
     }
   }
 
@@ -3670,24 +3603,9 @@ function wireRestartForkPanels() {
   }
 }
 
-// DEPRECATED (PRD v0.5.0): Titles arrive via WebSocket screen/delta messages
-async function refreshTitles() {
-  for (const name of terminals.keys()) {
-    const title = await fetchTitle(name);
-    if (title) updateTerminalTitle(name, title);
-  }
-}
+// Titles arrive via WS screen/delta messages — no HTTP fetch needed
+async function fetchTitle() { return null; }
 
-// === Add/Remove ===
-// DEPRECATED (PRD v0.5.0): Titles arrive via WebSocket screen/delta messages
-async function fetchTitle(sessionName) {
-  try {
-    const res = await authFetch('/api/pane?session=' + encodeURIComponent(sessionName) + '&pane=0');
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.title || null;
-  } catch (e) { return null; }
-}
 
 function updateTerminalTitle(sessionName, title) {
   const t = terminals.get(sessionName);
@@ -3880,11 +3798,6 @@ function addTerminal(sessionName, cols, rows) {
       this._thumbDirty = true;  // input = activity, thumbnail should refresh
       // Try shared dashboard WebSocket first (new path)
       if (sendDashboardMessage({ session: sessionName, pane: '0', ...msg })) return;
-      // Fallback: route through SVG's own WebSocket (old sessions during transition)
-      var obj = this.dom ? this.dom.querySelector('object') : null;
-      if (obj && obj.contentWindow && typeof obj.contentWindow.sendToWs === 'function') {
-        if (obj.contentWindow.sendToWs(msg)) return;
-      }
     },
     // Unified scroll — one offset, one method. Used by mouse wheel, PgUp/PgDn, etc.
     scrollBy: function(lines) {
@@ -3982,21 +3895,7 @@ function addTerminal(sessionName, cols, rows) {
           scheduleTerminalSurfaceRepaint(termObj, t);
         } else if (t && !t._screenAppliedToEmbed) {
           // Self-heal: SVG loaded but no screen arrived — fetch current screen
-          authFetch('/api/pane?session=' + encodeURIComponent(sessionName) + '&pane=0')
-            .then(function(r) { return r.ok ? r.json() : null; })
-            .then(function(state) {
-              if (!state || !state.lines) return;
-              var t2 = terminals.get(sessionName);
-              if (!t2) return;
-              var obj2 = t2.dom ? t2.dom.querySelector('object') : null;
-              if (!obj2 || !obj2.contentWindow || typeof obj2.contentWindow.renderMessage !== 'function') return;
-              if (t2._screenAppliedToEmbed) return;
-              var msg = { type: 'screen', session: sessionName, pane: '0',
-                width: state.width || 80, height: state.height || 24,
-                cursor: state.cursor, lines: state.lines, scrollOffset: 0 };
-              routeEmbedMessageToSvg(t2, obj2, msg);
-            })
-            .catch(function() {});
+          requestScreenHeal(sessionName, '0');
         }
         // Initial thumbnail snapshot once main SVG has content
         t._thumbDirty = true;
