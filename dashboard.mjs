@@ -505,17 +505,23 @@ function fitAllFocused() {
 
 function maxAllFocused() {
   if (focusedSessions.size < 2) return;
-  // Pin current slot assignments so layout doesn't re-sort after resize
+  // Clear slotOrder so underflow rescaling works (fills available space).
+  // We'll re-pin after layout runs to prevent future re-sorting.
+  slotOrder.clear();
+  // Run layout first so _slotRect reflects rescaled slot dimensions
+  calculateFocusedLayout();
+  // Now maximize each card to its (rescaled) slot
+  for (var name of focusedSessions) {
+    var t = terminals.get(name);
+    if (t) maximizeCardToSlot(t, true);
+  }
+  // Pin slot assignments so subsequent layout runs don't re-sort
   for (var [fn, ft] of terminals) {
     if (focusedSessions.has(fn) && ft._slotIndex != null) {
       slotOrder.set(fn, ft._slotIndex);
     }
   }
-  for (var name of focusedSessions) {
-    var t = terminals.get(name);
-    if (t) maximizeCardToSlot(t, true); // batch mode — skip individual layout recalc
-  }
-  calculateFocusedLayout(); // one layout recalc for all
+  calculateFocusedLayout();
 }
 
 // --- POV-FONT-SIZE equalization ---
@@ -915,13 +921,18 @@ function optimizeCardToTerm(t) {
   }
 }
 
-// Maximize card→slot: eliminate letterbox by filling the slot completely.
-// 1. Determine which dimension is unconstrained (letterboxed)
-// 2. Increase terminal cols or rows to stretch into the letterbox
-// 3. Card DOM updates from the resize (updateCardForNewSize), layout re-runs
+// Maximize card→slot: eliminate letterbox by growing the unconstrained dimension.
+//
+// After layout places a card in a slot, one dimension is constrained (fills the slot)
+// and the other is letterboxed. This function grows the letterboxed dimension so the
+// card fills the slot completely. The constrained dimension stays the same — cols or
+// rows on that axis don't change.
+//
+// Step 1 (done by layout): card placed in slot, Z-depth fills constrained dimension
+// Step 2 (this function): grow unconstrained dimension to fill slot
+// Step 3 (layout re-run): Z-depth adjusts for new card shape, card fills slot edge-to-edge
 function maximizeCardToSlot(t, batch) {
-  if (!t._slotRect && !t._layoutSlot) return;
-  var slot = t._slotRect || t._layoutSlot;
+  if (!t._slotFit && !t._slotRect) return;
 
   var m = getMeasuredCellSize(t);
   var cellW = m ? m.cellW : SVG_CELL_W;
@@ -930,21 +941,32 @@ function maximizeCardToSlot(t, batch) {
   var currentCols = t.screenCols || 80;
   var currentRows = t.screenRows || 24;
 
-  // Current card aspect (from terminal content, excluding header)
-  var cardContentAspect = (currentCols * cellW) / (currentRows * cellH);
-  var slotAspect = slot.w / slot.h;
-
   var newCols = currentCols;
   var newRows = currentRows;
 
-  if (cardContentAspect > slotAspect) {
-    // Card is wider than slot → width-constrained, height has letterbox.
-    // Increase rows to fill the height (make card taller).
-    newRows = Math.round(currentCols * cellW / (slotAspect * cellH));
+  if (t._slotFit) {
+    var fit = t._slotFit;
+    if (fit.constrainedBy === 'width') {
+      // Width fills slot, height is letterboxed. Grow rows to fill height.
+      // Current screen height = fitH. Slot height = slotH. Ratio = slotH / fitH.
+      // New rows = currentRows * (slotH / fitH) — scale rows to fill the slot height.
+      var rowScale = fit.slotH / fit.fitH;
+      newRows = Math.round(currentRows * rowScale);
+    } else {
+      // Height fills slot, width is letterboxed. Grow cols to fill width.
+      var colScale = fit.slotW / fit.fitW;
+      newCols = Math.round(currentCols * colScale);
+    }
   } else {
-    // Card is taller than slot → height-constrained, width has letterbox.
-    // Increase cols to fill the width (make card wider).
-    newCols = Math.round(currentRows * slotAspect * cellH / cellW);
+    // Fallback: use slot aspect ratio
+    var slot = t._slotRect;
+    var slotAspect = slot.w / slot.h;
+    var cardAspect = (currentCols * cellW) / (currentRows * cellH);
+    if (cardAspect > slotAspect) {
+      newRows = Math.round(currentCols * cellW / (slotAspect * cellH));
+    } else {
+      newCols = Math.round(currentRows * slotAspect * cellH / cellW);
+    }
   }
 
   // Clamp
@@ -1400,15 +1422,17 @@ function calculateSlotLayout(slots) {
 
     // Card must fit within slot while preserving its aspect ratio (letterbox).
     var slotAspect = slotPxW / slotPxH;
-    var fitW, fitH;
+    var fitW, fitH, constrainedBy;
     if (card.aspect > slotAspect) {
       // Card is wider than slot — constrained by width
       fitW = slotPxW;
       fitH = slotPxW / card.aspect;
+      constrainedBy = 'width';
     } else {
       // Card is taller than slot — constrained by height
       fitH = slotPxH;
       fitW = slotPxH * card.aspect;
+      constrainedBy = 'height';
     }
 
     // Center the card within its slot
@@ -1420,7 +1444,8 @@ function calculateSlotLayout(slots) {
     var depth = card.worldH / (fracH * 2 * halfTan);
 
     t._slotIndex = a.slotIndex;
-    t._slotRect = { x: slotPxX, y: slotPxY, w: slotPxW, h: slotPxH }; // screen-space slot rect for drop zone hit testing
+    t._slotRect = { x: slotPxX, y: slotPxY, w: slotPxW, h: slotPxH };
+    t._slotFit = { fitW: fitW, fitH: fitH, constrainedBy: constrainedBy, slotW: slotPxW, slotH: slotPxH };
     placements.push({ name: a.name, cx: cx, cy: cy, fitW: fitW, fitH: fitH, depth: depth, worldW: card.worldW, worldH: card.worldH });
   }
 
