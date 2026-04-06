@@ -728,7 +728,8 @@ var RENDER_SCALE_DEFAULT = 2;
 
 // Camera position — closer to match original visual density
 const HOME_POS = new THREE.Vector3(-15, 20, 900);
-const HOME_TARGET = new THREE.Vector3(-15, 0, 0);
+const HOME_TARGET_INITIAL = new THREE.Vector3(-15, 0, 0);
+const HOME_TARGET = HOME_TARGET_INITIAL.clone();
 
 // === State ===
 let scene, camera, renderer;
@@ -2062,7 +2063,8 @@ function onMouseMove(e) {
       const offset = _dragRight.multiplyScalar(-dx * scale).add(_dragUp.multiplyScalar(dy * scale));
       camera.position.add(offset);
       currentLookTarget.add(offset);
-      HOME_TARGET.add(offset);
+      // Don't mutate HOME_TARGET — it's the fixed home position for unfocus/reset.
+      // Pan only affects currentLookTarget and camera.position.
       camera.lookAt(currentLookTarget);
 
     } else if (dragMode === 'rotateOrigin') {
@@ -3965,9 +3967,11 @@ function focusTerminal(sessionName) {
   camera.fov = 50;
   camera.updateProjectionMatrix();
 
-  // Also reset orbit state so unfocus returns to a clean position
+  // Reset orbit and look state — ensures camera tween starts from a known state
   orbitAngle = 0;
   orbitPitch = 0;
+  // Reset HOME_TARGET in case shift+drag corrupted it
+  HOME_TARGET.copy(HOME_TARGET_INITIAL);
 
   // CAMERA-ONLY FOCUS (See PRD §2.2): card stays at base size, camera moves close
   // enough to fill the viewport. No DOM resize, no inner scale transform, no state
