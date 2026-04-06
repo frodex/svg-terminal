@@ -511,6 +511,66 @@ function maxAllFocused() {
   }
 }
 
+// --- POV-FONT-SIZE equalization ---
+// Target POV font size in CSS-equivalent pixels. User-configurable.
+var _povFontTarget = parseFloat(localStorage.getItem('pov-font-target') || '11');
+
+function equalizeAllFocused() {
+  if (focusedSessions.size < 1) return;
+
+  // _povFontTarget is CSS font-size in px. We measure what that font-size actually
+  // produces in the browser by creating a hidden monospace calibration element.
+  // This accounts for DPI, zoom, font rendering — the browser is the authority.
+  var probe = document.getElementById('_pov-font-probe');
+  if (!probe) {
+    probe = document.createElement('span');
+    probe.id = '_pov-font-probe';
+    probe.style.cssText = 'position:fixed;left:-9999px;top:-9999px;font-family:"FiraCode Nerd Font Mono",monospace;white-space:pre;visibility:hidden;';
+    probe.textContent = 'MMMMMMMMMM'; // 10 chars for averaging
+    document.body.appendChild(probe);
+  }
+  probe.style.fontSize = _povFontTarget + 'px';
+  var probeRect = probe.getBoundingClientRect();
+  var targetCellW = probeRect.width / 10;
+  var targetCellH = probeRect.height;
+
+  // For each card: divide its slot screen area by the target cell size to get cols/rows.
+  // Cards with more screen space get more rows/cols. The character cell size
+  // is uniform across the entire POV — like a grid of cells spanning the viewport.
+
+  for (var name of focusedSessions) {
+    var t = terminals.get(name);
+    if (!t) continue;
+
+    // Get slot screen dimensions (from layout)
+    var slotW, slotH;
+    if (t._slotRect) {
+      slotW = t._slotRect.w;
+      slotH = t._slotRect.h;
+    } else {
+      // Fallback for masonry/auto layout: use the card's actual screen rect
+      var rect = t.dom.getBoundingClientRect();
+      if (!rect || rect.width < 10) continue;
+      slotW = rect.width;
+      slotH = rect.height;
+    }
+
+    // How many cols/rows fit in this slot at the browser-measured target cell size
+    var newCols = Math.round(slotW / targetCellW);
+    var newRows = Math.round(slotH / targetCellH);
+
+    // Clamp
+    newCols = Math.max(20, Math.min(300, newCols));
+    newRows = Math.max(5, Math.min(100, newRows));
+
+    var currentCols = t.screenCols || 80;
+    var currentRows = t.screenRows || 24;
+    if (newCols !== currentCols || newRows !== currentRows) {
+      t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
+    }
+  }
+}
+
 function updateTopBarVisibility() {
   var multi = document.getElementById('top-bar-multi');
   if (multi) multi.style.display = focusedSessions.size >= 2 ? 'flex' : 'none';
@@ -579,6 +639,19 @@ function wireTopBar() {
   }
   if (fitAll) fitAll.addEventListener('click', function() { fitAllFocused(); fitAll.blur(); });
   if (maxAll) maxAll.addEventListener('click', function() { maxAllFocused(); maxAll.blur(); });
+  var eqBtn = document.getElementById('top-equalize');
+  var povInput = document.getElementById('pov-font-input');
+  if (povInput) {
+    povInput.value = _povFontTarget;
+    povInput.addEventListener('change', function() {
+      var val = parseFloat(povInput.value);
+      if (val >= 4 && val <= 24) {
+        _povFontTarget = val;
+        localStorage.setItem('pov-font-target', String(val));
+      }
+    });
+  }
+  if (eqBtn) eqBtn.addEventListener('click', function() { equalizeAllFocused(); eqBtn.blur(); });
 
   var layoutOptions = document.querySelectorAll('[data-layout-key]');
   for (var i = 0; i < layoutOptions.length; i++) {
