@@ -1589,25 +1589,25 @@ function routeEmbedMessageToSvg(t, obj, msg, opt) {
 }
 
 // Invalidate CSS3D texture so compositor picks up SVG content changes.
-// Single rAF — animate() loop renders every frame, no explicit render needed.
-// Was double-rAF + renderer.render() which added ~32ms latency per update.
+// Double rAF needed — Chrome requires two frames for CSS3D <object> texture update.
+// No renderer.render() — animate() loop handles rendering every frame.
 function scheduleTerminalSurfaceRepaint(obj, t) {
   if (!obj) return;
   requestAnimationFrame(function() {
-    // translateZ bump forces CSS3D compositor to re-rasterize the <object>
-    obj.style.transform = 'translateZ(0)';
-    void obj.offsetHeight;
-    obj.style.transform = '';
-    // outline bump on inner container catches cases translateZ misses
-    if (t && t.dom) {
-      var inner = t.dom.querySelector('.terminal-inner');
-      if (inner) {
-        var o = inner.style.outline;
-        inner.style.outline = '1px solid transparent';
-        void inner.offsetHeight;
-        inner.style.outline = o;
+    requestAnimationFrame(function() {
+      obj.style.transform = 'translateZ(0)';
+      void obj.offsetHeight;
+      obj.style.transform = '';
+      if (t && t.dom) {
+        var inner = t.dom.querySelector('.terminal-inner');
+        if (inner) {
+          var o = inner.style.outline;
+          inner.style.outline = '1px solid transparent';
+          void inner.offsetHeight;
+          inner.style.outline = o;
+        }
       }
-    }
+    });
   });
 }
 
