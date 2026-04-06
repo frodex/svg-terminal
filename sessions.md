@@ -83,8 +83,10 @@
 [2026-04-04] Top menu bar implementation (plan: docs/superpowers/plans/2026-04-04-top-menu-bar.md)
 [2026-04-04] Re-arm background FPS sampler on addTerminal (gap: new terminals increase load but don't trigger re-evaluation)
 [2026-04-04] **claude-forker:** Implement v0.8 source-verified fix plan — `claude-forker/docs/2026-04-04-v0.8-source-verified-fix-plan.md` (tool `0.2.0`, SPEC `v0.0.9`, `tests/test-fork.sh`, `docs/migration.md`). Next agent owns implementation; journal: `docs/research/2026-04-04-v0.1-claude-forker-v0.8-plan-handoff-journal.md`.
-[2026-04-05] **Legacy cleanup:** Remove all HTTP session data endpoints (/api/pane, /api/sessions), dead code (handleTerminalWs, attachCpToTerminalWs, handleTerminalWs), and local tmux input/resize paths. All data flows through WebSocket exclusively. Requires plan per implementation-plan-standards.md (Rules 1-7). Touches svg-terminal server.mjs, dashboard.mjs, claude-proxy, and browser code.
+[2026-04-05] ~~**Legacy cleanup:**~~ DONE — HTTP endpoints removed, WS-only data paths, dead code cleaned up. Session-end and settings-changed events now event-driven from claude-proxy.
+[2026-04-05] **Message pipeline redesign:** Current `cpOnDataChunk` processes messages sequentially in arrival order with no fairness or priority. Needs: per-session message queues, control message priority (kill/permissions before screen diffs), staleness detection (skip intermediate diffs, only send latest), fairness across sessions (round-robin, no chatty-session starvation). This is a core data pipeline change — requires research + plan.
 [2026-04-05] **Future card types:** File viewer and file transfer cards planned — all via WebSocket, no HTTP endpoints.
+[2026-04-05] **Fork menu item on cards:** Backend exists (WS fork-session), needs UI — right-click or menu on terminal card to fork.
 
 ---
 
