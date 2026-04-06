@@ -6,9 +6,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { createConnection } from 'node:net';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { execFile as execFileCb } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
-import { parseLine } from './sgr-parser.mjs';
 import { WebSocketServer } from 'ws';
 import { createSessionCookie, validateSessionCookie } from './session-cookie.mjs';
 import { UserStore } from './user-store.mjs';
@@ -16,19 +14,6 @@ import { getAuthUrlAsync, handleCallback, getSupportedProviders } from './auth.m
 import { createSystemAccount, deleteSystemAccount, addToGroup, generateUsername, ensureCpUsersGroup, userExists, deactivateAccount, reactivateAccount, purgeAccount } from './provisioner.mjs';
 import { ApiKeyStore } from './api-key-store.mjs';
 import { RateLimiter } from './rate-limiter.mjs';
-
-// ---------------------------------------------------------------------------
-// Async tmux helper
-// ---------------------------------------------------------------------------
-
-function tmuxAsync(...args) {
-  return new Promise((resolve, reject) => {
-    execFileCb('tmux', args, { timeout: 5000 }, (err, stdout) => {
-      if (err) reject(err);
-      else resolve(stdout);
-    });
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Config
@@ -169,11 +154,16 @@ function staticPath(filename) {
   return new URL(filename, import.meta.url).pathname;
 }
 
-// Client version hash — computed at startup from dashboard.mjs content
+// Client version hash — computed at startup from all files that affect the browser.
+// If server.mjs changes, the API contract may have changed (message formats, WS handlers).
+// If dashboard.mjs or index.html change, the browser needs new code.
 const CLIENT_VERSION = (() => {
   try {
-    const content = readFileSync(staticPath('dashboard.mjs'));
-    return createHash('md5').update(content).digest('hex').slice(0, 8);
+    const hash = createHash('md5');
+    hash.update(readFileSync(staticPath('dashboard.mjs')));
+    hash.update(readFileSync(staticPath('index.html')));
+    hash.update(readFileSync(import.meta.filename));  // server.mjs itself
+    return hash.digest('hex').slice(0, 8);
   } catch { return 'unknown'; }
 })();
 process.stderr.write('[SERVER] Client version: ' + CLIENT_VERSION + '\n');
@@ -388,79 +378,6 @@ function handleSvg(req, res) {
   }
 }
 
-async function capturePane(session, pane) {
-  const target = session + ':' + pane;
-  // Atomic capture: display-message and capture-pane in a single tmux invocation
-  // using '\;' separator. This eliminates the race condition where cursor position
-  // and screen content get out of sync — previously two separate tmux calls meant
-  // the cursor could move between them, causing the visual cursor to appear offset
-  // from where input actually goes. The first line of output is metadata, the rest
-  // is the captured screen.
-  const combined = await tmuxAsync(
-    'display-message', '-p', '-t', target,
-    '#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{pane_pid} #{history_size} #{pane_dead} #{pane_current_command} #{pane_current_path} #{pane_title}',
-    ';', 'capture-pane', '-p', '-e', '-t', target
-  );
-
-  const allLines = combined.split('\n');
-  const metaLine = allLines[0];
-  const metaParts = metaLine.trim().split(' ');
-  const width = parseInt(metaParts[0], 10);
-  const height = parseInt(metaParts[1], 10);
-  const cursorX = parseInt(metaParts[2], 10);
-  const cursorY = parseInt(metaParts[3], 10);
-  const pid = parseInt(metaParts[4], 10);
-  const historySize = parseInt(metaParts[5], 10);
-  const dead = metaParts[6] === '1';
-  const command = metaParts[7] || '';
-  const path = metaParts[8] || '';
-  const title = metaParts.slice(9).join(' ');
-
-  // Screen content starts at line 1 (after metadata line)
-  const rawLines = allLines.slice(1);
-  if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop();
-  const lines = rawLines.map((line) => ({ spans: parseLine(line) }));
-
-  return { width, height, cursor: { x: cursorX, y: cursorY }, title,
-           path, command, pid, historySize, dead, lines };
-}
-
-// Capture pane at a scroll offset (lines above the bottom).
-// Uses tmux capture-pane -S/-E to grab a window of history.
-async function capturePaneAt(session, pane, offset) {
-  const target = session + ':' + pane;
-  const metaRaw = await tmuxAsync('display-message', '-p', '-t', target,
-    '#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{pane_pid} #{history_size} #{pane_dead} #{pane_current_command} #{pane_current_path} #{pane_title}');
-
-  const metaParts = metaRaw.trim().split(' ');
-  const width = parseInt(metaParts[0], 10);
-  const height = parseInt(metaParts[1], 10);
-  const pid = parseInt(metaParts[4], 10);
-  const historySize = parseInt(metaParts[5], 10);
-  const dead = metaParts[6] === '1';
-  const command = metaParts[7] || '';
-  const path = metaParts[8] || '';
-  const title = metaParts.slice(9).join(' ');
-
-  // Capture a window of 'height' lines shifted up by 'offset' lines.
-  // tmux line 0 = first visible line, negative = scrollback history.
-  // offset=3 means show from line -3 to line (height-4), shifting the view up 3 lines.
-  const startLine = -offset;
-  const endLine = -offset + height - 1;
-
-  const raw = await tmuxAsync('capture-pane', '-p', '-e', '-t', target,
-    '-S', String(startLine), '-E', String(endLine));
-
-  const rawLines = raw.split('\n');
-  if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop();
-  const lines = rawLines.map((line) => ({ spans: parseLine(line) }));
-
-  // Cursor not meaningful when viewing history
-  return { width, height, cursor: { x: -1, y: -1 }, title,
-           path, command, pid, historySize, dead, lines };
-}
-
-
 const ALLOWED_SPECIAL_KEYS = new Set([
   'Enter', 'Tab', 'Escape', 'BSpace', 'DC', 'IC',
   'Up', 'Down', 'Left', 'Right',
@@ -469,21 +386,11 @@ const ALLOWED_SPECIAL_KEYS = new Set([
   'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
 ]);
 
-// Translate claude-proxy key names to tmux send-keys names for local sessions
-const CP_TO_TMUX_KEYS = {
-  'Backspace': 'BSpace',
-  'Delete': 'DC',
-  'PageUp': 'PgUp',
-  'PageDown': 'PgDn',
-  'Insert': 'IC',
-};
-
-function translateKeyForTmux(key) {
-  return CP_TO_TMUX_KEYS[key] || key;
-}
+// Additional key names accepted from clients (claude-proxy handles translation)
+const EXTRA_ALLOWED_KEYS = new Set(['Backspace', 'Delete', 'PageUp', 'PageDown', 'Insert']);
 
 function isAllowedKey(key) {
-  return ALLOWED_SPECIAL_KEYS.has(key) || Object.keys(CP_TO_TMUX_KEYS).includes(key) || /^C-[a-z]$/.test(key);
+  return ALLOWED_SPECIAL_KEYS.has(key) || EXTRA_ALLOWED_KEYS.has(key) || /^C-[a-z]$/.test(key);
 }
 
 
@@ -560,45 +467,6 @@ function mapCpErrorToStatus(err) {
 // WebSocket helpers
 // ---------------------------------------------------------------------------
 
-// Shared scroll offset per pane — all WebSocket connections to the same pane share this.
-// Without this, the dashboard's input WebSocket and the SVG's output WebSocket have
-// independent scroll offsets, so scrolling via input doesn't affect what the SVG renders.
-const paneScrollOffsets = new Map(); // key = "session:pane", value = number
-
-function getScrollOffset(session, pane) {
-  return paneScrollOffsets.get(session + ':' + pane) || 0;
-}
-
-function setScrollOffset(session, pane, offset) {
-  const key = session + ':' + pane;
-  if (offset <= 0) paneScrollOffsets.delete(key);
-  else paneScrollOffsets.set(key, offset);
-}
-
-function diffState(prev, curr) {
-  if (!prev) return { type: 'screen', width: curr.width, height: curr.height,
-    cursor: curr.cursor, title: curr.title, lines: curr.lines };
-  if (prev.width !== curr.width || prev.height !== curr.height) {
-    return { type: 'screen', width: curr.width, height: curr.height,
-      cursor: curr.cursor, title: curr.title, lines: curr.lines };
-  }
-  const changed = {};
-  let anyChanged = false;
-  for (let i = 0; i < curr.lines.length; i++) {
-    const a = JSON.stringify(prev.lines[i]);
-    const b = JSON.stringify(curr.lines[i]);
-    if (a !== b) {
-      changed[i] = { spans: curr.lines[i].spans };
-      anyChanged = true;
-    }
-  }
-  if (!anyChanged && prev.cursor.x === curr.cursor.x && prev.cursor.y === curr.cursor.y
-      && prev.title === curr.title) {
-    return null;
-  }
-  return { type: 'delta', cursor: curr.cursor, title: curr.title, changed };
-}
-
 // ---------------------------------------------------------------------------
 // SessionWatcher — shared capture per session, broadcast to subscribers
 // ---------------------------------------------------------------------------
@@ -646,70 +514,6 @@ function notifyDashboardCpSessionCreated(result, ownerUser) {
   }
 }
 
-function getOrCreateWatcher(session, pane) {
-  const key = session + ':' + pane;
-  if (sessionWatchers.has(key)) return sessionWatchers.get(key);
-
-  const watcher = {
-    session,
-    pane,
-    lastState: null,
-    subscribers: new Set(),
-    timer: null,
-  };
-
-  async function captureAndBroadcast() {
-    if (watcher.subscribers.size === 0 || watcher._capturing) return;
-    watcher._capturing = true;
-    try {
-      const offset = getScrollOffset(session, pane);
-      let state;
-      if (offset > 0) {
-        state = await capturePaneAt(session, pane, offset);
-      } else {
-        state = await capturePane(session, pane);
-      }
-      const diff = diffState(watcher.lastState, state);
-      if (diff) {
-        diff.session = session;
-        diff.pane = pane;
-        diff.scrollOffset = offset;
-        const json = JSON.stringify(diff);
-        for (const ws of watcher.subscribers) {
-          if (ws.readyState === 1) ws.send(json);
-        }
-        watcher.lastState = state;
-      }
-    } catch (err) {
-      // Session disappeared — broadcast session-remove and clean up watcher
-      const removeMsg = JSON.stringify({ type: 'session-remove', session });
-      for (const ws of watcher.subscribers) {
-        if (ws.readyState === 1) ws.send(removeMsg);
-      }
-      clearInterval(watcher.timer);
-      watcher.timer = null;
-      sessionWatchers.delete(session + ':' + pane);
-      sessionPermCache.delete(session);
-      return;
-    } finally {
-      watcher._capturing = false;
-    }
-  }
-
-  watcher._captureAndBroadcast = captureAndBroadcast;
-  watcher.timer = setInterval(captureAndBroadcast, CAPTURE_INTERVAL_UNFOCUSED);
-  sessionWatchers.set(key, watcher);
-  return watcher;
-}
-
-function subscribeToSession(ws, session, pane) {
-  const watcher = getOrCreateWatcher(session, pane);
-  watcher.subscribers.add(ws);
-  // Track reverse mapping
-  if (!wsToWatcherKeys.has(ws)) wsToWatcherKeys.set(ws, new Set());
-  wsToWatcherKeys.get(ws).add(session + ':' + pane);
-}
-
 function unsubscribeFromAll(ws) {
   const keys = wsToWatcherKeys.get(ws);
   if (!keys) return;
@@ -728,17 +532,6 @@ function unsubscribeFromAll(ws) {
     }
   }
   wsToWatcherKeys.delete(ws);
-}
-
-function triggerCapture(session, pane) {
-  const key = session + ':' + pane;
-  const watcher = sessionWatchers.get(key);
-  if (watcher) {
-    // Don't null lastState — delta is fine, full screen not needed.
-    // Nulling caused every keystroke to send a full screen dump instead of
-    // just the changed lines, which made the cursor visually lag during fast typing.
-    watcher._captureAndBroadcast();
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -884,64 +677,21 @@ async function cpPushFullScreensAfterCpResubscribe() {
 
 async function sendSessionDiscovery(ws, knownSessions, user) {
   const cpUser = user.linux_user || CP_DEFAULT_USER;
-  const seen = new Set();
   const sessions = [];
 
-  // Source 1: local tmux (default server)
   try {
-    const raw = (await tmuxAsync(
-      'list-sessions', '-F', '#{session_name} #{session_windows} #{window_width} #{window_height}'
-    )).trim();
-
-    for (const line of raw.split('\n').filter(Boolean)) {
-      const parts = line.split(' ');
-      const height = parseInt(parts.pop(), 10);
-      const width = parseInt(parts.pop(), 10);
-      const windows = parseInt(parts.pop(), 10);
-      const name = parts.join(' ');
-      sessions.push({ name, windows, cols: width, rows: height, source: 'tmux' });
-      seen.add(name);
-    }
-    // Cache local tmux sessions — default: owned by server user, public
-    if (STRICT_SESSION_AUTHZ) {
-      for (const s of sessions) {
-        if (s.source !== 'tmux') continue;
-        if (!sessionPermCache.has(s.name)) {
-          sessionPermCache.set(s.name, {
-            owner: CP_DEFAULT_USER,
-            public: true,
-            allowedUsers: [],
-            allowedGroups: [],
-            viewOnly: false,
-          });
-        }
-      }
-    }
-  } catch (err) {
-    // tmux not running or no sessions
-  }
-
-  // Source 2: claude-proxy (Unix socket)
-  // CP sessions also appear in local tmux — override source so they're bridged correctly.
-  try {
-    const cpSessions2 = await cpRequest('listSessions', { user: cpUser }, 2000);
-    for (const s of cpSessions2 || []) {
+    const cpSessions = await cpRequest('listSessions', { user: cpUser }, 2000);
+    for (const s of cpSessions || []) {
       const name = s.id || s.name;
-      const existing = sessions.find(e => e.name === name);
-      if (existing) {
-        existing.source = 'claude-proxy';
-      } else {
-        sessions.push({
-          name, windows: 1, cols: s.cols || 80, rows: s.rows || 24,
-          title: s.title || name, source: 'claude-proxy'
-        });
-      }
-      seen.add(name);
+      sessions.push({
+        name, windows: 1, cols: s.cols || 80, rows: s.rows || 24,
+        title: s.title || name, source: 'claude-proxy'
+      });
     }
 
     // Populate permission cache for STRICT_SESSION_AUTHZ
     if (STRICT_SESSION_AUTHZ) {
-      for (const s of cpSessions2 || []) {
+      for (const s of cpSessions || []) {
         sessionPermCache.set(s.id || s.name, {
           owner: s.owner || cpUser,
           public: s.public !== false,
@@ -952,10 +702,10 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
       }
     }
   } catch (err) {
-    // claude-proxy not running — fine
+    // claude-proxy not running
   }
 
-  // Phase 1: Send session-add messages for all sessions (cards appear in browser)
+  // Send session-add messages (cards appear in browser)
   process.stderr.write('[WS] Discovery: ' + sessions.length + ' sessions for ' + cpUser + '\n');
   for (const s of sessions) {
     if (knownSessions.has(s.name)) continue;
@@ -965,30 +715,8 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
     }
   }
 
-  // Phase 2: Fetch initial screens
-  // Local tmux: sequential (capturePane is fast, ~5ms each)
+  // Bridge all sessions and fetch initial screens
   for (const s of sessions) {
-    if (s.source !== 'tmux') continue;
-    subscribeToSession(ws, s.name, '0');
-    try {
-      const state = await capturePane(s.name, '0');
-      if (ws.readyState === 1) {
-        const msg = { type: 'screen', session: s.name, pane: '0',
-          width: state.width, height: state.height,
-          cursor: state.cursor, title: state.title, lines: state.lines,
-          scrollOffset: 0 };
-        ws.send(JSON.stringify(msg));
-      }
-    } catch (err) {
-      // Session may have disappeared
-    }
-  }
-
-  // Claude-proxy: register event bridges before awaiting getSessionScreen so terminal
-  // traffic can flow while the proxy is still warming up after a restart (otherwise
-  // the client blocks on N parallel RPCs with nothing subscribed).
-  const cpSessions = sessions.filter(s => s.source === 'claude-proxy');
-  for (const s of cpSessions) {
     const watcher = bridgeClaudeProxySession(s.name, cpUser);
     if (watcher) {
       watcher.subscribers.add(ws);
@@ -997,25 +725,27 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
     }
   }
 
-  if (cpSessions.length > 0) {
-    const screenPromises = cpSessions.map(async (s) => {
+  if (sessions.length > 0) {
+    const screenPromises = sessions.map(async (s) => {
       try {
         const state = await cpRequest('getSessionScreen', {
           sessionId: s.name,
           user: cpUser,
-        }, 1500);
+        }, 3000);
         if (ws.readyState === 1) {
           const msg = { type: 'screen', session: s.name, pane: '0',
-            width: state.width, height: state.height,
+            width: state.width || s.cols, height: state.height || s.rows,
             cursor: state.cursor, title: state.title, lines: state.lines,
             scrollOffset: 0 };
           ws.send(JSON.stringify(msg));
+          const watcher = sessionWatchers.get(s.name + ':0');
+          if (watcher) watcher._lastScreen = msg;
         }
       } catch (err) {
-        // CP unreachable for this session — bridge will deliver eventually
+        // Session may have disappeared
       }
     });
-    await Promise.allSettled(screenPromises);
+    await Promise.all(screenPromises);
   }
 }
 
@@ -1064,18 +794,15 @@ async function handleDashboardWs(ws, req) {
             }));
             return;
           }
-          if (msg.source === 'claude-proxy') {
-            bridgeClaudeProxySession(session, cpUserDash);
-            const watcher = sessionWatchers.get(session + ':0');
-            if (watcher) {
-              watcher.subscribers.add(ws);
-              // Replay cached screen so late-joining clients get the initial frame
-              if (watcher._lastScreen && ws.readyState === 1) {
-                ws.send(JSON.stringify(watcher._lastScreen));
-              }
+          bridgeClaudeProxySession(session, cpUserDash);
+          const watcher = sessionWatchers.get(session + ':0');
+          if (watcher) {
+            watcher.subscribers.add(ws);
+            if (!wsToWatcherKeys.has(ws)) wsToWatcherKeys.set(ws, new Set());
+            wsToWatcherKeys.get(ws).add(session + ':0');
+            if (watcher._lastScreen && ws.readyState === 1) {
+              ws.send(JSON.stringify(watcher._lastScreen));
             }
-          } else {
-            subscribeToSession(ws, session, '0');
           }
         }
         return;
@@ -1087,22 +814,9 @@ async function handleDashboardWs(ws, req) {
           const linuxUser = user.linux_user || CP_DEFAULT_USER;
           const autoName = 'svg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
           const payload = buildCreateSessionPayload(msg.payload || {}, autoName);
-          const launchProfile = payload.launchProfile;
-          try {
-            const result = await cpRequest('createSession', { user: linuxUser, body: payload }, 120000);
-            notifyDashboardCpSessionCreated(result, linuxUser);
-            if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'create-session-result', ok: true, session: result }));
-          } catch (cpErr) {
-            // Fallback to local tmux for shell profile
-            if (launchProfile === 'shell') {
-              let tmuxName = payload.name;
-              try { await tmuxAsync('has-session', '-t', tmuxName); tmuxName = payload.name + '-' + Date.now().toString(36); } catch (e) { /* name free */ }
-              await tmuxAsync('new-session', '-d', '-s', tmuxName, '-x', '80', '-y', '24');
-              if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'create-session-result', ok: true, session: { name: tmuxName, source: 'tmux' } }));
-            } else {
-              throw cpErr;
-            }
-          }
+          const result = await cpRequest('createSession', { user: linuxUser, body: payload }, 120000);
+          notifyDashboardCpSessionCreated(result, linuxUser);
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'create-session-result', ok: true, session: result }));
         } catch (err) {
           if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'create-session-result', ok: false, error: err.message || String(err) }));
         }
@@ -1188,22 +902,13 @@ async function handleDashboardWs(ws, req) {
           if (STRICT_SESSION_AUTHZ && !authorizeSession(user, session)) {
             throw new Error('Not authorized');
           }
-          let isLocal = false;
-          try { await tmuxAsync('has-session', '-t', session); isLocal = true; } catch {}
-          let state;
-          if (isLocal) {
-            state = await capturePane(session, pane);
-          } else {
-            const cpUser = user.linux_user || CP_DEFAULT_USER;
-            state = await cpRequest('getSessionScreen', { sessionId: session, user: cpUser }, 3000);
-          }
-          if (ws.readyState === 1) {
-            state.type = 'screen';
-            state.session = session;
-            state.pane = pane;
-            state.scrollOffset = 0;
-            ws.send(JSON.stringify(state));
-          }
+          const cpUser = user.linux_user || CP_DEFAULT_USER;
+          const state = await cpRequest('getSessionScreen', { sessionId: session, user: cpUser }, 3000);
+          state.type = 'screen';
+          state.session = session;
+          state.pane = pane;
+          state.scrollOffset = 0;
+          if (ws.readyState === 1) ws.send(JSON.stringify(state));
         } catch (err) {
           if (ws.readyState === 1) ws.send(JSON.stringify({
             type: 'error', session: msg.session || null, message: 'Screen fetch failed'
@@ -1216,34 +921,18 @@ async function handleDashboardWs(ws, req) {
       if (msg.type === 'get-sessions') {
         try {
           const cpUser = user.linux_user || CP_DEFAULT_USER;
-          const sessions = [];
-          // Local tmux
-          try {
-            const raw = (await tmuxAsync('list-sessions', '-F', '#{session_name} #{session_windows} #{window_width} #{window_height}')).trim();
-            for (const line of raw.split('\n').filter(Boolean)) {
-              const parts = line.split(' ');
-              const height = parseInt(parts.pop(), 10);
-              const width = parseInt(parts.pop(), 10);
-              const windows = parseInt(parts.pop(), 10);
-              const name = parts.join(' ');
-              sessions.push({ name, windows, cols: width, rows: height, source: 'tmux' });
-            }
-          } catch {}
-          // Claude-proxy
-          try {
-            const cpSessions = await cpRequest('listSessions', { user: cpUser }, 2000);
-            for (const s of cpSessions || []) {
-              const name = s.id || s.name;
-              if (!sessions.some(x => x.name === name)) {
-                sessions.push({
-                  name, cpId: s.id, displayName: s.name, windows: 1,
-                  cols: s.cols || 80, rows: s.rows || 24,
-                  title: s.title, source: 'claude-proxy', launchProfile: s.launchProfile,
-                });
-              }
-            }
-          } catch {}
-          // Filter by authZ
+          const cpSessions = await cpRequest('listSessions', { user: cpUser }, 2000);
+          const sessions = (cpSessions || []).map(s => ({
+            name: s.id || s.name,
+            cpId: s.id,
+            displayName: s.name,
+            windows: 1,
+            cols: s.cols || 80,
+            rows: s.rows || 24,
+            title: s.title,
+            source: 'claude-proxy',
+            launchProfile: s.launchProfile,
+          }));
           const filtered = STRICT_SESSION_AUTHZ
             ? sessions.filter(s => authorizeSession(user, s.name))
             : sessions;
@@ -1295,18 +984,27 @@ async function handleDashboardWs(ws, req) {
         }
       }
 
-      // Check if this session is bridged to claude-proxy (Unix socket).
-      // cp-* sessions are NOT in local tmux — input/scroll/resize go through JSON-RPC.
+      // All sessions go through claude-proxy — input/scroll/resize via JSON-RPC.
       const watcher = sessionWatchers.get(session + ':' + pane);
       const cpSocketBridge = watcher && watcher._cpTerminalHandler;
 
-      if (cpSocketBridge) {
+      if (!cpSocketBridge) {
+        // Session not bridged — shouldn't happen, all sessions are cp-managed
+        process.stderr.write('[ws/dashboard] no bridge for session ' + session + '\n');
+        if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'error', session, message: 'Session not found' }));
+        return;
+      }
+
+      {
         const fwd = { ...msg };
         delete fwd.session;
         delete fwd.pane;
         try {
           if (fwd.type === 'input') {
-            await cpRequest('input', {
+            // Fire-and-forget: don't await — response isn't used, screen updates
+            // arrive via the separate TerminalMirror event stream. Awaiting serializes
+            // keystrokes and causes chunky input on held keys.
+            cpRequest('input', {
               sessionId: session,
               user: cpUserDash,
               body: {
@@ -1316,7 +1014,7 @@ async function handleDashboardWs(ws, req) {
                 alt: fwd.alt,
                 repeat: fwd.repeat,
               },
-            });
+            }).catch(err => process.stderr.write('[cp input] ' + (err.message || err) + '\n'));
           } else if (fwd.type === 'resize') {
             await cpRequest('resize', {
               sessionId: session,
@@ -1339,59 +1037,10 @@ async function handleDashboardWs(ws, req) {
         }
         return;
       }
-
-      // Local tmux session — handle directly
-      if (msg.type === 'resize') {
-        const lock = resizeLocks.get(session);
-        if (lock && lock.ws !== ws && Date.now() < lock.expires) return;
-        resizeLocks.set(session, { ws, expires: Date.now() + RESIZE_LOCK_MS });
-        const cols = Math.max(20, Math.min(500, parseInt(msg.cols) || 80));
-        const rows = Math.max(5, Math.min(200, parseInt(msg.rows) || 24));
-        try {
-          await tmuxAsync('resize-window', '-t', session, '-x', String(cols), '-y', String(rows));
-        } catch (err) { /* session may not exist */ }
-        setTimeout(() => triggerCapture(session, pane), 10);
-        return;
-      }
-
-      if (msg.type === 'scroll') {
-        setScrollOffset(session, pane, Math.max(0, parseInt(msg.offset) || 0));
-        triggerCapture(session, pane);
-        return;
-      }
-
-      if (msg.type === 'input') {
-        const target = session + ':' + pane;
-        if (msg.scrollTo != null) {
-          setScrollOffset(session, pane, Math.max(0, msg.scrollTo));
-          triggerCapture(session, pane);
-          return;
-        } else if (msg.specialKey && isAllowedKey(msg.specialKey)) {
-          setScrollOffset(session, pane, 0);
-          const repeat = Math.min(Math.max(1, parseInt(msg.repeat) || 1), 200);
-          if (repeat > 1) {
-            const promises = [];
-            for (let i = 0; i < repeat; i++) {
-              promises.push(tmuxAsync('send-keys', '-t', target, translateKeyForTmux(msg.specialKey)));
-            }
-            await Promise.all(promises);
-          } else {
-            await tmuxAsync('send-keys', '-t', target, translateKeyForTmux(msg.specialKey));
-          }
-        } else if (msg.keys != null) {
-          setScrollOffset(session, pane, 0);
-          if (msg.ctrl && msg.keys.length === 1) {
-            await tmuxAsync('send-keys', '-t', target, 'C-' + msg.keys);
-          } else {
-            await tmuxAsync('send-keys', '-t', target, '-l', String(msg.keys));
-          }
-        }
-        setTimeout(() => triggerCapture(session, pane), 5);
-      }
     } catch (err) {
-      console.error('[ws/dashboard] input error:', err);
+      console.error('[ws/dashboard] message error:', err);
       if (ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'error', message: 'Input processing error' }));
+        ws.send(JSON.stringify({ type: 'error', message: 'Message processing error' }));
       }
     }
   });
@@ -1436,9 +1085,6 @@ function handleSSE(req, res) {
   sseClients.add(res);
   req.on('close', () => sseClients.delete(res));
 }
-
-const resizeLocks = new Map();
-const RESIZE_LOCK_MS = 500;
 
 // ---------------------------------------------------------------------------
 // Proxy handler — fetches external URL, strips X-Frame-Options/CSP headers

@@ -431,8 +431,8 @@ function wireTopBar() {
       syncUiOverlayPointerBlock();
     });
   }
-  if (fitAll) fitAll.addEventListener('click', function() { fitAllFocused(); });
-  if (maxAll) maxAll.addEventListener('click', function() { maxAllFocused(); });
+  if (fitAll) fitAll.addEventListener('click', function() { fitAllFocused(); fitAll.blur(); });
+  if (maxAll) maxAll.addEventListener('click', function() { maxAllFocused(); maxAll.blur(); });
 
   var layoutOptions = document.querySelectorAll('[data-layout-key]');
   for (var i = 0; i < layoutOptions.length; i++) {
@@ -1673,7 +1673,7 @@ function routeDashboardMessage(msg) {
       sendDashboardMessage({
         type: 'subscribe',
         session: msg.session,
-        source: msg.source || 'tmux'
+        source: msg.source || 'claude-proxy'
       });
     }
     return;
@@ -2767,7 +2767,7 @@ function createCardDOM(config) {
     const btn = document.createElement('button');
     btn.textContent = label;
     btn.title = title;
-    btn.addEventListener('click', function(ev) { ev.stopPropagation(); ev.preventDefault(); fn(ev); });
+    btn.addEventListener('click', function(ev) { ev.stopPropagation(); ev.preventDefault(); fn(ev); btn.blur(); });
     return btn;
   };
   // Add custom controls from config

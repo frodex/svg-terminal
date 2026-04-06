@@ -181,16 +181,16 @@ test('/ws/dashboard receives session-add and screen messages', async () => {
 test('/ws/dashboard input sends keys without error', async () => {
   const ws = new WebSocket(wsUrl('/ws/dashboard'));
 
-  // Wait for a session-add with source=tmux to discover a local session
+  // Wait for a session-add to discover a session (all sessions via claude-proxy)
   const localSession = await new Promise((resolve, reject) => {
     ws.onmessage = (e) => {
       const msg = parseWsMsg(e);
-      if (msg.type === 'session-add' && msg.source === 'tmux') resolve(msg);
+      if (msg.type === 'session-add') resolve(msg);
     };
     ws.onerror = () => reject(new Error('WebSocket error'));
     setTimeout(() => resolve(null), 5000);
   });
-  if (!localSession) { ws.close(); return; } // skip if no local sessions
+  if (!localSession) { ws.close(); return; } // skip if no sessions
 
   // Wait for initial screen for our session
   await new Promise((resolve, reject) => {
@@ -237,7 +237,7 @@ test('/ws/dashboard handles claude-proxy sessions gracefully', async () => {
     setTimeout(() => resolve(collected), 2000);
   });
 
-  // Should have at least one session-add (from local tmux)
+  // Should have at least one session-add (from claude-proxy)
   const adds = msgs.filter(m => m.type === 'session-add');
   assert.ok(adds.length > 0, 'Should receive session-add messages');
 
@@ -280,11 +280,11 @@ test('/ws/dashboard full path: session-add → screen → input → delta', asyn
   assert.ok(screen.lines.length === screen.height, 'lines count must match height');
   assert.ok(screen.lines[0].spans, 'each line must have spans');
 
-  // Send input to first local tmux session
-  const localAdd = adds.find(a => a.source === 'tmux');
-  if (localAdd) {
+  // Send input to first session (all sessions are claude-proxy)
+  const firstAdd = adds[0];
+  if (firstAdd) {
     ws.send(JSON.stringify({
-      session: localAdd.session,
+      session: firstAdd.session,
       pane: '0',
       type: 'input',
       keys: ' '  // space — harmless
