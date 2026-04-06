@@ -785,7 +785,21 @@ function bridgeClaudeProxySession(session, cpUser) {
   sessionWatchers.set(key, watcher);
 
   const handler = (cpMsg) => {
-    if (cpMsg.event !== 'terminal' || cpMsg.sessionId !== session) return;
+    if (cpMsg.sessionId !== session) return;
+
+    // Session ended — broadcast session-remove and clean up
+    if (cpMsg.event === 'session-end') {
+      const removeMsg = JSON.stringify({ type: 'session-remove', session });
+      for (const ws of watcher.subscribers) {
+        if (ws.readyState === 1) ws.send(removeMsg);
+      }
+      cpUnregisterTerminal(session, handler);
+      sessionWatchers.delete(key);
+      sessionPermCache.delete(session);
+      return;
+    }
+
+    if (cpMsg.event !== 'terminal') return;
     const inner = cpMsg.data;
     if (inner == null) return;
     const base = typeof inner === 'object' && !Array.isArray(inner) ? inner : {};
@@ -808,37 +822,6 @@ function bridgeClaudeProxySession(session, cpUser) {
 
   return watcher;
 }
-
-// Periodic session reconciliation — detect dead sessions and broadcast session-remove
-// Replaces the old refreshSessions() HTTP polling that dashboard used to do.
-setInterval(async () => {
-  if (sessionWatchers.size === 0) return;
-  // Get current live sessions
-  const liveSessions = new Set();
-  try {
-    const raw = (await tmuxAsync('list-sessions', '-F', '#{session_name}')).trim();
-    for (const name of raw.split('\n').filter(Boolean)) liveSessions.add(name);
-  } catch {}
-  try {
-    const cpSessions = await cpRequest('listSessions', { user: CP_DEFAULT_USER }, 2000);
-    for (const s of cpSessions || []) liveSessions.add(s.id || s.name);
-  } catch {}
-
-  // Check each watcher — if session is gone, broadcast session-remove
-  for (const [key, watcher] of sessionWatchers) {
-    const session = watcher.session;
-    if (liveSessions.has(session)) continue;
-    // Session gone — notify all subscribers
-    const removeMsg = JSON.stringify({ type: 'session-remove', session });
-    for (const ws of watcher.subscribers) {
-      if (ws.readyState === 1) ws.send(removeMsg);
-    }
-    if (watcher.timer) clearInterval(watcher.timer);
-    if (watcher._cpTerminalHandler) cpUnregisterTerminal(session, watcher._cpTerminalHandler);
-    sessionWatchers.delete(key);
-    sessionPermCache.delete(session);
-  }
-}, 5000); // check every 5 seconds
 
 // After reconnect, claude-proxy often emits incremental deltas before any full screen.
 // Dashboard clients treat the first frame as authoritative only for `type: 'screen'`, so
