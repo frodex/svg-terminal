@@ -1501,7 +1501,7 @@ function computeRingPos(index, total, config, angle) {
 // Each terminal gets a screen rectangle proportional to its cell count.
 // The card sits at whatever Z depth makes its world size fill that screen rectangle.
 const STATUS_BAR_H = 34; /* bottom input bar — always visible, measured at 34px */
-const COMPOSE_BAR_H = 56; /* compose bar minimum height (1 row + label + padding) — added to bottom reserve when open */
+const COMPOSE_BAR_H = 89; /* compose bar measured height (1 row + label + padding + margins) */
 const LAYOUT_GAP_PX = 8;
 
 function calculateFocusedLayout() {
@@ -2041,7 +2041,7 @@ function init() {
   document.getElementById('help-btn').addEventListener('click', toggleHelp);
   document.getElementById('help-close').addEventListener('click', toggleHelp);
 
-  // Compose mode — auto-resize textarea on input + persist draft
+  // Compose mode — auto-resize, persist draft, restore state, close button
   var composeEd = document.getElementById('compose-editor');
   if (composeEd) {
     // Restore draft from localStorage
@@ -2051,6 +2051,24 @@ function init() {
       autoResizeCompose();
       localStorage.setItem('compose-draft', composeEd.value);
     });
+    // Close button
+    var closeBtn = document.getElementById('compose-close');
+    if (closeBtn) closeBtn.addEventListener('click', function() { closeComposeMode(); });
+    // Restore open state from localStorage
+    if (localStorage.getItem('compose-open') === '1') {
+      // Delay so layout is ready
+      setTimeout(function() { openComposeMode(); }, 500);
+    }
+  }
+
+  // Restore perf mode from localStorage
+  var savedPerfMode = localStorage.getItem('perf-mode');
+  if (savedPerfMode && ['auto', 'full', 'reduced', 'minimal'].includes(savedPerfMode)) {
+    perfMode = savedPerfMode;
+    if (perfMode === 'full') applyPerfTier(0);
+    else if (perfMode === 'reduced') applyPerfTier(1);
+    else if (perfMode === 'minimal') applyPerfTier(2);
+    updatePerfIndicator();
   }
 
   var perfEl = document.getElementById('perf-indicator');
@@ -2060,6 +2078,7 @@ function init() {
       var modes = ['auto', 'full', 'reduced', 'minimal'];
       var idx = modes.indexOf(perfMode);
       perfMode = modes[(idx + 1) % modes.length];
+      localStorage.setItem('perf-mode', perfMode);
       if (perfMode === 'full') applyPerfTier(0);
       else if (perfMode === 'reduced') applyPerfTier(1);
       else if (perfMode === 'minimal') applyPerfTier(2);
@@ -3246,27 +3265,49 @@ var _composeHistory = JSON.parse(localStorage.getItem('compose-history') || '[]'
 var _composeHistoryIdx = -1;
 var _composeDraft = '';
 
-function toggleComposeMode() {
-  _composeMode = !_composeMode;
+function openComposeMode() {
+  if (_composeMode) return;
+  _composeMode = true;
   var bar = document.getElementById('compose-bar');
   var editor = document.getElementById('compose-editor');
-  var hint = document.getElementById('input-hint');
   var target = document.getElementById('compose-target');
   if (!bar || !editor) return;
 
-  if (_composeMode) {
-    bar.classList.add('visible');
-    if (target) target.textContent = activeInputSession || '';
-    editor.focus();
-    if (hint) hint.textContent = 'Compose mode — Ctrl+Space to exit';
-    _composeHistoryIdx = -1;
-    _composeDraft = '';
-  } else {
-    bar.classList.remove('visible');
-    editor.blur(); // release focus so keystrokes go back to terminal
-    if (hint) hint.textContent = 'Keys go to terminal';
-    // Don't clear editor — content persists across toggles
-  }
+  bar.classList.add('visible');
+  if (target) target.textContent = activeInputSession || '';
+  editor.focus();
+  _composeHistoryIdx = -1;
+  _composeDraft = '';
+  localStorage.setItem('compose-open', '1');
+  syncComposeLayout();
+}
+
+function closeComposeMode() {
+  if (!_composeMode) return;
+  _composeMode = false;
+  var bar = document.getElementById('compose-bar');
+  var editor = document.getElementById('compose-editor');
+  if (!bar || !editor) return;
+
+  bar.classList.remove('visible');
+  editor.blur();
+  localStorage.setItem('compose-open', '0');
+  syncComposeLayout();
+}
+
+function toggleComposeMode() {
+  if (_composeMode) closeComposeMode();
+  else openComposeMode();
+}
+
+// Update layout overlays when compose bar opens/closes — called once, not on every focus change
+function syncComposeLayout() {
+  var bottomPx = (STATUS_BAR_H + (_composeMode ? COMPOSE_BAR_H : 0)) + 'px';
+  var ghost = document.getElementById('ghost-layout-preview');
+  if (ghost) ghost.style.bottom = bottomPx;
+  var dropZone = document.getElementById('drop-zone-overlay');
+  if (dropZone) dropZone.style.bottom = bottomPx;
+
   // Re-run layout so cards reposition above/below compose bar
   if (focusedSessions.size > 0) {
     calculateFocusedLayout();
@@ -3324,15 +3365,29 @@ function autoResizeCompose() {
 }
 
 function onKeyDown(e) {
-  // Ctrl+Space — toggle compose mode (works in both modes)
+  // Ctrl+Space — open compose if closed, toggle focus if open
   if (e.key === ' ' && e.ctrlKey && !e.altKey && !e.metaKey) {
     e.preventDefault();
-    toggleComposeMode();
+    if (!_composeMode) {
+      // Not open — open and focus compose
+      openComposeMode();
+    } else {
+      // Already open — toggle focus between compose and card
+      var editor = document.getElementById('compose-editor');
+      if (document.activeElement === editor) {
+        // Compose focused → blur to send keys to terminal
+        editor.blur();
+      } else {
+        // Terminal focused → focus compose
+        if (editor) editor.focus();
+      }
+    }
     return;
   }
 
-  // In compose mode, handle special keys and let the rest go to textarea
-  if (_composeMode) {
+  // In compose mode AND textarea is focused, handle special keys
+  var _composeFocused = _composeMode && document.activeElement === document.getElementById('compose-editor');
+  if (_composeFocused) {
     if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
       // Enter — send text + CR
       e.preventDefault();
@@ -3393,8 +3448,13 @@ function onKeyDown(e) {
       composeHistoryNav(-1);
       return;
     }
-    // All other keys — let textarea handle them (spell check, clipboard, cursor, etc.)
-    return;
+    // Shift+Tab — pass through to terminal mode handler for card cycling
+    if (e.key === 'Tab' && e.shiftKey) {
+      // Don't return — fall through to the terminal mode Shift+Tab handler below
+    } else {
+      // All other keys — let textarea handle them (spell check, clipboard, cursor, etc.)
+      return;
+    }
   }
 
   // --- Terminal Mode (existing behavior below) ---
@@ -3623,6 +3683,9 @@ function onSceneClick(e) {
   }
 
   if (clicked) {
+    // Blur compose textarea so keys go to terminal
+    var _ce = document.getElementById('compose-editor');
+    if (_ce && document.activeElement === _ce) _ce.blur();
     if (focusedSessions.has(clicked)) {
       // Check for URL click on focused terminal
       const t = terminals.get(clicked);
@@ -5045,7 +5108,7 @@ function focusTerminal(sessionName) {
 
   const now = clock.getElapsedTime();
   t.morphFrom = { ...t.currentPos };
-  t.targetPos = { x: 0, y: 0, z: 0 };
+  // targetPos set below after usable area calculation
   t.morphStart = now;
   t.focusQuatFrom = t.css3dObject.quaternion.clone();
 
@@ -5069,25 +5132,39 @@ function focusTerminal(sessionName) {
   const vFov = camera.fov * DEG2RAD;
   const halfTan = Math.tan(vFov / 2);
 
-  // Calculate camera distance where card fills ~90% of viewport height
-  const targetScreenFrac = 0.90;
-  const camDist = worldH / (targetScreenFrac * 2 * halfTan);
+  // Calculate usable area accounting for sidebar, top bar, status bar, and compose bar
+  const composeExtra = _composeMode ? COMPOSE_BAR_H : 0;
+  const usableH = window.innerHeight - TOP_BAR_H - STATUS_BAR_H - composeExtra;
+  const usableW = window.innerWidth - SIDEBAR_WIDTH;
 
-  // Offset for sidebar (card at origin, camera shifted so card centers in usable area)
+  // Camera distance where card fills ~90% of usable height
+  const targetScreenFrac = 0.90;
+  const fracOfViewport = (usableH * targetScreenFrac) / window.innerHeight;
+  const camDist = worldH / (fracOfViewport * 2 * halfTan);
+
+  // Offset card to center of usable area (not full viewport)
   const visHAtDist = 2 * camDist * halfTan;
   const px2w = visHAtDist / window.innerHeight;
+  const usableCenterX = SIDEBAR_WIDTH / 2; // usable area shifted left by sidebar
+  const usableCenterY = (TOP_BAR_H - STATUS_BAR_H - composeExtra) / 2; // shifted up
+  const offsetX = usableCenterX * px2w;
+  const offsetY = -usableCenterY * px2w;
+
+  t.targetPos = { x: offsetX, y: offsetY, z: 0 };
 
   cameraTween = {
     from: camera.position.clone(),
-    to: new THREE.Vector3(0, 0, camDist),
+    to: new THREE.Vector3(offsetX, offsetY, camDist),
     lookFrom: currentLookTarget.clone(),
-    lookTo: new THREE.Vector3(0, 0, 0),
+    lookTo: new THREE.Vector3(offsetX, offsetY, 0),
     start: now,
     duration: 1.0
   };
 
   document.getElementById('input-bar').classList.add('visible');
   document.getElementById('input-target').textContent = sessionName;
+  var composeTarget = document.getElementById('compose-target');
+  if (composeTarget) composeTarget.textContent = sessionName;
   showTermControls(sessionName);
   sendFocusState();
   updateTopBarVisibility();
@@ -5139,6 +5216,8 @@ function setActiveInput(sessionName) {
   activeInputSession = sessionName;
   updateFocusStyles();
   document.getElementById('input-target').textContent = sessionName;
+  var composeTarget = document.getElementById('compose-target');
+  if (composeTarget) composeTarget.textContent = sessionName;
   document.getElementById('input-bar').classList.add('visible');
   showTermControls(sessionName);
 }
@@ -5522,7 +5601,8 @@ function animate() {
 // Browser shortcuts (Ctrl+T, Ctrl+W, etc.) are excluded.
 // DO NOT add per-terminal click handlers — see note 4 in header.
 function shouldSendKeysToTerminal() {
-  if (_composeMode) return false;
+  // Compose open but textarea not focused — keys go to terminal
+  // Compose open and textarea focused — keys stay in textarea (handled by tag check below)
   if (isUiOverlayActive()) return false;
   var a = document.activeElement;
   if (!a || a === document.body || a === document.documentElement) return true;
