@@ -52,7 +52,7 @@
   <!-- Hidden element for measuring actual font cell width -->
   <text id="measure" x="-9999" y="-9999" font-size="14"
         font-family="'TermFont', 'Cascadia Code', 'Fira Code', Consolas, monospace"
-        visibility="hidden">MMMMMMMMMM</text>
+        visibility="hidden">MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM</text>
 
   <g id="error-overlay" visibility="hidden">
     <rect width="100%" height="100%" fill="#1c1c1c" opacity="0.85" />
@@ -71,7 +71,7 @@
       // Measure actual monospace character dimensions from the browser's rendered font
       var measureEl = document.getElementById('measure');
       var measureBBox = measureEl.getBBox();
-      var CELL_W = measureBBox.width / 10;
+      var CELL_W = measureBBox.width / 100;
       if (!CELL_W || CELL_W <= 0) CELL_W = 8.4;
       var CELL_H = measureBBox.height;
       if (!CELL_H || CELL_H <= 0) CELL_H = 17;

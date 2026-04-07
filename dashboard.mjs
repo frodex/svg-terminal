@@ -1286,7 +1286,7 @@ function optimizeTermToCard(t) {
     if (measure) {
       const bbox = measure.getBBox();
       if (bbox.width > 0) {
-        const cellW = bbox.width / 10;
+        const cellW = bbox.width / 100;
         const cellH = bbox.height;
         // How much the SVG is currently scaled to fill the card.
         // The viewBox is (cols * cellW) × (rows * cellH), stretched to cardW × cardH.
@@ -4573,7 +4573,7 @@ function getMeasuredCellSize(t) {
     if (measure) {
       var bbox = measure.getBBox();
       if (bbox.width > 0) {
-        return { cellW: bbox.width / 10, cellH: bbox.height };
+        return { cellW: bbox.width / 100, cellH: bbox.height };
       }
     }
   } catch (e) {}
@@ -5416,7 +5416,7 @@ document.addEventListener('keydown', function(e) {
             const parts = vb.split(/\s+/);
             const bbox = measure.getBBox();
             if (bbox.width > 0) {
-              cols = Math.round(parseFloat(parts[2]) / (bbox.width / 10));
+              cols = Math.round(parseFloat(parts[2]) / (bbox.width / 100));
               rows = Math.round(parseFloat(parts[3]) / bbox.height);
             }
           }
@@ -5569,7 +5569,7 @@ function getTermRenderInfo(t) {
         if (measure) {
           const bbox = measure.getBBox();
           if (bbox.width > 0) {
-            cols = Math.round(svgW / (bbox.width / 10));
+            cols = Math.round(svgW / (bbox.width / 100));
             rows = Math.round(svgH / bbox.height);
           }
         }
