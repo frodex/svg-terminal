@@ -39,6 +39,23 @@ export class UserStore {
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.exec(SCHEMA);
+    // Card subscription management
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS card_subscriptions (
+        user_email TEXT NOT NULL,
+        session_name TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'subscribed',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (user_email, session_name)
+      );
+      CREATE TABLE IF NOT EXISTS card_preferences (
+        user_email TEXT PRIMARY KEY,
+        auto_show_new INTEGER NOT NULL DEFAULT 1,
+        auto_show_own INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+
     try {
       this.db.exec('ALTER TABLE users ADD COLUMN is_superadmin INTEGER NOT NULL DEFAULT 0');
     } catch (e) {
@@ -189,6 +206,56 @@ export class UserStore {
     const derived = await scryptAsync(pin, salt, SCRYPT_KEYLEN);
     if (hash.length !== derived.length) return false;
     return timingSafeEqual(hash, derived);
+  }
+
+  // --- Card subscription management ---
+
+  getCardState(email, sessionName) {
+    const row = this.db.prepare('SELECT state FROM card_subscriptions WHERE user_email = ? AND session_name = ?').get(email, sessionName);
+    return row ? row.state : 'subscribed'; // default: subscribed
+  }
+
+  setCardState(email, sessionName, state) {
+    this.db.prepare(`INSERT INTO card_subscriptions (user_email, session_name, state, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+      ON CONFLICT(user_email, session_name) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at
+    `).run(email, sessionName, state);
+  }
+
+  getCardStates(email) {
+    return this.db.prepare('SELECT session_name, state, updated_at FROM card_subscriptions WHERE user_email = ?').all(email);
+  }
+
+  bulkSetCardStates(email, states) {
+    const del = this.db.prepare('DELETE FROM card_subscriptions WHERE user_email = ?');
+    const ins = this.db.prepare(`INSERT INTO card_subscriptions (user_email, session_name, state, updated_at)
+      VALUES (?, ?, ?, datetime('now'))`);
+    this.db.transaction(() => {
+      del.run(email);
+      for (const s of states) {
+        ins.run(email, s.session_name, s.state);
+      }
+    })();
+  }
+
+  deleteCardState(email, sessionName) {
+    this.db.prepare('DELETE FROM card_subscriptions WHERE user_email = ? AND session_name = ?').run(email, sessionName);
+  }
+
+  deleteCardStateAll(sessionName) {
+    this.db.prepare('DELETE FROM card_subscriptions WHERE session_name = ?').run(sessionName);
+  }
+
+  getCardPrefs(email) {
+    const row = this.db.prepare('SELECT auto_show_new, auto_show_own FROM card_preferences WHERE user_email = ?').get(email);
+    return row || { auto_show_new: 1, auto_show_own: 1 };
+  }
+
+  setCardPrefs(email, prefs) {
+    this.db.prepare(`INSERT INTO card_preferences (user_email, auto_show_new, auto_show_own, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+      ON CONFLICT(user_email) DO UPDATE SET auto_show_new = excluded.auto_show_new, auto_show_own = excluded.auto_show_own, updated_at = excluded.updated_at
+    `).run(email, prefs.auto_show_new ? 1 : 0, prefs.auto_show_own ? 1 : 0);
   }
 
   close() {

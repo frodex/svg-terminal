@@ -729,6 +729,7 @@ function refreshTopBarUser() {
   fetch('/auth/me', { credentials: 'same-origin' })
     .then(function(r) { return r.ok ? r.json() : Promise.reject(); })
     .then(function(u) {
+      window._currentUser = u;  // Store for admin checks
       pill.textContent = u.displayName || u.email || u.linuxUser || 'Signed in';
       pill.title = u.email || '';
       var adminLink = document.getElementById('menu-admin');
@@ -785,6 +786,34 @@ function wireTopBar() {
   }
   if (fitAll) fitAll.addEventListener('click', function() { fitAllFocused(); fitAll.blur(); });
   if (maxAll) maxAll.addEventListener('click', function() { maxAllFocused(); maxAll.blur(); });
+
+  // CARDS panel
+  var cardsBtn = document.getElementById('menu-cards');
+  var cardsPanel = document.getElementById('cards-panel');
+  var cardsBack = document.getElementById('cards-panel-back');
+
+  if (cardsBtn && cardsPanel) {
+    cardsBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      mainMenu.classList.remove('visible');
+      openCardsPanel();
+    });
+  }
+  if (cardsBack) {
+    cardsBack.addEventListener('click', function() {
+      cardsPanel.classList.remove('visible');
+      cardsPanel.setAttribute('aria-hidden', 'true');
+    });
+  }
+
+  // Orange badge opens CARDS directly
+  var badge = document.getElementById('hidden-cards-badge');
+  if (badge) badge.addEventListener('click', function() { openCardsPanel(); });
+
+  // Status bar counts open CARDS directly
+  var cardCounts = document.getElementById('card-counts');
+  if (cardCounts) cardCounts.addEventListener('click', function() { openCardsPanel(); });
+
   var eqBtn = document.getElementById('top-equalize');
   var povInput = document.getElementById('pov-font-input');
   var povLabel = document.getElementById('pov-font-label');
@@ -857,8 +886,268 @@ function wireTopBar() {
     });
   }
 
+  // Preference toggles
+  var cardsAutoNew = document.getElementById('cards-auto-new');
+  var cardsAutoOwn = document.getElementById('cards-auto-own');
+  if (cardsAutoNew) {
+    cardsAutoNew.addEventListener('change', function() {
+      var ownEl = document.getElementById('cards-auto-own');
+      sendDashboardMessage({ type: 'card-set-prefs',
+        autoShowNew: cardsAutoNew.checked,
+        autoShowOwn: ownEl ? ownEl.checked : true
+      });
+    });
+  }
+  if (cardsAutoOwn) {
+    cardsAutoOwn.addEventListener('change', function() {
+      var newEl = document.getElementById('cards-auto-new');
+      sendDashboardMessage({ type: 'card-set-prefs',
+        autoShowNew: newEl ? newEl.checked : true,
+        autoShowOwn: cardsAutoOwn.checked
+      });
+    });
+  }
+
+  // Save Current State
+  var cardsSaveBtn = document.getElementById('cards-save-state');
+  if (cardsSaveBtn) {
+    cardsSaveBtn.addEventListener('click', function() {
+      window._cardsSaveRequested = true;
+      sendDashboardMessage({ type: 'card-list-all' });
+    });
+  }
+
+  // Terminate
+  var cardsTermBtn = document.getElementById('cards-terminate-submit');
+  if (cardsTermBtn) {
+    cardsTermBtn.addEventListener('click', function() {
+      var cbs = document.querySelectorAll('.terminate-cb:checked');
+      var sessions = [];
+      for (var ci = 0; ci < cbs.length; ci++) sessions.push(cbs[ci].value);
+      if (sessions.length === 0) return;
+      var pin = prompt('Enter admin PIN to terminate ' + sessions.length + ' session(s):');
+      if (!pin) return;
+      sendDashboardMessage({ type: 'card-terminate', sessions: sessions, pin: pin });
+    });
+  }
+
+  // Search + sort — re-render on change
+  var cardsSearchInput = document.getElementById('cards-search');
+  var cardsSortSelect = document.getElementById('cards-sort');
+  if (cardsSearchInput) {
+    cardsSearchInput.addEventListener('input', function() {
+      if (window._lastCardList) renderCardsList(window._lastCardList.sessions, window._lastCardList.prefs);
+    });
+  }
+  if (cardsSortSelect) {
+    cardsSortSelect.addEventListener('change', function() {
+      if (window._lastCardList) renderCardsList(window._lastCardList.sessions, window._lastCardList.prefs);
+    });
+  }
+
   updateTopBarVisibility();
   refreshTopBarUser();
+}
+
+function openCardsPanel() {
+  var panel = document.getElementById('cards-panel');
+  if (!panel) return;
+  panel.classList.add('visible');
+  panel.setAttribute('aria-hidden', 'false');
+  // Request full session list from server
+  sendDashboardMessage({ type: 'card-list-all' });
+}
+
+function renderCardsList(sessions, prefs) {
+  var list = document.getElementById('cards-panel-list');
+  if (!list) return;
+
+  // Cache for search/sort re-render
+  window._lastCardList = { sessions: sessions, prefs: prefs };
+
+  // Handle Save Current State request
+  if (window._cardsSaveRequested) {
+    window._cardsSaveRequested = false;
+    var states = sessions.map(function(s) {
+      var t = terminals.get(s.name);
+      if (!t) return { session: s.name, state: 'unsubscribed' };
+      if (t._muted) return { session: s.name, state: 'paused' };
+      return { session: s.name, state: 'subscribed' };
+    });
+    sendDashboardMessage({ type: 'card-save-state', states: states });
+    return; // counts will update from server response
+  }
+
+  list.innerHTML = '';
+
+  // Update preference checkboxes
+  var autoNew = document.getElementById('cards-auto-new');
+  var autoOwn = document.getElementById('cards-auto-own');
+  if (autoNew && prefs) autoNew.checked = !!prefs.auto_show_new;
+  if (autoOwn && prefs) autoOwn.checked = !!prefs.auto_show_own;
+
+  // Apply search filter
+  var searchInput = document.getElementById('cards-search');
+  var query = searchInput ? searchInput.value.toLowerCase() : '';
+  var filtered = sessions;
+  if (query) {
+    filtered = sessions.filter(function(s) { return s.name.toLowerCase().includes(query); });
+  }
+
+  // Apply sort
+  var sortSelect = document.getElementById('cards-sort');
+  var sortKey = sortSelect ? sortSelect.value : 'state';
+  var stateOrder = { subscribed: 0, paused: 1, unsubscribed: 2 };
+  filtered.sort(function(a, b) {
+    if (sortKey === 'state') return (stateOrder[a.state] || 0) - (stateOrder[b.state] || 0);
+    if (sortKey === 'name') return a.name.localeCompare(b.name);
+    if (sortKey === 'owner') return (a.owner || '').localeCompare(b.owner || '');
+    if (sortKey === 'age') return (a.age || '').localeCompare(b.age || '');
+    return 0;
+  });
+
+  // Group by state
+  var groups = { subscribed: [], paused: [], unsubscribed: [] };
+  for (var i = 0; i < filtered.length; i++) {
+    var s = filtered[i];
+    (groups[s.state] || groups.subscribed).push(s);
+  }
+
+  // Check current dashboard state for status indicators
+  function dashboardStatus(name) {
+    var t = terminals.get(name);
+    if (!t) return 'not loaded';
+    if (t._muted) return 'temp-paused';
+    return 'active';
+  }
+
+  function renderGroup(label, items, groupState) {
+    if (items.length === 0) return;
+    var lbl = document.createElement('div');
+    lbl.className = 'cards-group-label';
+    lbl.textContent = label;
+    list.appendChild(lbl);
+
+    for (var gi = 0; gi < items.length; gi++) {
+      var s = items[gi];
+      var row = document.createElement('div');
+      row.className = 'cards-panel-row';
+
+      // LEFT: Subscribe checkbox + card info
+      var leftSide = document.createElement('div');
+      leftSide.className = 'card-left';
+
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = groupState !== 'unsubscribed';
+      cb.title = cb.checked ? 'Uncheck to hide card' : 'Check to subscribe';
+      cb.className = 'card-subscribe-cb';
+      cb.onchange = (function(name, checkbox) { return function() {
+        sendDashboardMessage({ type: 'card-set-state', session: name, state: checkbox.checked ? 'subscribed' : 'unsubscribed' });
+      }; })(s.name, cb);
+      leftSide.appendChild(cb);
+
+      var info = document.createElement('span');
+      info.className = 'card-info';
+      info.textContent = s.name + ' | ' + (s.owner || '?') + ' | ' + (s.age || '?');
+      leftSide.appendChild(info);
+
+      row.appendChild(leftSide);
+
+      // RIGHT: Dashboard state + stop button
+      var rightSide = document.createElement('div');
+      rightSide.className = 'card-right';
+
+      if (groupState !== 'unsubscribed') {
+        // Dashboard state indicator (play/pause)
+        var ds = dashboardStatus(s.name);
+        var stateEl = document.createElement('span');
+        stateEl.className = 'card-dash-state';
+        if (groupState === 'paused' || ds === 'temp-paused') {
+          stateEl.textContent = '\u23F8';
+          stateEl.style.color = '#ff9800';
+          stateEl.title = 'Paused';
+        } else {
+          stateEl.textContent = '\u25B6';
+          stateEl.style.color = '#4caf50';
+          stateEl.title = 'Playing';
+        }
+        rightSide.appendChild(stateEl);
+
+        // Stop button (unsubscribe)
+        var stopBtn = document.createElement('button');
+        stopBtn.className = 'btn-stop';
+        stopBtn.textContent = '\u23F9';
+        stopBtn.title = 'Unsubscribe — hide card';
+        stopBtn.onclick = (function(name) { return function() {
+          sendDashboardMessage({ type: 'card-set-state', session: name, state: 'unsubscribed' });
+        }; })(s.name);
+        rightSide.appendChild(stopBtn);
+      } else {
+        var hiddenLabel = document.createElement('span');
+        hiddenLabel.className = 'card-dash-state';
+        hiddenLabel.textContent = '\u25CB hidden';
+        hiddenLabel.style.color = 'rgba(255,255,255,0.35)';
+        rightSide.appendChild(hiddenLabel);
+      }
+
+      row.appendChild(rightSide);
+
+      list.appendChild(row);
+    }
+  }
+
+  renderGroup('DISPLAYED', groups.subscribed, 'subscribed');
+  renderGroup('PAUSED (STICKY)', groups.paused, 'paused');
+  renderGroup('HIDDEN', groups.unsubscribed, 'unsubscribed');
+
+  // Update status line at bottom of panel
+  var statusEl = document.getElementById('cards-panel-status');
+  if (statusEl) {
+    statusEl.textContent = sessions.length + ' available / ' +
+      groups.subscribed.length + ' displayed / ' + groups.paused.length + ' paused';
+  }
+
+  // Show admin section for admins
+  var adminSection = document.getElementById('cards-panel-admin');
+  var user = window._currentUser;
+  if (adminSection && user && (user.can_approve_users || user.is_superadmin)) {
+    adminSection.style.display = '';
+    var termList = document.getElementById('cards-terminate-list');
+    if (termList) {
+      termList.innerHTML = '';
+      for (var ti = 0; ti < sessions.length; ti++) {
+        var lbl2 = document.createElement('label');
+        lbl2.style.cssText = 'display:inline-block;margin:2px 8px;font-size:11px;color:rgba(255,255,255,0.7);';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = sessions[ti].name;
+        cb.className = 'terminate-cb';
+        lbl2.appendChild(cb);
+        lbl2.appendChild(document.createTextNode(' ' + sessions[ti].name));
+        termList.appendChild(lbl2);
+      }
+    }
+  }
+}
+
+function updateCardCounts(msg) {
+  // Orange badge
+  var badge2 = document.getElementById('hidden-cards-badge');
+  var hidden = msg.available - msg.displayed - msg.paused;
+  if (badge2) {
+    if (hidden > 0) {
+      badge2.textContent = 'YOU HAVE ' + hidden + ' HIDDEN CARDS';
+      badge2.style.display = '';
+    } else {
+      badge2.style.display = 'none';
+    }
+  }
+  // Status bar
+  var counts = document.getElementById('card-counts');
+  if (counts) {
+    counts.textContent = msg.available + ' available / ' + msg.displayed + ' displayed / ' + msg.paused + ' paused';
+  }
 }
 
 // Assign cards to slots: largest terminal (by cell count) → largest slot (by area).
@@ -2048,16 +2337,46 @@ function routeDashboardMessage(msg) {
     if (_sessionsCallback) { _sessionsCallback(msg.sessions || []); _sessionsCallback = null; }
     return;
   }
+  if (msg.type === 'card-list') {
+    renderCardsList(msg.sessions, msg.prefs);
+    return;
+  }
+  if (msg.type === 'card-counts') {
+    updateCardCounts(msg);
+    // Refresh CARDS panel if open — re-request full list so state changes appear instantly
+    var panel = document.getElementById('cards-panel');
+    if (panel && panel.classList.contains('visible')) {
+      sendDashboardMessage({ type: 'card-list-all' });
+    }
+    return;
+  }
   if (msg.type === 'session-add') {
     if (!terminals.has(msg.session) && !msg.session.startsWith('browser-')) {
       addTerminal(msg.session, msg.cols, msg.rows);
+      if (msg.paused) {
+        var t = terminals.get(msg.session);
+        if (t) {
+          t._muted = true;
+          t._stickyPaused = true;
+          var overlay = t.dom ? t.dom.querySelector('.card-paused-overlay') : null;
+          if (overlay) overlay.classList.add('visible');
+          t.thumbnail.classList.add('muted');
+          var stIcon = t.thumbnail.querySelector('.thumb-state-icon');
+          if (stIcon) {
+            stIcon.textContent = '\u23F8';
+            stIcon.className = 'thumb-state-icon paused';
+          }
+        }
+      }
       assignRings();
       // Subscribe so claude-proxy sessions get screen bridge + deltas (same as refreshSessions).
-      sendDashboardMessage({
-        type: 'subscribe',
-        session: msg.session,
-        source: msg.source || 'claude-proxy'
-      });
+      if (!msg.paused) {
+        sendDashboardMessage({
+          type: 'subscribe',
+          session: msg.session,
+          source: msg.source || 'claude-proxy'
+        });
+      }
     }
     return;
   }
@@ -3408,35 +3727,69 @@ function createThumbnail(sessionName) {
   });
   item.appendChild(minBtn);
 
-  // Mute/unmute button — toggles subscription to this session's data stream
-  const muteBtn = document.createElement('div');
-  muteBtn.className = 'thumb-mute';
-  muteBtn.textContent = '⏸';
-  muteBtn.title = 'Pause live updates';
-  muteBtn.addEventListener('click', function(e) {
+  // Positioned buttons: stop (upper-left), terminate (upper-right), play/pause (bottom-center)
+  // Thumbnail uses position:relative, buttons use position:absolute
+
+  // Stop button (red ⏹, upper-left) — unsubscribe (persistent)
+  const stopBtn = document.createElement('div');
+  stopBtn.className = 'thumb-stop';
+  stopBtn.textContent = '\u23F9';
+  stopBtn.title = 'Unsubscribe \u2014 remove from dashboard';
+  stopBtn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    sendDashboardMessage({ type: 'card-set-state', session: sessionName, state: 'unsubscribed' });
+  });
+  item.appendChild(stopBtn);
+
+  // Terminate button (red ✕, upper-right, admin-only)
+  const termBtn = document.createElement('div');
+  termBtn.className = 'thumb-terminate';
+  termBtn.textContent = '\u2715';
+  termBtn.title = 'Terminate session (admin)';
+  termBtn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    var pin = prompt('Enter admin PIN to terminate ' + sessionName + ':');
+    if (!pin) return;
+    sendDashboardMessage({ type: 'card-terminate', sessions: [sessionName], pin: pin });
+  });
+  // Show only for admins
+  if (window._currentUser && (window._currentUser.can_approve_users || window._currentUser.is_superadmin)) {
+    termBtn.style.display = '';
+  }
+  item.appendChild(termBtn);
+
+  // State indicator (green ▶ / orange ⏸, bottom-center) — toggles temp pause
+  const stateIcon = document.createElement('div');
+  stateIcon.className = 'thumb-state-icon active';
+  stateIcon.textContent = '\u25B6';
+  stateIcon.title = 'Playing \u2014 click to pause';
+  stateIcon.addEventListener('click', function(e) {
     e.stopPropagation();
     var t = terminals.get(sessionName);
     if (!t) return;
-    var overlay = t.dom ? t.dom.querySelector('.card-paused-overlay') : null;
     if (t._muted) {
-      // Re-subscribe
+      // Resume
       sendDashboardMessage({ type: 'subscribe', session: sessionName, source: 'claude-proxy' });
       t._muted = false;
-      muteBtn.textContent = '⏸';
-      muteBtn.title = 'Pause live updates';
+      stateIcon.textContent = '\u25B6';
+      stateIcon.className = 'thumb-state-icon active';
+      stateIcon.title = 'Playing \u2014 click to pause';
       item.classList.remove('muted');
+      var overlay = t.dom ? t.dom.querySelector('.card-paused-overlay') : null;
       if (overlay) overlay.classList.remove('visible');
     } else {
-      // Unsubscribe
+      // Pause (non-persistent)
       sendDashboardMessage({ type: 'unsubscribe', session: sessionName });
       t._muted = true;
-      muteBtn.textContent = '▶';
-      muteBtn.title = 'Resume live updates';
+      stateIcon.textContent = '\u23F8';
+      stateIcon.className = 'thumb-state-icon paused';
+      stateIcon.title = 'Paused \u2014 click to resume';
       item.classList.add('muted');
+      var overlay = t.dom ? t.dom.querySelector('.card-paused-overlay') : null;
       if (overlay) overlay.classList.add('visible');
     }
   });
-  item.appendChild(muteBtn);
+  item.appendChild(stateIcon);
 
   const pre = document.createElement('pre');
   pre.style.cssText = 'margin:0;padding:2px;font-family:monospace;font-size:2px;line-height:1.2;' +

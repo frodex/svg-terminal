@@ -42,10 +42,41 @@
         <a href="#" class="main-menu-item" id="menu-restart" role="menuitem">Restart session…</a>
         <a href="#" class="main-menu-item" id="menu-fork" role="menuitem">Fork session…</a>
         <span class="main-menu-sep"></span>
+        <a href="#" class="main-menu-item" id="menu-cards" role="menuitem">CARDS &gt;</a>
+        <span class="main-menu-sep"></span>
         <a href="/admin" class="main-menu-item" id="menu-admin" role="menuitem" style="display:none">Admin</a>
         <a href="#" class="main-menu-item" id="menu-help" role="menuitem">Help</a>
         <a href="/login" class="main-menu-item" id="menu-login" role="menuitem">Login</a>
         <button type="button" class="main-menu-item main-menu-item--btn" id="menu-logout" role="menuitem">Log out</button>
+      </div>
+      <div class="cards-panel" id="cards-panel" aria-hidden="true">
+        <div class="cards-panel-header">
+          <button type="button" class="cards-panel-back" id="cards-panel-back">&larr; Menu</button>
+          <span class="cards-panel-title">CARDS</span>
+        </div>
+        <div class="cards-panel-prefs">
+          <label><input type="checkbox" id="cards-auto-new" checked> Always show new cards</label>
+          <label><input type="checkbox" id="cards-auto-own" checked> Always show MY new cards</label>
+          <button type="button" class="cards-save-state" id="cards-save-state">Save Current State</button>
+        </div>
+        <div class="cards-panel-search">
+          <input type="text" id="cards-search" placeholder="Search by title..." autocomplete="off">
+          <select id="cards-sort">
+            <option value="state">Sort: State</option>
+            <option value="name">Sort: Name</option>
+            <option value="age">Sort: Age</option>
+            <option value="owner">Sort: Owner</option>
+          </select>
+        </div>
+        <div class="cards-panel-list" id="cards-panel-list">
+          <!-- Populated dynamically -->
+        </div>
+        <div class="cards-panel-admin" id="cards-panel-admin" style="display:none">
+          <div class="cards-panel-admin-title">TERMINATE SESSIONS</div>
+          <div id="cards-terminate-list"></div>
+          <button type="button" class="cards-terminate-submit" id="cards-terminate-submit">Submit with PIN</button>
+        </div>
+        <div class="cards-panel-status" id="cards-panel-status"></div>
       </div>
     </div>
     <div class="top-bar-section top-bar-multi" id="top-bar-multi">
@@ -75,6 +106,7 @@
       <button type="button" class="top-bar-action" id="top-equalize" title="Equalize text size across all focused cards">= Equal</button>
     </div>
     <div class="top-bar-section top-bar-section--right">
+      <span class="hidden-cards-badge" id="hidden-cards-badge" style="display:none"></span>
       <span class="user-pill" id="top-user-pill" title="">…</span>
     </div>
   </nav>
@@ -311,6 +343,7 @@
     <span class="target" id="input-target"></span>
     <span class="input-hint">Keys go to terminal</span>
     <span class="perf-indicator" id="perf-indicator" title="Performance mode (click to cycle)"></span>
+    <span class="card-counts" id="card-counts" title="Click to manage cards"></span>
   </div>
 
 

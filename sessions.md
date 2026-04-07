@@ -15,7 +15,7 @@
 
 3D dashboard is functional — Three.js CSS3DRenderer positions terminal panels in 3D space. Layout system implemented with composable slot maps and mutation operations. Performance tier system handles mobile/weak-GPU degradation. Focus/unfocus, input bar, sidebar thumbnails, session discovery, and claude-proxy integration all work.
 
-**Current work:** Auth system complete (Phase 1+2). OAuth login (Google/Microsoft/GitHub), admin panel with full user lifecycle, session authorization with feature flag, API key store for WS auth, WS consolidation (session ops over authenticated WS), reconnection overlay, admin PIN with sudo window, rate limiting, dev mode hardening. Claude-proxy viewOnly enforcement added. Cookie fallback removed — API key is sole WS credential.
+**Current work:** UI bug fixes (focus positioning, Max All pipeline). Card subscription manager spec + plan written, ready for implementation. Auth system complete (Phase 1+2). OAuth login (Google/Microsoft/GitHub), admin panel with full user lifecycle, session authorization with feature flag, API key store for WS auth, WS consolidation (session ops over authenticated WS), reconnection overlay, admin PIN with sudo window, rate limiting, dev mode hardening. Claude-proxy viewOnly enforcement added. Cookie fallback removed — API key is sole WS credential.
 
 ---
 
@@ -73,6 +73,11 @@
 [2026-04-05] Multi-provider auth: `provider_links` table maps multiple OAuth providers to one user. Auth callback checks `findByProvider` first, then `findByEmail`. Session cookie uses primary user email regardless of which provider was used to sign in.
 [2026-04-05] User lifecycle states: pending → approved → deactivated → (reactivated as pending, or purged). Deactivate renames cp-→cpx-, sets nologin shell, removes provider links. Reactivate restores cp-, sets pending, user must re-auth.
 [2026-04-05] Security hardening: CSRF double-submit cookie, auth on all admin/SSE/WebSocket endpoints, SSRF protection on /api/proxy, 1MB request body limit, CSP headers, WebSocket origin validation, bounded OAuth state map, reserved username blocking, DB file permissions 0600, no hardcoded AUTH_SECRET fallback, restricted CORS to PUBLIC_URL.
+[2026-04-06] Focus positioning fix: `updateCardForNewSize` was overwriting `targetPos` with mid-morph `currentPos` during card resize events. Fixed to apply anchor shift delta independently to both `currentPos` and `targetPos`. Race condition: SVG measurement correction or perf tier resize firing during the 1.5s morph window.
+[2026-04-06] Max All pipeline: complete rewrite as multi-step process. Pre-compute equalize targets (16px font) → reset cards to natural size for target dims → layout (frustum-fit) → expand card DOM to match slot aspect → direct frustum repositioning (bypasses layout's terminal-aspect letterbox) → send equalize resize. Removed old `maximizeCardToSlot` and `_fillSlot` mechanism.
+[2026-04-06] Max All equalize: derives rows from cols using slot aspect ratio (not independent rounding) to eliminate letterbox gaps. Uses `Math.ceil` for cols. Accounts for HEADER_H in content area calculation.
+[2026-04-06] `optimizeTermToCard` sets `_suppressRelayout = true` alongside `_lockCardSize` to prevent resize response from triggering re-layout that undoes card positioning.
+[2026-04-06] Layout options (top-bar-multi) always visible regardless of focus count.
 
 ---
 
@@ -93,10 +98,51 @@
 [2026-04-05] **Future card types:** File viewer and file transfer cards planned — all via WebSocket, no HTTP endpoints.
 [2026-04-05] **Fork menu item on cards:** Backend exists (WS fork-session), needs UI — right-click or menu on terminal card to fork.
 [2026-04-05] **Idle time tracking:** claude-proxy composeTitle tracks connected SSH clients but WS viewers don't register. Idle time not updated on WS input path.
+[2026-04-06] **Card subscription manager:** Spec v0.2 + implementation plan ready. CARDS sub-panel in hamburger menu, persistent subscription state (SQLite), thumbnail buttons (▶/⏸ bottom-center, ⏹ upper-left, ✕ upper-right), orange badge, status bar counts, search/sort, save current state, admin batch terminate. Spec: `docs/superpowers/specs/2026-04-06-v0.2-card-subscription-manager-design.md`. Plan: `docs/superpowers/plans/2026-04-06-v0.1-card-subscription-manager.md`.
 
 ---
 
 ## Session History (most recent first)
+
+### Session 2026-04-06 — UI Bug Fixes + Max All Rewrite + Card Subscription Design
+
+**Part 1: Focus Positioning Bug (FIXED)**
+- Root cause: `updateCardForNewSize` lines 4216-4217 overwrote `targetPos` with mid-morph `currentPos` during card resize
+- Race condition: SVG measurement correction (`_needsMeasuredCorrection`) or perf tier resize firing during 1.5s morph window
+- Fix: apply anchor shift delta to `targetPos` independently, not replace it with `currentPos`
+- Confirmed with diagnostic logging: `morphFrom` at ring position, `targetPos` at (0,0,0), resize fires mid-morph
+
+**Part 2: Max All Pipeline Rewrite (FIXED)**
+- Previous implementation: single-step `maximizeCardToSlot` sending terminal resize, card sized from `_fillSlot` flag in `updateCardForNewSize`. Broken — wrong expansion ratios, compounding across layout switches.
+- New pipeline (5 steps): pre-compute equalize targets → reset cards to natural size for target dims → layout → expand card DOM (aspect match slot) → direct frustum repositioning → send equalize resize
+- Key fixes:
+  - Card DOM aspect matched to slot aspect (not terminal content aspect)
+  - Direct frustum Z-depth positioning (bypasses layout's terminal-aspect letterbox)
+  - Pre-compute equalize cols/rows so step 0 reset uses correct terminal dims (eliminates need to press Max All twice)
+  - `Math.ceil` for cols, rows derived from slot aspect ratio (eliminates letterbox gaps)
+  - HEADER_H subtracted from content area for equalize calculation
+  - `_suppressRelayout` on all resize paths to prevent re-layout from undoing positioning
+- Removed: `maximizeCardToSlot()`, `_fillSlot` mechanism
+- Layout options now always visible in top bar
+
+**Part 3: Card Subscription Manager (DESIGNED)**
+- Brainstormed + spec'd persistent card subscription system
+- CARDS sub-panel in hamburger menu with search/sort, session list grouped by state
+- Two-layer pause: thumbnail ⏸ (temporary) vs CARDS menu pause (sticky, persists)
+- Thumbnail buttons: ▶/⏸ (bottom-center, state toggle), ⏹ (upper-left, unsubscribe), ✕ (upper-right, admin terminate)
+- Orange badge "YOU HAVE N HIDDEN CARDS" + status bar counts — click opens CARDS panel directly
+- "Save Current State" button snapshots dashboard state to profile
+- Server-side SQLite tables: `card_subscriptions`, `card_preferences`
+- Admin batch terminate with PIN confirmation
+- Implementation plan: 7 tasks, subagent-driven execution
+
+**Artifacts:**
+- docs/research/2026-04-06-v0.1-focus-positioning-bug-journal.md
+- docs/research/2026-04-06-v0.1-max-all-layout-fix-journal.md (+ NOTES, v0.2)
+- docs/superpowers/plans/2026-04-06-v0.1-max-all-pipeline-fix.md
+- docs/superpowers/specs/2026-04-06-card-subscription-manager-design.md (+ NOTES, v0.2)
+- docs/superpowers/plans/2026-04-06-v0.1-card-subscription-manager.md
+- test-maxall-layout.mjs, test-maxall-fit.mjs (Puppeteer test scripts)
 
 ### Session 2026-04-05 (late) — Path B Removal, Auth Fixes, Pipeline Research
 

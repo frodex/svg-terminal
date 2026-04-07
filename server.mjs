@@ -596,6 +596,8 @@ function bridgeClaudeProxySession(session, cpUser) {
           cpUnregisterTerminal(session, handler);
           sessionWatchers.delete(key);
           sessionPermCache.delete(session);
+          // Clean up subscription rows for ended session (all users)
+          try { userStore.deleteCardStateAll(session); } catch (e) { /* ignore */ }
           return;
         }
 
@@ -663,6 +665,8 @@ function bridgeClaudeProxySession(session, cpUser) {
       cpUnregisterTerminal(session, handler);
       sessionWatchers.delete(key);
       sessionPermCache.delete(session);
+      // Clean up subscription rows for ended session (all users)
+      try { userStore.deleteCardStateAll(session); } catch (e) { /* ignore */ }
       return;
     }
 
@@ -766,18 +770,29 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
     // claude-proxy not running
   }
 
+  // Filter sessions by subscription state
+  const cardStates = userStore.getCardStates(user.email);
+  const stateMap = new Map(cardStates.map(s => [s.session_name, s.state]));
+
   // Send session-add messages (cards appear in browser)
   process.stderr.write('[WS] Discovery: ' + sessions.length + ' sessions for ' + cpUser + '\n');
   for (const s of sessions) {
     if (knownSessions.has(s.name)) continue;
+    const cardState = stateMap.get(s.name) || 'subscribed';
+    if (cardState === 'unsubscribed') continue; // skip entirely
+    const isPaused = cardState === 'paused';
     knownSessions.add(s.name);
     if (ws.readyState === 1) {
-      ws.send(JSON.stringify({ type: 'session-add', session: s.name, pane: '0', ...s }));
+      ws.send(JSON.stringify({ type: 'session-add', session: s.name, pane: '0', ...s, paused: isPaused || undefined }));
     }
   }
 
-  // Bridge all sessions and fetch initial screens
-  for (const s of sessions) {
+  // Bridge active (non-paused) sessions and fetch initial screens
+  const activeSessions = sessions.filter(s => {
+    const cardState = stateMap.get(s.name) || 'subscribed';
+    return cardState === 'subscribed';
+  });
+  for (const s of activeSessions) {
     const watcher = bridgeClaudeProxySession(s.name, cpUser);
     if (watcher) {
       watcher.subscribers.add(ws);
@@ -786,8 +801,8 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
     }
   }
 
-  if (sessions.length > 0) {
-    const screenPromises = sessions.map(async (s) => {
+  if (activeSessions.length > 0) {
+    const screenPromises = activeSessions.map(async (s) => {
       try {
         const state = await cpRequest('getSessionScreen', {
           sessionId: s.name,
@@ -808,6 +823,26 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
     });
     await Promise.all(screenPromises);
   }
+
+  sendCardCounts(ws, user);
+}
+
+async function sendCardCounts(ws, user) {
+  try {
+    const sessions = await cpRequest('listSessions', { user: user.linux_user || CP_DEFAULT_USER }, 2000);
+    const states = userStore.getCardStates(user.email);
+    const stateMap = new Map(states.map(s => [s.session_name, s.state]));
+    const available = (sessions || []).length;
+    let displayed = 0, paused = 0;
+    for (const s of (sessions || [])) {
+      const st = stateMap.get(s.id || s.name) || 'subscribed';
+      if (st === 'subscribed') displayed++;
+      else if (st === 'paused') paused++;
+    }
+    if (ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'card-counts', available, displayed, paused }));
+    }
+  } catch (e) { /* ignore count failures */ }
 }
 
 async function handleDashboardWs(ws, req) {
@@ -1032,6 +1067,131 @@ async function handleDashboardWs(ws, req) {
       // Focus message — currently a no-op (all sessions are cp-bridged, no local timers).
       // TODO: Forward focus state to claude-proxy so TerminalMirror can adjust poll rate.
       if (msg.type === 'focus') return;
+
+      // --- Card subscription management ---
+      if (msg.type === 'card-list-all') {
+        try {
+          const sessions = await cpRequest('listSessions', { user: user.linux_user || CP_DEFAULT_USER }, 2000);
+          const states = userStore.getCardStates(user.email);
+          const stateMap = new Map(states.map(s => [s.session_name, s.state]));
+          const list = (sessions || []).map(s => ({
+            name: s.id || s.name,
+            owner: s.owner || s.user || 'unknown',
+            age: s.age || s.created || '',
+            state: stateMap.get(s.id || s.name) || 'subscribed',
+          }));
+          const prefs = userStore.getCardPrefs(user.email);
+          ws.send(JSON.stringify({
+            type: 'card-list',
+            sessions: list,
+            prefs: prefs,
+          }));
+        } catch (e) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Failed to list cards: ' + e.message }));
+        }
+        return;
+      }
+
+      if (msg.type === 'card-set-state' && msg.session && msg.state) {
+        const validStates = ['subscribed', 'paused', 'unsubscribed'];
+        if (!validStates.includes(msg.state)) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Invalid state: ' + msg.state }));
+        } else {
+          userStore.setCardState(user.email, msg.session, msg.state);
+          if (msg.state === 'unsubscribed') {
+            // Remove watcher for this client
+            const key = msg.session + ':0';
+            const watcher = sessionWatchers.get(key);
+            if (watcher) {
+              watcher.subscribers.delete(ws);
+              if (watcher.subscribers.size === 0) {
+                cpMaybeUnsub(msg.session);
+                sessionWatchers.delete(key);
+              }
+            }
+            ws.send(JSON.stringify({ type: 'session-remove', session: msg.session }));
+          } else if (msg.state === 'paused') {
+            // Stop data relay — unsubscribe from watcher but keep card in browser
+            const key = msg.session + ':0';
+            const watcher = sessionWatchers.get(key);
+            if (watcher) {
+              watcher.subscribers.delete(ws);
+              if (watcher.subscribers.size === 0) {
+                cpMaybeUnsub(msg.session);
+                sessionWatchers.delete(key);
+              }
+            }
+          } else if (msg.state === 'subscribed') {
+            // Re-subscribe — send session-add so browser creates the card, then bridge
+            try {
+              const cpSessions = await cpRequest('listSessions', { user: user.linux_user || CP_DEFAULT_USER }, 2000);
+              const s = (cpSessions || []).find(x => (x.id || x.name) === msg.session);
+              if (s && ws.readyState === 1) {
+                const name = s.id || s.name;
+                ws.send(JSON.stringify({
+                  type: 'session-add', session: name, pane: '0',
+                  name: name, windows: 1, cols: s.cols || 80, rows: s.rows || 24,
+                  title: s.title || name, source: 'claude-proxy'
+                }));
+              }
+            } catch (e) { /* session may not exist */ }
+            bridgeClaudeProxySession(msg.session, user.linux_user || CP_DEFAULT_USER);
+            const key = msg.session + ':0';
+            // Wait briefly for bridge to set up watcher
+            await new Promise(r => setTimeout(r, 100));
+            const watcher = sessionWatchers.get(key);
+            if (watcher) {
+              watcher.subscribers.add(ws);
+              wsToWatcherKeys.get(ws).add(key);
+              if (watcher._lastScreen && ws.readyState === 1) {
+                ws.send(JSON.stringify(watcher._lastScreen));
+              }
+            }
+          }
+          // Send updated counts
+          sendCardCounts(ws, user);
+        }
+        return;
+      }
+
+      if (msg.type === 'card-set-prefs') {
+        userStore.setCardPrefs(user.email, {
+          auto_show_new: msg.autoShowNew ? 1 : 0,
+          auto_show_own: msg.autoShowOwn ? 1 : 0,
+        });
+        return;
+      }
+
+      if (msg.type === 'card-save-state' && Array.isArray(msg.states)) {
+        userStore.bulkSetCardStates(user.email, msg.states.map(s => ({
+          session_name: s.session,
+          state: s.state,
+        })));
+        sendCardCounts(ws, user);
+        return;
+      }
+
+      if (msg.type === 'card-terminate' && Array.isArray(msg.sessions) && msg.pin) {
+        if (!user.can_approve_users && !user.is_superadmin) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Admin required' }));
+        } else {
+          const pinOk = await userStore.verifyAdminPin(user.email, msg.pin);
+          if (!pinOk) {
+            ws.send(JSON.stringify({ type: 'error', message: 'Invalid PIN' }));
+          } else {
+            for (const session of msg.sessions) {
+              try {
+                await cpRequest('killSession', { name: session }, 3000);
+              } catch (e) {
+                // session may already be dead — ignore
+              }
+              userStore.deleteCardState(user.email, session);
+            }
+            sendCardCounts(ws, user);
+          }
+        }
+        return;
+      }
 
       const session = msg.session;
       if (!session || !validateParam(session)) {
