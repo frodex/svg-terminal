@@ -100,11 +100,59 @@
 [2026-04-05] **Idle time tracking:** claude-proxy composeTitle tracks connected SSH clients but WS viewers don't register. Idle time not updated on WS input path.
 [2026-04-06] **Card subscription manager:** IMPLEMENTED. CARDS sub-panel in hamburger menu, persistent subscription state (SQLite), thumbnail buttons, orange badge, status bar counts, search/sort, save current state, admin batch terminate. Name mismatch fix: all paths now use `s.id || s.name` consistently (cp- prefix).
 [2026-04-06] **Drag-and-drop thumbnail reordering:** Pending. User wants drag-to-reorder in sidebar thumbnails AND in CARDS panel list. "Save Current State" should push order to dashboard. Needs design/plan.
+[2026-04-07] **Delta rendering glitch under load:** Intermittent character loss at SGR formatting boundaries (e.g., space between normal and blue text). Full screen data is correct (Shift+Ctrl+R fixes it). Only occurs under load or on late-loaded cards. Likely cause: rapid delta updates where second delta computes against stale prevState. Investigate claude-proxy TerminalMirror delta coalescing or add debounce/frame-sync in terminal.svg renderMessage.
 [2026-04-06] **Persistent layout save/recall:** Pending. Save current layout (active layout key, slot assignments, card dimensions, terminal cols/rows) to server so it restores on reboot. Architecture should support named presets — save/recall multiple layouts, with and without card assignments. Existing `save-layout` WS message type exists but writes to file, not DB. Needs design/plan. CARDS sub-panel in hamburger menu, persistent subscription state (SQLite), thumbnail buttons (▶/⏸ bottom-center, ⏹ upper-left, ✕ upper-right), orange badge, status bar counts, search/sort, save current state, admin batch terminate. Spec: `docs/superpowers/specs/2026-04-06-v0.2-card-subscription-manager-design.md`. Plan: `docs/superpowers/plans/2026-04-06-v0.1-card-subscription-manager.md`.
 
 ---
 
 ## Session History (most recent first)
+
+### Session 2026-04-06/07 — UI Bugs, Max All, Card Subscriptions, Compose Mode
+
+**Part 1: Bug Fixes**
+- Focus positioning race: `updateCardForNewSize` overwriting `targetPos` mid-morph
+- Max All pipeline: 5-step rewrite (pre-compute equalize → reset → layout → expand → frustum reposition → equalize resize)
+- Layout constants measured to reality: SIDEBAR=157, TOP_BAR=45, STATUS_BAR=34
+- Cursor drift: 100-char measure element (was 10, accumulated 0.024px/char error)
+
+**Part 2: Card Subscription Manager (IMPLEMENTED)**
+- CARDS sub-panel in hamburger menu with checkbox subscribe/unsubscribe
+- Server-side SQLite persistence (card_subscriptions, card_preferences tables)
+- Session discovery filtering — unsubscribed cards never touch browser
+- Thumbnail buttons: ▶/⏸ center, ⏹ lower-right, ✕ upper-right (admin)
+- Orange badge + status bar counts, both click to open CARDS panel
+- Search by title, sort by state/name/owner/age
+- Save Current State button, admin batch terminate with PIN
+- Fixed: cp- prefix mismatch (s.id || s.name consistently)
+
+**Part 3: Compose Mode (IMPLEMENTED)**
+- Ctrl+Space toggles Terminal Mode ↔ Compose Mode
+- Frosted glass bar with opaque rounded textarea, slides up from bottom
+- Enter: send+CR, Shift+Enter: send no CR, Ctrl+Enter: bare CR
+- Ctrl+Arrow/Y/N/C passthrough to terminal
+- Shift+Up/Down: entry history (localStorage, max 100)
+- Layout-aware: cards reposition above compose bar
+- Draft persists across reload via localStorage
+- Fixed: Ctrl+Space stray character (second keydown handler was sending ctrl+space to terminal)
+
+**Part 4: UI Polish**
+- Brushed steel title bars (dark titanium inactive, gold when active, dark text)
+- Card retreat fade animation with _retreating flag protection
+- Minimal mode respects manual setting on unfocus
+- Sidebar frosted glass, thumbnail cursor blink pause on muted
+- Unified [Aa | size | Unify] control
+- Single card Max All/Fit All/layout support
+- Bottom bar always visible, sidebar bottom padding for scroll clearance
+
+**Artifacts:**
+- docs/research/2026-04-06-v0.1-focus-positioning-bug-journal.md
+- docs/research/2026-04-06-v0.1-max-all-layout-fix-journal.md (+NOTES, v0.2)
+- docs/superpowers/plans/2026-04-06-v0.1-max-all-pipeline-fix.md
+- docs/superpowers/specs/2026-04-06-v0.2-card-subscription-manager-design.md
+- docs/superpowers/plans/2026-04-06-v0.1-card-subscription-manager.md
+- docs/superpowers/specs/2026-04-07-compose-mode-design.md
+- test-card-subscriptions.mjs, test-card-subscription-e2e.mjs
+- test-maxall-layout.mjs, test-maxall-fit.mjs
 
 ### Session 2026-04-06 — UI Bug Fixes + Max All Rewrite + Card Subscription Design
 
