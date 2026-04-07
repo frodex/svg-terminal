@@ -2041,10 +2041,16 @@ function init() {
   document.getElementById('help-btn').addEventListener('click', toggleHelp);
   document.getElementById('help-close').addEventListener('click', toggleHelp);
 
-  // Compose mode — auto-resize textarea on input
+  // Compose mode — auto-resize textarea on input + persist draft
   var composeEd = document.getElementById('compose-editor');
   if (composeEd) {
-    composeEd.addEventListener('input', autoResizeCompose);
+    // Restore draft from localStorage
+    var saved = localStorage.getItem('compose-draft');
+    if (saved) { composeEd.value = saved; autoResizeCompose(); }
+    composeEd.addEventListener('input', function() {
+      autoResizeCompose();
+      localStorage.setItem('compose-draft', composeEd.value);
+    });
   }
 
   var perfEl = document.getElementById('perf-indicator');
@@ -3288,6 +3294,7 @@ function composeSend(withCR) {
   }
   editor.value = '';
   autoResizeCompose();
+  localStorage.removeItem('compose-draft');
   _composeHistoryIdx = -1;
   _composeDraft = '';
 }
