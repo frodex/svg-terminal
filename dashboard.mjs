@@ -505,23 +505,157 @@ function fitAllFocused() {
 
 function maxAllFocused() {
   if (focusedSessions.size < 2) return;
-  // Clear slotOrder so underflow rescaling works (fills available space).
-  // We'll re-pin after layout runs to prevent future re-sorting.
-  slotOrder.clear();
-  // Run layout first so _slotRect reflects rescaled slot dimensions
-  calculateFocusedLayout();
-  // Now maximize each card to its (rescaled) slot
-  for (var name of focusedSessions) {
-    var t = terminals.get(name);
-    if (t) maximizeCardToSlot(t, true);
+
+  // --- Probe setup for 16px equalize (needed early for pre-computation) ---
+  var maxAllFontTarget = 16;
+  var probe = document.getElementById('_pov-font-probe');
+  if (!probe) {
+    probe = document.createElement('span');
+    probe.id = '_pov-font-probe';
+    probe.style.cssText = 'position:fixed;left:-9999px;top:-9999px;font-family:"FiraCode Nerd Font Mono",monospace;white-space:pre;visibility:hidden;';
+    probe.textContent = 'MMMMMMMMMM';
+    document.body.appendChild(probe);
   }
-  // Pin slot assignments so subsequent layout runs don't re-sort
+  probe.style.fontSize = maxAllFontTarget + 'px';
+  var probeRect = probe.getBoundingClientRect();
+  var targetCellW = probeRect.width / 10;
+  var targetCellH = probeRect.height;
+
+  // --- Pre-pass: layout to get slot dimensions, then compute equalize targets ---
+  // We need slot dimensions before we can compute target cols/rows.
+  // But card sizing depends on target cols/rows (chicken-and-egg).
+  // Solution: layout once to get slots, compute targets, then redo with correct card sizes.
+  calculateFocusedLayout();
+
+  // Pin slot assignments if not already pinned
   for (var [fn, ft] of terminals) {
-    if (focusedSessions.has(fn) && ft._slotIndex != null) {
+    if (focusedSessions.has(fn) && ft._slotIndex != null && !slotOrder.has(fn)) {
       slotOrder.set(fn, ft._slotIndex);
     }
   }
+
+  // Pre-compute equalize cols/rows for each card from slot dimensions.
+  // These are independent of card size (only depend on slot + target font).
+  var eqTargets = new Map();
+  for (var name of focusedSessions) {
+    var t = terminals.get(name);
+    if (!t || !t._slotRect) continue;
+    var slot = t._slotRect;
+    // Estimate content fraction using current card (close enough for pre-pass)
+    var contentFrac = (t.baseCardH - HEADER_H) / t.baseCardH;
+    var contentH = slot.h * contentFrac;
+    var newCols = Math.max(20, Math.min(300, Math.ceil(slot.w / targetCellW)));
+    var newRows = Math.max(5, Math.min(100, Math.round(newCols * targetCellW * contentH / (targetCellH * slot.w))));
+    eqTargets.set(name, { cols: newCols, rows: newRows });
+  }
+
+  // --- Step 0: Reset cards to natural size for the TARGET terminal dimensions ---
+  // Using the equalize targets instead of current screenCols/screenRows ensures
+  // the card sizing matches what the terminal will become after step 3.
+  // Without this, the first Max All uses stale dimensions and needs a second press.
+  for (var name of focusedSessions) {
+    var t = terminals.get(name);
+    if (!t) continue;
+    var eq = eqTargets.get(name);
+    var cols = eq ? eq.cols : (t.screenCols || 80);
+    var rows = eq ? eq.rows : (t.screenRows || 24);
+    var m = getMeasuredCellSize(t);
+    var size = m ? calcCardSize(cols, rows, m.cellW, m.cellH)
+                 : calcCardSize(cols, rows);
+    t.baseCardW = size.cardW;
+    t.baseCardH = size.cardH;
+    t.dom.style.width = size.cardW + 'px';
+    t.dom.style.height = size.cardH + 'px';
+    var inner = t.dom.querySelector('.terminal-inner');
+    if (inner) { inner.style.width = size.cardW + 'px'; inner.style.height = size.cardH + 'px'; }
+  }
+
+  // --- Step 1: Layout with correct card sizes ---
   calculateFocusedLayout();
+
+  // --- Step 2: Expand card DOM to fill slot ---
+  // Card DOM aspect → slot aspect. Guarantees edge-to-edge fill.
+  for (var name of focusedSessions) {
+    var t = terminals.get(name);
+    if (!t || !t._slotFit) continue;
+    var fit = t._slotFit;
+    var newW = t.baseCardW;
+    var newH = t.baseCardH;
+    if (fit.constrainedBy === 'width') {
+      newH = Math.round(fit.slotH * t.baseCardW / fit.slotW);
+    } else {
+      newW = Math.round(fit.slotW * t.baseCardH / fit.slotH);
+    }
+    t.baseCardW = newW;
+    t.baseCardH = newH;
+    t.dom.style.width = newW + 'px';
+    t.dom.style.height = newH + 'px';
+    var inner = t.dom.querySelector('.terminal-inner');
+    if (inner) { inner.style.width = newW + 'px'; inner.style.height = newH + 'px'; }
+  }
+
+  // --- Step 2.5: Reposition cards in 3D for expanded DOM ---
+  // Direct frustum positioning — bypasses layout's terminal-aspect letterbox.
+  var vFov = camera.fov * DEG2RAD;
+  var halfTan = Math.tan(vFov / 2);
+  var screenW = window.innerWidth;
+  var screenH = window.innerHeight;
+  var now = clock.getElapsedTime();
+
+  var depths = [];
+  for (var name of focusedSessions) {
+    var t = terminals.get(name);
+    if (!t || !t._slotRect) continue;
+    var slot = t._slotRect;
+    var worldH = t.baseCardH * WORLD_SCALE;
+    var fracH = slot.h / screenH;
+    var depth = worldH / (fracH * 2 * halfTan);
+    depths.push({ name: name, depth: depth, cx: slot.x + slot.w / 2, cy: slot.y + slot.h / 2 });
+  }
+  if (depths.length > 0) {
+    var maxDepth = Math.max.apply(null, depths.map(function(d) { return d.depth; }));
+    var camZ = Math.max(FOCUS_DIST, maxDepth + 150);
+
+    for (var di = 0; di < depths.length; di++) {
+      var d = depths[di];
+      var t = terminals.get(d.name);
+      if (!t) continue;
+      var cardZ = camZ - d.depth;
+      var visHAtDepth = 2 * d.depth * halfTan;
+      var px2w = visHAtDepth / screenH;
+      t.morphFrom = { x: t.currentPos.x, y: t.currentPos.y, z: t.currentPos.z };
+      t._layoutZ = cardZ;
+      t.targetPos = { x: (d.cx - screenW / 2) * px2w, y: -(d.cy - screenH / 2) * px2w, z: cardZ };
+      t.morphStart = now;
+    }
+
+    var avgZ = depths.reduce(function(s, d) { return s + (camZ - d.depth); }, 0) / depths.length;
+    cameraTween = {
+      from: camera.position.clone(),
+      to: new THREE.Vector3(0, 0, camZ),
+      lookFrom: currentLookTarget.clone(),
+      lookTo: new THREE.Vector3(0, 0, avgZ),
+      start: now,
+      duration: 1.0
+    };
+  }
+
+  // --- Step 3: Send equalize resize ---
+  // Cols/rows were pre-computed to match slot + 16px target.
+  // Recompute contentFrac with expanded card dimensions for final accuracy.
+  for (var name of focusedSessions) {
+    var t = terminals.get(name);
+    if (!t || !t._slotRect) continue;
+    var slot = t._slotRect;
+    var contentFrac = (t.baseCardH - HEADER_H) / t.baseCardH;
+    var contentH = slot.h * contentFrac;
+    var newCols = Math.max(20, Math.min(300, Math.ceil(slot.w / targetCellW)));
+    var newRows = Math.max(5, Math.min(100, Math.round(newCols * targetCellW * contentH / (targetCellH * slot.w))));
+    t._lockCardSize = true;
+    t._suppressRelayout = true;
+    t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
+    t._origColRowRatio = newCols / newRows;
+  }
 }
 
 // --- POV-FONT-SIZE equalization ---
@@ -568,13 +702,12 @@ function equalizeAllFocused() {
       slotH = rect.height;
     }
 
-    // How many cols/rows fit in this slot at the browser-measured target cell size
-    var newCols = Math.round(slotW / targetCellW);
-    var newRows = Math.round(slotH / targetCellH);
-
-    // Clamp
-    newCols = Math.max(20, Math.min(300, newCols));
-    newRows = Math.max(5, Math.min(100, newRows));
+    // Content area excludes header. slotH includes header's screen contribution.
+    var contentFrac = (t.baseCardH - HEADER_H) / t.baseCardH;
+    var contentH = slotH * contentFrac;
+    // Compute cols from width, then derive rows from content aspect ratio.
+    var newCols = Math.max(20, Math.min(300, Math.ceil(slotW / targetCellW)));
+    var newRows = Math.max(5, Math.min(100, Math.round(newCols * targetCellW * contentH / (targetCellH * slotW))));
 
     var currentCols = t.screenCols || 80;
     var currentRows = t.screenRows || 24;
@@ -586,7 +719,7 @@ function equalizeAllFocused() {
 
 function updateTopBarVisibility() {
   var multi = document.getElementById('top-bar-multi');
-  if (multi) multi.style.display = focusedSessions.size >= 2 ? 'flex' : 'none';
+  if (multi) multi.style.display = 'flex';
   updateTopBarLayoutLabel();
 }
 
@@ -883,6 +1016,7 @@ function optimizeTermToCard(t) {
           'cur='+cols+'x'+rows, 'scale='+scaleW.toFixed(2)+'/'+scaleH.toFixed(2), 'fit='+fitScale.toFixed(2),
           'new='+newCols+'x'+newRows);
         t._lockCardSize = true;
+        t._suppressRelayout = true;
         t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
         // Reset the original ratio so +/- preserves this new shape
         t._origColRowRatio = newCols / newRows;
@@ -924,73 +1058,11 @@ function optimizeCardToTerm(t) {
   }
 }
 
-// Maximize card→slot: eliminate letterbox by growing the unconstrained dimension.
-//
-// After layout places a card in a slot, one dimension is constrained (fills the slot)
-// and the other is letterboxed. This function grows the letterboxed dimension so the
-// card fills the slot completely. The constrained dimension stays the same — cols or
-// rows on that axis don't change.
-//
-// Step 1 (done by layout): card placed in slot, Z-depth fills constrained dimension
-// Step 2 (this function): grow unconstrained dimension to fill slot
-// Step 3 (layout re-run): Z-depth adjusts for new card shape, card fills slot edge-to-edge
-function maximizeCardToSlot(t, batch) {
-  if (!t._slotFit && !t._slotRect) return;
-
-  var m = getMeasuredCellSize(t);
-  var cellW = m ? m.cellW : SVG_CELL_W;
-  var cellH = m ? m.cellH : SVG_CELL_H;
-
-  var currentCols = t.screenCols || 80;
-  var currentRows = t.screenRows || 24;
-
-  var newCols = currentCols;
-  var newRows = currentRows;
-
-  if (t._slotFit) {
-    var fit = t._slotFit;
-    if (fit.constrainedBy === 'width') {
-      // Width fills slot, height is letterboxed. Grow rows to fill height.
-      // Current screen height = fitH. Slot height = slotH. Ratio = slotH / fitH.
-      // New rows = currentRows * (slotH / fitH) — scale rows to fill the slot height.
-      var rowScale = fit.slotH / fit.fitH;
-      newRows = Math.round(currentRows * rowScale);
-    } else {
-      // Height fills slot, width is letterboxed. Grow cols to fill width.
-      var colScale = fit.slotW / fit.fitW;
-      newCols = Math.round(currentCols * colScale);
-    }
-  } else {
-    // Fallback: use slot aspect ratio
-    var slot = t._slotRect;
-    var slotAspect = slot.w / slot.h;
-    var cardAspect = (currentCols * cellW) / (currentRows * cellH);
-    if (cardAspect > slotAspect) {
-      newRows = Math.round(currentCols * cellW / (slotAspect * cellH));
-    } else {
-      newCols = Math.round(currentRows * slotAspect * cellH / cellW);
-    }
-  }
-
-  // Clamp
-  newCols = Math.max(20, Math.min(300, newCols));
-  newRows = Math.max(5, Math.min(100, newRows));
-
-  t._origColRowRatio = newCols / newRows;
-  // Tell updateCardForNewSize to bypass TARGET_WORLD_AREA when the resize arrives.
-  // Store target cols/rows so the flag only activates for the correct resize response,
-  // not for stale layout re-runs that fire before the response arrives.
-  t._fillSlot = { cols: newCols, rows: newRows };
-
-  if (newCols !== currentCols || newRows !== currentRows) {
-    t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
-  }
-
-  // Layout re-runs when the resize response arrives via _screenCallback →
-  // updateCardForNewSize → calculateFocusedLayout. No explicit call needed here
-  // unless in batch mode where we trigger one layout at the end.
-  if (!batch) calculateFocusedLayout();
-}
+// maximizeCardToSlot — REMOVED (2026-04-06)
+// Replaced by 3-step pipeline in maxAllFocused():
+//   Step 1: calculateFocusedLayout() — frustum-fit letterbox
+//   Step 2: inline card DOM expansion — mutate unconstrained dimension
+//   Step 3: optimizeTermToCard() — fit terminal to new card aspect
 
 // === Constants ===
 const LIGHT_DIR = new THREE.Vector3(-0.7, 0.7, -0.3).normalize();
@@ -4168,34 +4240,11 @@ function updateCardForNewSize(t, newCols, newRows) {
   var measured = getMeasuredCellSize(t);
   if (measured) t._needsMeasuredCorrection = false; // correction applied
 
-  var cardW, cardH;
-  // Check if this is the Max All resize response (cols/rows match the target)
-  var fillSlotActive = t._fillSlot && t._slotRect
-    && newCols === t._fillSlot.cols && newRows === t._fillSlot.rows;
-
-  if (fillSlotActive) {
-    // Max All mode: size card to fill its slot, bypassing TARGET_WORLD_AREA.
-    // Set card DOM so the terminal's aspect fills the slot.
-    // The frustum projection will then position it at the Z-depth where it fills edge-to-edge.
-    var slot = t._slotRect;
-    var cw = measured ? measured.cellW : SVG_CELL_W;
-    var ch = measured ? measured.cellH : SVG_CELL_H;
-    var termAspect = (newCols * cw) / (newRows * ch);
-    // Scale card DOM so the content area matches the slot's aspect.
-    // Use a consistent base height, then derive width from aspect.
-    var baseH = 1200; // DOM pixels — large enough for crisp rendering
-    cardH = baseH + HEADER_H;
-    cardW = Math.round(baseH * termAspect);
-    cardW = Math.max(MIN_CARD_W, Math.min(MAX_CARD_W, cardW));
-    cardH = Math.max(MIN_CARD_H, Math.min(MAX_CARD_H, cardH));
-    t._fillSlot = null; // consumed
-  } else {
-    var size = measured
-      ? calcCardSize(newCols, newRows, measured.cellW, measured.cellH)
-      : calcCardSize(newCols, newRows);
-    cardW = size.cardW;
-    cardH = size.cardH;
-  }
+  var size = measured
+    ? calcCardSize(newCols, newRows, measured.cellW, measured.cellH)
+    : calcCardSize(newCols, newRows);
+  var cardW = size.cardW;
+  var cardH = size.cardH;
   // Compensate 3D position so the anchor point stays fixed when resizing.
   // CSS3DObject origin is center — changing DOM size shifts all edges equally.
   // The anchor point (fx, fy) is the fraction of the card where the user clicked.
@@ -4211,10 +4260,12 @@ function updateCardForNewSize(t, newCols, newRows) {
     // To keep the anchor point fixed on screen: when the card grows, the anchor
     // moves away from center. Shift the 3D center in the opposite direction to compensate.
     // shift = -(fx - 0.5) * sizeChange. At center (0.5), shift=0.
-    t.currentPos.x -= dwWorld * (fx - 0.5);
-    t.currentPos.y += dhWorld * (fy - 0.5);  // Y inverted in 3D
-    t.targetPos.x = t.currentPos.x;
-    t.targetPos.y = t.currentPos.y;
+    var shiftX = -dwWorld * (fx - 0.5);
+    var shiftY = dhWorld * (fy - 0.5);  // Y inverted in 3D
+    t.currentPos.x += shiftX;
+    t.currentPos.y += shiftY;
+    t.targetPos.x += shiftX;
+    t.targetPos.y += shiftY;
     t.css3dObject.position.set(t.currentPos.x, t.currentPos.y, t.currentPos.z);
     // Clear anchor after use — next resize without explicit anchor stays centered
     t._resizeAnchorFx = null;
@@ -5603,6 +5654,7 @@ init();
   window._maxAllFocused = maxAllFocused;
   window._equalizeAllFocused = equalizeAllFocused;
   window._getMeasuredCellSize = getMeasuredCellSize;
+  window._optimizeTermToCard = optimizeTermToCard;
 
   window._saveLayout = function() {
     const state = window._getLayoutState();
