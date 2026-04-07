@@ -342,9 +342,23 @@
   <div class="input-bar" id="input-bar">
     <span class="status-dot" id="ws-status"></span>
     <span class="target" id="input-target"></span>
-    <span class="input-hint">Keys go to terminal</span>
+    <span class="input-hint" id="input-hint">Keys go to terminal</span>
     <span class="perf-indicator" id="perf-indicator" title="Performance mode (click to cycle)"></span>
     <span class="card-counts" id="card-counts" title="Click to manage cards"></span>
+  </div>
+
+  <!-- Compose mode editor — slides in from right under thumbnails -->
+  <div class="compose-bar" id="compose-bar">
+    <div class="compose-bar-glass">
+      <div class="compose-bar-label">
+        <span class="compose-mode-badge">COMPOSE</span>
+        <span class="compose-target" id="compose-target"></span>
+        <span class="compose-hint">Enter: send | Shift+Enter: no CR | Ctrl+Space: exit</span>
+      </div>
+      <textarea id="compose-editor" class="compose-editor" rows="1"
+                spellcheck="true" autocomplete="off"
+                placeholder="Type here... Enter to send"></textarea>
+    </div>
   </div>
 
 

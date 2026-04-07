@@ -1501,6 +1501,7 @@ function computeRingPos(index, total, config, angle) {
 // Each terminal gets a screen rectangle proportional to its cell count.
 // The card sits at whatever Z depth makes its world size fill that screen rectangle.
 const STATUS_BAR_H = 34; /* bottom input bar — always visible, measured at 34px */
+const COMPOSE_BAR_H = 56; /* compose bar minimum height (1 row + label + padding) — added to bottom reserve when open */
 const LAYOUT_GAP_PX = 8;
 
 function calculateFocusedLayout() {
@@ -1531,7 +1532,8 @@ function calculateFocusedLayout() {
   const screenH = window.innerHeight;
 
   const availW = screenW - SIDEBAR_WIDTH;
-  const availH = screenH - STATUS_BAR_H - TOP_BAR_H;
+  const composeExtra = _composeMode ? COMPOSE_BAR_H : 0;
+  const availH = screenH - STATUS_BAR_H - TOP_BAR_H - composeExtra;
 
   // Build cards with cell counts — skip user-positioned terminals
   const names = [...focusedSessions];
@@ -1689,7 +1691,8 @@ function calculateSlotLayout(slots) {
   var screenW = window.innerWidth;
   var screenH = window.innerHeight;
   var availW = screenW - SIDEBAR_WIDTH;
-  var availH = screenH - STATUS_BAR_H - TOP_BAR_H;
+  var composeExtra = _composeMode ? COMPOSE_BAR_H : 0;
+  var availH = screenH - STATUS_BAR_H - TOP_BAR_H - composeExtra;
 
   // Build card info — same structure as masonry path
   var names = [...focusedSessions];
@@ -2037,6 +2040,12 @@ function init() {
   document.addEventListener('keydown', onKeyDown);
   document.getElementById('help-btn').addEventListener('click', toggleHelp);
   document.getElementById('help-close').addEventListener('click', toggleHelp);
+
+  // Compose mode — auto-resize textarea on input
+  var composeEd = document.getElementById('compose-editor');
+  if (composeEd) {
+    composeEd.addEventListener('input', autoResizeCompose);
+  }
 
   var perfEl = document.getElementById('perf-indicator');
   if (perfEl) {
@@ -3225,7 +3234,163 @@ window.addEventListener('blur', function() {
 
 let _zoomedSession = null; // which terminal is currently zoomed in multi-focus
 
+// === Compose Mode ===
+var _composeMode = false;
+var _composeHistory = JSON.parse(localStorage.getItem('compose-history') || '[]');
+var _composeHistoryIdx = -1;
+var _composeDraft = '';
+
+function toggleComposeMode() {
+  _composeMode = !_composeMode;
+  var bar = document.getElementById('compose-bar');
+  var editor = document.getElementById('compose-editor');
+  var hint = document.getElementById('input-hint');
+  var target = document.getElementById('compose-target');
+  if (!bar || !editor) return;
+
+  if (_composeMode) {
+    bar.classList.add('visible');
+    if (target) target.textContent = activeInputSession || '';
+    editor.focus();
+    if (hint) hint.textContent = 'Compose mode — Ctrl+Space to exit';
+    _composeHistoryIdx = -1;
+    _composeDraft = '';
+  } else {
+    bar.classList.remove('visible');
+    editor.blur(); // release focus so keystrokes go back to terminal
+    if (hint) hint.textContent = 'Keys go to terminal';
+    // Don't clear editor — content persists across toggles
+  }
+  // Re-run layout so cards reposition above/below compose bar
+  if (focusedSessions.size > 0) {
+    calculateFocusedLayout();
+  }
+}
+
+function composeSend(withCR) {
+  var editor = document.getElementById('compose-editor');
+  if (!editor) return;
+  var text = editor.value;
+  if (!text && !withCR) return;
+  var t = activeInputSession ? terminals.get(activeInputSession) : null;
+  if (!t) return;
+  if (text) {
+    t.sendInput({ type: 'input', keys: text });
+    // Add to history
+    if (text.trim()) {
+      _composeHistory.push(text);
+      if (_composeHistory.length > 100) _composeHistory.shift();
+      try { localStorage.setItem('compose-history', JSON.stringify(_composeHistory)); } catch(e) {}
+    }
+  }
+  if (withCR) {
+    t.sendInput({ type: 'input', keys: '\r' });
+  }
+  editor.value = '';
+  autoResizeCompose();
+  _composeHistoryIdx = -1;
+  _composeDraft = '';
+}
+
+function composeHistoryNav(dir) {
+  var editor = document.getElementById('compose-editor');
+  if (!editor || _composeHistory.length === 0) return;
+  if (_composeHistoryIdx === -1) {
+    _composeDraft = editor.value;
+  }
+  _composeHistoryIdx += dir;
+  if (_composeHistoryIdx < -1) _composeHistoryIdx = -1;
+  if (_composeHistoryIdx >= _composeHistory.length) _composeHistoryIdx = _composeHistory.length - 1;
+  if (_composeHistoryIdx === -1) {
+    editor.value = _composeDraft;
+  } else {
+    editor.value = _composeHistory[_composeHistory.length - 1 - _composeHistoryIdx];
+  }
+  autoResizeCompose();
+}
+
+function autoResizeCompose() {
+  var editor = document.getElementById('compose-editor');
+  if (!editor) return;
+  editor.style.height = 'auto';
+  editor.style.height = Math.min(editor.scrollHeight, window.innerHeight * 0.3) + 'px';
+}
+
 function onKeyDown(e) {
+  // Ctrl+Space — toggle compose mode (works in both modes)
+  if (e.key === ' ' && e.ctrlKey && !e.altKey && !e.metaKey) {
+    e.preventDefault();
+    toggleComposeMode();
+    return;
+  }
+
+  // In compose mode, handle special keys and let the rest go to textarea
+  if (_composeMode) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
+      // Enter — send text + CR
+      e.preventDefault();
+      composeSend(true);
+      return;
+    }
+    if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey) {
+      // Shift+Enter — send text without CR
+      e.preventDefault();
+      composeSend(false);
+      return;
+    }
+    if (e.key === 'Enter' && e.ctrlKey) {
+      // Ctrl+Enter — send bare CR to terminal
+      e.preventDefault();
+      var t = activeInputSession ? terminals.get(activeInputSession) : null;
+      if (t) t.sendInput({ type: 'input', keys: '\r' });
+      return;
+    }
+    if (e.ctrlKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      // Ctrl+Arrow — send arrow key to terminal
+      e.preventDefault();
+      var keyName = e.key.replace('Arrow', '');
+      var t = activeInputSession ? terminals.get(activeInputSession) : null;
+      if (t) t.sendInput({ specialKey: keyName });
+      return;
+    }
+    if (e.ctrlKey && (e.key === 'y' || e.key === 'Y')) {
+      // Ctrl+Y — quick send y + Enter
+      e.preventDefault();
+      var t = activeInputSession ? terminals.get(activeInputSession) : null;
+      if (t) { t.sendInput({ type: 'input', keys: 'y' }); t.sendInput({ type: 'input', keys: '\r' }); }
+      return;
+    }
+    if (e.ctrlKey && (e.key === 'n' || e.key === 'N')) {
+      // Ctrl+N — quick send n + Enter
+      e.preventDefault();
+      var t = activeInputSession ? terminals.get(activeInputSession) : null;
+      if (t) { t.sendInput({ type: 'input', keys: 'n' }); t.sendInput({ type: 'input', keys: '\r' }); }
+      return;
+    }
+    if (e.ctrlKey && e.key === 'c') {
+      // Ctrl+C — send interrupt
+      e.preventDefault();
+      var t = activeInputSession ? terminals.get(activeInputSession) : null;
+      if (t) t.sendInput({ type: 'input', keys: '\x03' });
+      return;
+    }
+    if (e.shiftKey && e.key === 'ArrowUp') {
+      // Shift+Up — history previous
+      e.preventDefault();
+      composeHistoryNav(1);
+      return;
+    }
+    if (e.shiftKey && e.key === 'ArrowDown') {
+      // Shift+Down — history next
+      e.preventDefault();
+      composeHistoryNav(-1);
+      return;
+    }
+    // All other keys — let textarea handle them (spell check, clipboard, cursor, etc.)
+    return;
+  }
+
+  // --- Terminal Mode (existing behavior below) ---
   if (e.key === 'Escape') {
     const sessionPanel = document.getElementById('session-form-panel');
     if (sessionPanel && sessionPanel.classList.contains('visible')) {
@@ -5350,6 +5515,7 @@ function animate() {
 // Browser shortcuts (Ctrl+T, Ctrl+W, etc.) are excluded.
 // DO NOT add per-terminal click handlers — see note 4 in header.
 function shouldSendKeysToTerminal() {
+  if (_composeMode) return false;
   if (isUiOverlayActive()) return false;
   var a = document.activeElement;
   if (!a || a === document.body || a === document.documentElement) return true;
@@ -5470,6 +5636,7 @@ document.addEventListener('keydown', function(e) {
 
   // Ctrl combos — selection is auto-copied on mouseup, no persistent selection to check
   if (e.ctrlKey && !e.altKey && e.key.length === 1) {
+    if (e.key === ' ') return; // Ctrl+Space is compose toggle — don't send to terminal
     t.sendInput({ type: 'input', keys: e.key.toLowerCase(), ctrl: true });
     return;
   }
