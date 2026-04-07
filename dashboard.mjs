@@ -2044,6 +2044,16 @@ function init() {
   // Compose mode — auto-resize, persist draft, restore state, close button
   var composeEd = document.getElementById('compose-editor');
   if (composeEd) {
+    // Intercept Ctrl+Arrow on textarea before browser uses it for word navigation
+    composeEd.addEventListener('keydown', function(e) {
+      if (e.ctrlKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        e.preventDefault();
+        e.stopPropagation();
+        var keyName = e.key.replace('Arrow', '');
+        var t = activeInputSession ? terminals.get(activeInputSession) : null;
+        if (t) t.sendInput({ type: 'input', specialKey: keyName });
+      }
+    });
     // Restore draft from localStorage
     var saved = localStorage.getItem('compose-draft');
     if (saved) { composeEd.value = saved; autoResizeCompose(); }
@@ -3385,21 +3395,21 @@ function onKeyDown(e) {
     return;
   }
 
-  // In compose mode AND textarea is focused, handle special keys
-  var _composeFocused = _composeMode && document.activeElement === document.getElementById('compose-editor');
-  if (_composeFocused) {
-    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
-      // Enter — send text + CR
+  // In compose mode — handle special keys regardless of focus (Ctrl+Arrow etc. always go to terminal)
+  if (_composeMode) {
+    var _composeFocused = document.activeElement === document.getElementById('compose-editor');
+    // Text editing keys — only when compose textarea is focused
+    if (_composeFocused && e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
       e.preventDefault();
       composeSend(true);
       return;
     }
-    if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey) {
-      // Shift+Enter — send text without CR
+    if (_composeFocused && e.key === 'Enter' && e.shiftKey && !e.ctrlKey) {
       e.preventDefault();
       composeSend(false);
       return;
     }
+    // Ctrl shortcuts — always pass to terminal regardless of compose focus
     if (e.key === 'Enter' && e.ctrlKey) {
       // Ctrl+Enter — send bare CR to terminal
       e.preventDefault();
@@ -3412,7 +3422,7 @@ function onKeyDown(e) {
       e.preventDefault();
       var keyName = e.key.replace('Arrow', '');
       var t = activeInputSession ? terminals.get(activeInputSession) : null;
-      if (t) t.sendInput({ specialKey: keyName });
+      if (t) t.sendInput({ type: 'input', specialKey: keyName });
       return;
     }
     if (e.ctrlKey && (e.key === 'y' || e.key === 'Y')) {
@@ -3436,13 +3446,13 @@ function onKeyDown(e) {
       if (t) t.sendInput({ type: 'input', keys: '\x03' });
       return;
     }
-    if (e.shiftKey && e.key === 'ArrowUp') {
+    if (_composeFocused && e.shiftKey && e.key === 'ArrowUp') {
       // Shift+Up — history previous
       e.preventDefault();
       composeHistoryNav(1);
       return;
     }
-    if (e.shiftKey && e.key === 'ArrowDown') {
+    if (_composeFocused && e.shiftKey && e.key === 'ArrowDown') {
       // Shift+Down — history next
       e.preventDefault();
       composeHistoryNav(-1);
@@ -3451,8 +3461,8 @@ function onKeyDown(e) {
     // Shift+Tab — pass through to terminal mode handler for card cycling
     if (e.key === 'Tab' && e.shiftKey) {
       // Don't return — fall through to the terminal mode Shift+Tab handler below
-    } else {
-      // All other keys — let textarea handle them (spell check, clipboard, cursor, etc.)
+    } else if (_composeFocused) {
+      // Compose focused — let textarea handle remaining keys (spell check, clipboard, etc.)
       return;
     }
   }
