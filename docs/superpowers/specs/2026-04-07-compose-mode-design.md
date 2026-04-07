@@ -34,6 +34,8 @@ A rich text input mode for composing messages before sending them to the active 
 | **Ctrl+Y** | Quick-send `y` + Enter to terminal |
 | **Ctrl+N** | Quick-send `n` + Enter to terminal |
 | **Ctrl+C** | Send interrupt (SIGINT) to terminal |
+| **Shift+Up** | Recall previous entry from history |
+| **Shift+Down** | Recall next entry from history |
 | **Ctrl+Space** | Switch back to Terminal Mode |
 
 All other keys are captured by the editor for text composition. Standard editing shortcuts work normally: Ctrl+A (select all), Ctrl+Z (undo), Ctrl+X/C/V (cut/copy/paste), Home/End, Shift+Arrow (selection), etc.
@@ -145,7 +147,19 @@ The existing document-level `keydown` handler currently sends all keys to the te
 ### State
 - `_composeMode` boolean — tracks current mode
 - `_composeEditor` reference — the textarea element
+- `_composeHistory` array — past sent entries (most recent last)
+- `_composeHistoryIdx` integer — current position in history (-1 = new entry)
+- `_composeDraft` string — saves current unsent text when scrolling through history
 - Editor content persists in the textarea DOM naturally (not cleared on toggle)
+
+### History
+- Every Enter or Shift+Enter that sends text appends to `_composeHistory`
+- Max 100 entries (drop oldest)
+- Shift+Up/Down navigates the history
+- When navigating away from a new entry, the current text is saved as `_composeDraft`
+- Navigating past the newest entry restores the draft
+- History persists in `localStorage` key `compose-history` (survives reload)
+- Ctrl+Enter, Ctrl+Y/N (quick sends) do NOT add to history
 
 ---
 
