@@ -58,9 +58,32 @@ html, body {
 /* Active input indicator — header lights up gold.
    Only the header background changes — avoids layout/border changes
    that trigger Chrome to re-rasterize the entire card under CSS3D transforms. */
+/* Active input — brushed gold/amber with dark text and icons */
 .terminal-3d.input-active header {
-  background: #4a4020;
-  box-shadow: 0 2px 8px rgba(254, 188, 46, 0.3);
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(255,255,255,0.05) 0px,
+      rgba(0,0,0,0.03) 1px,
+      rgba(255,255,255,0.06) 2px
+    ),
+    linear-gradient(180deg, #d4a017 0%, #c49415 30%, #b8880f 60%, #a87a0a 100%);
+  border-top: 1px solid rgba(255,230,150,0.4);
+  border-bottom: 1px solid rgba(0,0,0,0.4);
+}
+.terminal-3d.input-active .session-name {
+  color: #1a1000;
+}
+.terminal-3d.input-active .dots .dot {
+  border-color: rgba(30,20,0,0.5);
+}
+.terminal-3d.input-active .header-controls button {
+  color: #2a1a00;
+  background: rgba(0,0,0,0.12);
+}
+.terminal-3d.input-active .header-controls button:hover {
+  background: rgba(0,0,0,0.25);
+  color: #000;
 }
 
 .terminal-3d.faded {
@@ -69,10 +92,17 @@ html, body {
   transition: opacity 0.5s;
 }
 
-/* === Window Chrome === */
+/* === Window Chrome — brushed stainless steel === */
 .terminal-3d header {
   height: 56px;
-  background: #2a2a2c;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(255,255,255,0.03) 0px,
+      rgba(0,0,0,0.02) 1px,
+      rgba(255,255,255,0.04) 2px
+    ),
+    linear-gradient(180deg, #4a4a50 0%, #38383c 40%, #2e2e32 100%);
   display: flex;
   align-items: center;
   padding: 8px 24px;
@@ -80,7 +110,10 @@ html, body {
   user-select: none;
   position: relative;
   z-index: 2;
+  color: rgba(255,255,255,0.9);
   cursor: grab;
+  border-bottom: 1px solid rgba(0,0,0,0.3);
+  border-top: 1px solid rgba(255,255,255,0.08);
 }
 .terminal-3d header:active {
   cursor: grabbing;
@@ -126,7 +159,7 @@ html, body {
 .terminal-3d .dot.green { background: #28c840; }
 
 .terminal-3d .session-name {
-  color: #808080;
+  color: #ffffff;
   font-size: 22px;
   font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
   white-space: nowrap;
@@ -262,12 +295,14 @@ html, body {
   right: 0;
   bottom: 0;
   width: 140px;
-  background: rgba(0, 0, 0, 0.03);
-  border-left: 1px solid rgba(0, 0, 0, 0.06);
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(12px) saturate(1.1);
+  -webkit-backdrop-filter: blur(12px) saturate(1.1);
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
   overflow-y: auto;
   overflow-x: hidden;
   z-index: 100;
-  padding: 12px 8px;
+  padding: 12px 8px 42px 8px; /* bottom padding clears input bar (34px) + gap (8px) */
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -352,11 +387,14 @@ html, body {
 .thumb-mute:hover {
   background: rgba(100, 100, 120, 1);
 }
-.thumbnail-item.muted {
-  opacity: 0.4;
-}
-.thumbnail-item.muted .thumb-mute {
-  background: rgba(80, 180, 80, 0.8);
+.thumbnail-item.muted::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: 6px;
+  z-index: 1;
+  pointer-events: none;
 }
 
 .thumbnail-item object {
@@ -379,11 +417,15 @@ html, body {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
 }
+.thumbnail-item.muted .thumb-cursor {
+  animation: none;
+  opacity: 0.3;
+}
 
 /* === Input Bar === */
 .input-bar {
   position: fixed;
-  bottom: -50px;
+  bottom: 0;
   left: 0;
   right: 0;
   background: rgba(0, 0, 0, 0.8);
@@ -394,11 +436,6 @@ html, body {
   align-items: center;
   gap: 12px;
   z-index: 100;
-  transition: bottom 0.3s ease;
-}
-
-.input-bar.visible {
-  bottom: 0;
 }
 
 .input-bar .target {
@@ -627,6 +664,53 @@ html, body {
   color: #fff;
 }
 
+/* Unified equalize box */
+.top-bar-unify {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+.top-bar-unify-label {
+  padding: 4px 6px;
+  font-family: 'FiraCode Nerd Font Mono', monospace;
+  font-size: 13px;
+  color: #ccc;
+  line-height: 1;
+  border-right: 1px solid rgba(255, 255, 255, 0.12);
+}
+.top-bar-unify-btn {
+  padding: 5px 10px;
+  border: none;
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  background: transparent;
+  color: #ccc;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.top-bar-unify-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+.top-bar-unify input[type="number"] {
+  width: 38px;
+  padding: 4px 4px;
+  border: none;
+  background: transparent;
+  color: #e0e0e0;
+  font-size: 12px;
+  text-align: center;
+  font-family: inherit;
+  -moz-appearance: textfield;
+}
+.top-bar-unify input[type="number"]::-webkit-inner-spin-button,
+.top-bar-unify input[type="number"]::-webkit-outer-spin-button {
+  opacity: 1;
+}
+
 .user-pill {
   font-size: 12px;
   color: rgba(255, 255, 255, 0.75);
@@ -642,10 +726,10 @@ html, body {
 /* Ghost layout preview — slot outlines over viewport */
 .ghost-layout-preview {
   position: fixed;
-  top: 44px;
+  top: 45px;
   left: 0;
-  right: 140px;
-  bottom: 50px;
+  right: 157px;
+  bottom: 34px;
   pointer-events: none;
   z-index: 250;
   opacity: 0;
@@ -674,10 +758,10 @@ html, body {
 /* Drop zone overlay — shown during moveCard drag over focused layout */
 .drop-zone-overlay {
   position: fixed;
-  top: 44px;
+  top: 45px;
   left: 0;
-  right: 140px;
-  bottom: 50px;
+  right: 157px;
+  bottom: 34px;
   pointer-events: none;
   z-index: 240;
   opacity: 0;
@@ -1260,14 +1344,18 @@ html, body {
 
 /* Thumbnail buttons — positioned absolutely within thumbnail-item (position:relative) */
 .thumb-state-icon {
-  position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%);
-  font-size: 10px; cursor: pointer; padding: 1px 3px; border-radius: 3px;
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  font-size: 19px; cursor: pointer;
+  width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: rgba(80, 80, 80, 0.7);
   line-height: 1; z-index: 2;
 }
-.thumb-state-icon.active { color: #4caf50; }
+.thumb-state-icon.active { padding-left: 2px; color: #4caf50; /* optical center — play arrow points right */ }
+.thumb-state-icon:hover { background: rgba(100, 100, 100, 0.85); }
 .thumb-state-icon.paused { color: #ff9800; }
 .thumb-stop {
-  position: absolute; top: 2px; left: 2px;
+  position: absolute; bottom: 2px; right: 2px;
   color: #f44336; font-size: 10px; cursor: pointer; padding: 1px 3px; z-index: 2;
 }
 .thumb-terminate {

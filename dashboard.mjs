@@ -281,7 +281,7 @@ function showLayoutIndicator() {
 
 /** Apply named layout from top bar (multi-focus only). */
 function setActiveLayoutFromMenu(layoutKey) {
-  if (focusedSessions.size < 2) return;
+  if (focusedSessions.size < 1) return;
   if (!LAYOUTS[layoutKey]) return;
   activeLayout = layoutKey;
   slotOrder.clear(); // reset card-to-slot assignments for new layout
@@ -496,7 +496,7 @@ function updateTopBarLayoutLabel() {
 }
 
 function fitAllFocused() {
-  if (focusedSessions.size < 2) return;
+  if (focusedSessions.size < 1) return;
   for (var name of focusedSessions) {
     var t = terminals.get(name);
     if (t) optimizeTermToCard(t);
@@ -504,7 +504,7 @@ function fitAllFocused() {
 }
 
 function maxAllFocused() {
-  if (focusedSessions.size < 2) return;
+  if (focusedSessions.size < 1) return;
 
   // --- Probe setup for 16px equalize (needed early for pre-computation) ---
   var maxAllFontTarget = 16;
@@ -1358,9 +1358,9 @@ const LIGHT_DIR = new THREE.Vector3(-0.7, 0.7, -0.3).normalize();
 const FLOOR_Y = -300;
 const MORPH_DURATION = 1.5;
 const BILLBOARD_SLERP = 0.08;
-const SIDEBAR_WIDTH = 140;
+const SIDEBAR_WIDTH = 157; // 140px width + 8px padding each side + 1px border (content-box)
 /** Fixed top menu bar height — must match `.top-bar` CSS and ghost preview inset */
-const TOP_BAR_H = 44;
+const TOP_BAR_H = 45;
 const FOCUS_DIST = 350;
 
 // DOM scale trick: card DOM is oversized by DOM_SCALE, CSS3DObject renders at WORLD_SCALE.
@@ -1500,7 +1500,7 @@ function computeRingPos(index, total, config, angle) {
 // Camera looks straight at origin. No offsets. Everything is a card in one frustum.
 // Each terminal gets a screen rectangle proportional to its cell count.
 // The card sits at whatever Z depth makes its world size fill that screen rectangle.
-const STATUS_BAR_H = 50; /* bottom input bar reserve — cards avoid this strip when focused */
+const STATUS_BAR_H = 34; /* bottom input bar — always visible, measured at 34px */
 const LAYOUT_GAP_PX = 8;
 
 function calculateFocusedLayout() {
@@ -1517,6 +1517,11 @@ function calculateFocusedLayout() {
   // Special case: n-stacked generates slots dynamically based on card count
   if (activeLayout === 'n-stacked') {
     calculateSlotLayout(generateNStacked(count));
+    return;
+  }
+  // 'auto' layout with single card — treat as full-screen slot
+  if (count === 1) {
+    calculateSlotLayout([{ x: 0, y: 0, w: 100, h: 100 }]);
     return;
   }
   // 'auto' layout — fall through to masonry bin-packer below
@@ -1943,7 +1948,9 @@ function tier2CardShouldShow(sessionName) {
   if (perfTier < 2) return true;
   if (focusedSessions.has(sessionName)) return true;
   if (focusedSessions.size > 0) return false;
-  // Overview (no focus): hide cards on touch landscape, show on desktop
+  // Overview (no focus): if user manually set minimal, hide all ring cards
+  if (perfMode === 'minimal') return false;
+  // Auto tier 2: hide cards on touch landscape, show on desktop
   var coarse = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
   return !coarse || window.innerWidth <= window.innerHeight;
 }
@@ -1951,6 +1958,7 @@ function tier2CardShouldShow(sessionName) {
 function syncPerfTier2Visibility() {
   if (perfTier < 2) return;
   for (var [name, t] of terminals) {
+    if (t._retreating) continue; // don't hide mid-retreat cards
     var show = tier2CardShouldShow(name);
     t.css3dObject.visible = show;
     if (t.shadowObject) t.shadowObject.visible = show;
@@ -3788,6 +3796,11 @@ function createThumbnail(sessionName) {
       var overlay = t.dom ? t.dom.querySelector('.card-paused-overlay') : null;
       if (overlay) overlay.classList.add('visible');
     }
+    // Refresh CARDS panel if open so status reflects the change
+    var panel = document.getElementById('cards-panel');
+    if (panel && panel.classList.contains('visible') && window._lastCardList) {
+      renderCardsList(window._lastCardList.sessions, window._lastCardList.prefs);
+    }
   });
   item.appendChild(stateIcon);
 
@@ -4964,6 +4977,9 @@ function setActiveInput(sessionName) {
 // re-rasterize the card, causing visible text sharpness mutation on focus switch. See PRD §7.3.
 function updateFocusStyles() {
   for (const [name, term] of terminals) {
+    // Skip cards that are mid-retreat — they have their own fade transition
+    if (term._retreating) continue;
+
     term.dom.classList.remove('faded', 'focused', 'input-active');
     if (term.thumbnail) term.thumbnail.classList.remove('active');
 
@@ -4995,13 +5011,27 @@ function restoreFocusedTerminal(name) {
   const term = terminals.get(name);
   if (!term) return;
   const now = clock.getElapsedTime();
-  term.dom.classList.remove('faded', 'focused', 'input-active');
+  term.dom.classList.remove('focused', 'input-active');
+  // Fade out as card retreats to ring
+  term.dom.classList.add('faded');
+  term.dom.style.transition = 'opacity ' + MORPH_DURATION + 's ease';
+  term._retreating = true; // protect from updateFocusStyles/syncPerfTier2 during retreat
   term._userPositioned = false;
-  // Card was never changed during focus — nothing to restore.
   // Just morph position back to ring.
   term.morphFrom = { ...term.currentPos };
   term.morphStart = now;
   term.billboardArrival = null;
+  // After morph: remove fade (restore full opacity) or hide in minimal
+  setTimeout(function() {
+    term._retreating = false;
+    term.dom.classList.remove('faded');
+    term.dom.style.transition = '';
+    if (perfTier >= 2 && !focusedSessions.has(name)) {
+      var show = tier2CardShouldShow(name);
+      term.css3dObject.visible = show;
+      if (term.shadowObject) term.shadowObject.visible = show;
+    }
+  }, MORPH_DURATION * 1000);
 }
 
 // Remove a single terminal from the focused set (minimize).
@@ -5091,7 +5121,10 @@ function unfocusTerminal() {
   const now = clock.getElapsedTime();
 
   for (const [name, term] of terminals) {
-    term.dom.classList.remove('faded', 'focused', 'input-active');
+    term.dom.classList.remove('focused', 'input-active');
+    // Fade all cards as they retreat to the ring
+    term.dom.classList.add('faded');
+    term.dom.style.transition = 'opacity ' + MORPH_DURATION + 's ease';
     term.thumbnail.classList.remove('active');
     const minBtn = term.thumbnail.querySelector('.thumb-minimize');
     if (minBtn) minBtn.style.display = 'none';
@@ -5116,7 +5149,14 @@ function unfocusTerminal() {
   document.getElementById('input-bar').classList.remove('visible');
   hideTermControls();
 
-  if (perfTier >= 2) syncPerfTier2Visibility();
+  // After morph completes: remove fade, restore full opacity (or hide in minimal)
+  setTimeout(function() {
+    for (var [n, t] of terminals) {
+      t.dom.classList.remove('faded');
+      t.dom.style.transition = '';
+    }
+    if (perfTier >= 2) syncPerfTier2Visibility();
+  }, MORPH_DURATION * 1000);
 
   sendFocusState();
   updateTopBarVisibility();

@@ -98,7 +98,8 @@
 [2026-04-05] **Future card types:** File viewer and file transfer cards planned — all via WebSocket, no HTTP endpoints.
 [2026-04-05] **Fork menu item on cards:** Backend exists (WS fork-session), needs UI — right-click or menu on terminal card to fork.
 [2026-04-05] **Idle time tracking:** claude-proxy composeTitle tracks connected SSH clients but WS viewers don't register. Idle time not updated on WS input path.
-[2026-04-06] **Card subscription manager:** Spec v0.2 + implementation plan ready. CARDS sub-panel in hamburger menu, persistent subscription state (SQLite), thumbnail buttons (▶/⏸ bottom-center, ⏹ upper-left, ✕ upper-right), orange badge, status bar counts, search/sort, save current state, admin batch terminate. Spec: `docs/superpowers/specs/2026-04-06-v0.2-card-subscription-manager-design.md`. Plan: `docs/superpowers/plans/2026-04-06-v0.1-card-subscription-manager.md`.
+[2026-04-06] **Card subscription manager:** IMPLEMENTED. CARDS sub-panel in hamburger menu, persistent subscription state (SQLite), thumbnail buttons, orange badge, status bar counts, search/sort, save current state, admin batch terminate. Name mismatch fix: all paths now use `s.id || s.name` consistently (cp- prefix).
+[2026-04-06] **Drag-and-drop thumbnail reordering:** Pending. User wants drag-to-reorder in sidebar thumbnails AND in CARDS panel list. "Save Current State" should push order to dashboard. Needs design/plan. CARDS sub-panel in hamburger menu, persistent subscription state (SQLite), thumbnail buttons (▶/⏸ bottom-center, ⏹ upper-left, ✕ upper-right), orange badge, status bar counts, search/sort, save current state, admin batch terminate. Spec: `docs/superpowers/specs/2026-04-06-v0.2-card-subscription-manager-design.md`. Plan: `docs/superpowers/plans/2026-04-06-v0.1-card-subscription-manager.md`.
 
 ---
 
