@@ -3646,6 +3646,8 @@ function getUrlAtCell(t, row, col) {
   // Fallback: client-side URL detection in the full line text.
   // Needed for claude-proxy sessions where screen-renderer.ts doesn't tag URLs.
   const fullLine = lineObj.spans.map(s => s.text).join('');
+  // Don't match clicks past the actual text content (trailing whitespace)
+  if (col >= fullLine.trimEnd().length) return null;
   const urlRegex = /https?:\/\/[^\s<>"'\])]+/g;
   let match;
   while ((match = urlRegex.exec(fullLine)) !== null) {
