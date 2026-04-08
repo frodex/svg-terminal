@@ -2449,7 +2449,17 @@ function routeDashboardMessage(msg) {
     return;
   }
   if (msg.type === 'session-add') {
-    if (!terminals.has(msg.session) && !msg.session.startsWith('browser-')) {
+    if (msg.session.startsWith('browser-')) return;
+    // If terminal already exists (restart/reconnect), re-subscribe to get fresh data
+    if (terminals.has(msg.session)) {
+      sendDashboardMessage({
+        type: 'subscribe',
+        session: msg.session,
+        source: msg.source || 'claude-proxy'
+      });
+      return;
+    }
+    {
       addTerminal(msg.session, msg.cols, msg.rows);
       if (msg.paused) {
         var t = terminals.get(msg.session);
