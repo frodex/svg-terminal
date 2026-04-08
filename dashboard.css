@@ -443,21 +443,24 @@ html, body {
 
 .compose-bar-glass {
   width: max(450px, 50%);
-  margin: 0 0 8px 0;
-  padding: 8px 12px;
+  margin: 0;
+  padding: 0;
   background: rgba(30, 30, 38, 0.65);
   backdrop-filter: blur(16px) saturate(1.2);
   -webkit-backdrop-filter: blur(16px) saturate(1.2);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 16px;
+  overflow: hidden;
 }
 
 .compose-bar-label {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
-  font-size: 11px;
+  margin: 0;
+  padding: 4px 10px;
+  font-size: 10px;
+  color: rgba(255,255,255,0.85);
 }
 .compose-mode-badge {
   background: rgba(92, 92, 255, 0.3);
@@ -484,10 +487,11 @@ html, body {
 .compose-close:hover { color: #ff5252; background: rgba(255,255,255,0.08); }
 
 .compose-editor {
-  width: 100%;
-  min-height: 1.4em;
+  width: calc(100% - 20px);
+  margin: 2px 10px 6px 10px;
+  min-height: 1.2em;
   max-height: 30vh;
-  padding: 8px 12px;
+  padding: 6px 10px;
   background: rgba(15, 15, 20, 0.9);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 12px;
@@ -514,9 +518,6 @@ html, body {
       rgba(255,255,255,0.06) 2px
     ),
     linear-gradient(180deg, #d4a017 0%, #c49415 30%, #b8880f 60%, #a87a0a 100%);
-  margin: -8px -12px 6px -12px;
-  padding: 8px 12px;
-  border-radius: 16px 16px 0 0;
 }
 .compose-bar-glass:has(.compose-editor:focus) .compose-mode-badge {
   background: rgba(0, 0, 0, 0.25);

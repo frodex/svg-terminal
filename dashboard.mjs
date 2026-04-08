@@ -1518,7 +1518,7 @@ function computeRingPos(index, total, config, angle) {
 // Each terminal gets a screen rectangle proportional to its cell count.
 // The card sits at whatever Z depth makes its world size fill that screen rectangle.
 const STATUS_BAR_H = 34; /* bottom input bar — always visible, measured at 34px */
-const COMPOSE_BAR_H = 89; /* compose bar measured height (1 row + label + padding + margins) */
+const COMPOSE_BAR_H = 75; /* compose bar measured height (compact: label + editor + margins) */
 const LAYOUT_GAP_PX = 8;
 
 function calculateFocusedLayout() {
