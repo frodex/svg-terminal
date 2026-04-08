@@ -76,6 +76,37 @@
       var CELL_H = measureBBox.height;
       if (!CELL_H || CELL_H <= 0) CELL_H = 17;
 
+      // Re-measure after font loads — base64 fonts in SVG <object> can load async.
+      // If CELL_W changes, re-render all lines so tspan x-positions are correct.
+      function remeasureCells() {
+        var bb = measureEl.getBBox();
+        var newW = bb.width / 100;
+        var newH = bb.height;
+        if (newW > 0 && Math.abs(newW - CELL_W) > 0.01) {
+          CELL_W = newW;
+          CELL_H = newH;
+          // Re-render all visible lines with corrected positions
+          if (allLines) {
+            for (var ri = 0; ri < allLines.length; ri++) {
+              if (allLines[ri] && allLines[ri].spans) updateLine(ri, allLines[ri].spans);
+            }
+            rebuildBgLayer(allLines);
+            rebuildLinkLayer(allLines);
+          }
+        }
+      }
+      // Check periodically for first 2 seconds (font load timing varies)
+      setTimeout(remeasureCells, 100);
+      setTimeout(remeasureCells, 300);
+      setTimeout(remeasureCells, 700);
+      setTimeout(remeasureCells, 2000);
+      // Also use document.fonts.ready if available
+      if (document.fonts && document.fonts.ready) {
+        document.fonts.ready.then(remeasureCells);
+      }
+      // Periodic health check — catch drift that develops over long sessions
+      setInterval(remeasureCells, 60000);
+
       // -----------------------------------------------------------------------
       // Parse URL params from the SVG's own URL
       // -----------------------------------------------------------------------
