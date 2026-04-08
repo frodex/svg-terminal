@@ -4244,8 +4244,12 @@ function removeBrowserCard(cardId) {
   const idx = sessionOrder.indexOf(cardId);
   if (idx >= 0) sessionOrder.splice(idx, 1);
   focusedSessions.delete(cardId);
-  if (activeInputSession === cardId) activeInputSession = null;
+  if (activeInputSession === cardId) {
+    // Reassign input to another focused card, or null if none left
+    activeInputSession = focusedSessions.size > 0 ? [...focusedSessions][0] : null;
+  }
   if (focusedSessions.size === 0) unfocusTerminal();
+  else updateFocusStyles();
   assignRings();
 }
 
