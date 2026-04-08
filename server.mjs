@@ -825,6 +825,12 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
   }
 
   sendCardCounts(ws, user);
+
+  // Send saved layout so browser can restore focus group + layout
+  const savedLayout = userStore.getSavedLayout(user.email);
+  if (savedLayout && ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'user-layout', layout: savedLayout }));
+  }
 }
 
 async function sendCardCounts(ws, user) {
@@ -1168,6 +1174,19 @@ async function handleDashboardWs(ws, req) {
           state: s.state,
         })));
         sendCardCounts(ws, user);
+        return;
+      }
+
+      if (msg.type === 'save-user-layout' && msg.layout) {
+        userStore.setSavedLayout(user.email, msg.layout);
+        return;
+      }
+
+      if (msg.type === 'get-user-layout') {
+        const layout = userStore.getSavedLayout(user.email);
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'user-layout', layout: layout }));
+        }
         return;
       }
 

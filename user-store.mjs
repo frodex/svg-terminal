@@ -52,6 +52,7 @@ export class UserStore {
         user_email TEXT PRIMARY KEY,
         auto_show_new INTEGER NOT NULL DEFAULT 1,
         auto_show_own INTEGER NOT NULL DEFAULT 1,
+        saved_layout TEXT,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
     `);
@@ -63,6 +64,9 @@ export class UserStore {
     }
     try {
       this.db.exec('ALTER TABLE users ADD COLUMN admin_pin_hash TEXT');
+    } catch (e) {}
+    try {
+      this.db.exec('ALTER TABLE card_preferences ADD COLUMN saved_layout TEXT');
     } catch (e) {}
 
     // Restrict DB file permissions to owner-only (0600)
@@ -256,6 +260,20 @@ export class UserStore {
       VALUES (?, ?, ?, datetime('now'))
       ON CONFLICT(user_email) DO UPDATE SET auto_show_new = excluded.auto_show_new, auto_show_own = excluded.auto_show_own, updated_at = excluded.updated_at
     `).run(email, prefs.auto_show_new ? 1 : 0, prefs.auto_show_own ? 1 : 0);
+  }
+
+  getSavedLayout(email) {
+    const row = this.db.prepare('SELECT saved_layout FROM card_preferences WHERE user_email = ?').get(email);
+    if (!row || !row.saved_layout) return null;
+    try { return JSON.parse(row.saved_layout); } catch { return null; }
+  }
+
+  setSavedLayout(email, layout) {
+    const json = JSON.stringify(layout);
+    this.db.prepare(`INSERT INTO card_preferences (user_email, auto_show_new, auto_show_own, saved_layout, updated_at)
+      VALUES (?, 0, 0, ?, datetime('now'))
+      ON CONFLICT(user_email) DO UPDATE SET saved_layout = excluded.saved_layout, updated_at = excluded.updated_at
+    `).run(email, json);
   }
 
   close() {

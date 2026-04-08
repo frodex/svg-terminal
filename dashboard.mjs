@@ -280,6 +280,17 @@ function showLayoutIndicator() {
 }
 
 /** Apply named layout from top bar (multi-focus only). */
+function saveUserLayout() {
+  if (focusedSessions.size < 1) return;
+  var layout = {
+    layoutKey: activeLayout,
+    sessions: [...focusedSessions],
+    slotOrder: Object.fromEntries(slotOrder),
+    maxed: true, // re-run Max All on restore
+  };
+  sendDashboardMessage({ type: 'save-user-layout', layout: layout });
+}
+
 function setActiveLayoutFromMenu(layoutKey) {
   if (focusedSessions.size < 1) return;
   if (!LAYOUTS[layoutKey]) return;
@@ -293,6 +304,7 @@ function setActiveLayoutFromMenu(layoutKey) {
   calculateFocusedLayout();
   showLayoutIndicator();
   updateTopBarLayoutLabel();
+  saveUserLayout();
 }
 
 /** Slot list for ghost preview (percent of content area below top bar). */
@@ -656,6 +668,7 @@ function maxAllFocused() {
     t.sendInput({ type: 'resize', cols: newCols, rows: newRows });
     t._origColRowRatio = newCols / newRows;
   }
+  saveUserLayout();
 }
 
 // --- POV-FONT-SIZE equalization ---
@@ -854,8 +867,11 @@ function wireTopBar() {
 
   document.addEventListener('click', function(ev) {
     if (ev.target.closest && ev.target.closest('#top-bar')) return;
+    if (ev.target.closest && ev.target.closest('#cards-panel')) return;
     if (mainMenu) mainMenu.classList.remove('visible');
     if (layoutDd) layoutDd.classList.remove('visible');
+    var cp = document.getElementById('cards-panel');
+    if (cp) cp.classList.remove('visible');
     clearGhostLayoutPreview();
     syncUiOverlayPointerBlock();
   });
@@ -1049,7 +1065,8 @@ function renderCardsList(sessions, prefs) {
 
       var info = document.createElement('span');
       info.className = 'card-info';
-      info.textContent = s.name + ' | ' + (s.owner || '?') + ' | ' + (s.age || '?');
+      var displayName = s.name.startsWith('cp-') ? s.name.slice(3) : s.name;
+      info.textContent = displayName + ' | ' + (s.owner || '?') + ' | ' + (s.age || '?');
       leftSide.appendChild(info);
 
       row.appendChild(leftSide);
@@ -1073,16 +1090,6 @@ function renderCardsList(sessions, prefs) {
           stateEl.title = 'Playing';
         }
         rightSide.appendChild(stateEl);
-
-        // Stop button (unsubscribe)
-        var stopBtn = document.createElement('button');
-        stopBtn.className = 'btn-stop';
-        stopBtn.textContent = '\u23F9';
-        stopBtn.title = 'Unsubscribe — hide card';
-        stopBtn.onclick = (function(name) { return function() {
-          sendDashboardMessage({ type: 'card-set-state', session: name, state: 'unsubscribed' });
-        }; })(s.name);
-        rightSide.appendChild(stopBtn);
       } else {
         var hiddenLabel = document.createElement('span');
         hiddenLabel.className = 'card-dash-state';
@@ -1124,7 +1131,8 @@ function renderCardsList(sessions, prefs) {
         cb.value = sessions[ti].name;
         cb.className = 'terminate-cb';
         lbl2.appendChild(cb);
-        lbl2.appendChild(document.createTextNode(' ' + sessions[ti].name));
+        var termDisplayName = sessions[ti].name.startsWith('cp-') ? sessions[ti].name.slice(3) : sessions[ti].name;
+        lbl2.appendChild(document.createTextNode(' ' + termDisplayName));
         termList.appendChild(lbl2);
       }
     }
@@ -2397,6 +2405,45 @@ function routeDashboardMessage(msg) {
     var panel = document.getElementById('cards-panel');
     if (panel && panel.classList.contains('visible')) {
       sendDashboardMessage({ type: 'card-list-all' });
+    }
+    return;
+  }
+  if (msg.type === 'user-layout') {
+    if (msg.layout && msg.layout.sessions && msg.layout.sessions.length > 0) {
+      // Restore: focus the saved sessions, apply layout, run Max All
+      var restored = 0;
+      for (var li = 0; li < msg.layout.sessions.length; li++) {
+        var sn = msg.layout.sessions[li];
+        if (terminals.has(sn) && !focusedSessions.has(sn)) {
+          if (restored === 0) {
+            focusedSessions.add(sn);
+            activeInputSession = sn;
+          } else {
+            focusedSessions.add(sn);
+          }
+          restored++;
+        }
+      }
+      if (restored > 0) {
+        // Apply layout key
+        if (msg.layout.layoutKey && LAYOUTS[msg.layout.layoutKey]) {
+          activeLayout = msg.layout.layoutKey;
+        }
+        // Restore slot order
+        if (msg.layout.slotOrder) {
+          slotOrder.clear();
+          for (var sk in msg.layout.slotOrder) {
+            slotOrder.set(sk, msg.layout.slotOrder[sk]);
+          }
+        }
+        updateFocusStyles();
+        calculateFocusedLayout();
+        updateTopBarLayoutLabel();
+        // Re-run Max All if it was maxed
+        if (msg.layout.maxed) {
+          setTimeout(function() { maxAllFocused(); }, 500);
+        }
+      }
     }
     return;
   }
