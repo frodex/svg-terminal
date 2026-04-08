@@ -212,7 +212,7 @@ export class UserStore {
 
   getCardState(email, sessionName) {
     const row = this.db.prepare('SELECT state FROM card_subscriptions WHERE user_email = ? AND session_name = ?').get(email, sessionName);
-    return row ? row.state : 'subscribed'; // default: subscribed
+    return row ? row.state : 'unsubscribed'; // default: unsubscribed — new users must opt in
   }
 
   setCardState(email, sessionName, state) {
@@ -248,7 +248,7 @@ export class UserStore {
 
   getCardPrefs(email) {
     const row = this.db.prepare('SELECT auto_show_new, auto_show_own FROM card_preferences WHERE user_email = ?').get(email);
-    return row || { auto_show_new: 1, auto_show_own: 1 };
+    return row || { auto_show_new: 0, auto_show_own: 0 };
   }
 
   setCardPrefs(email, prefs) {

@@ -417,7 +417,7 @@ function isAllowedKey(key) {
 
 /** Build createSession body for claude-proxy — mirrors CreateSessionRequest / session-form field mapping. */
 function buildCreateSessionPayload(body, autoName) {
-  const allowedProfiles = new Set(['shell', 'claude', 'cursor']);
+  const allowedProfiles = new Set(['shell', 'claude', 'cursor', 'chat']);
   const launchProfile =
     typeof body.launchProfile === 'string' && allowedProfiles.has(body.launchProfile.trim())
       ? body.launchProfile.trim()
@@ -778,7 +778,7 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
   process.stderr.write('[WS] Discovery: ' + sessions.length + ' sessions for ' + cpUser + '\n');
   for (const s of sessions) {
     if (knownSessions.has(s.name)) continue;
-    const cardState = stateMap.get(s.name) || 'subscribed';
+    const cardState = stateMap.get(s.name) || 'unsubscribed';
     if (cardState === 'unsubscribed') continue; // skip entirely
     const isPaused = cardState === 'paused';
     knownSessions.add(s.name);
@@ -789,7 +789,7 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
 
   // Bridge active (non-paused) sessions and fetch initial screens
   const activeSessions = sessions.filter(s => {
-    const cardState = stateMap.get(s.name) || 'subscribed';
+    const cardState = stateMap.get(s.name) || 'unsubscribed';
     return cardState === 'subscribed';
   });
   for (const s of activeSessions) {
@@ -835,7 +835,7 @@ async function sendCardCounts(ws, user) {
     const available = (sessions || []).length;
     let displayed = 0, paused = 0;
     for (const s of (sessions || [])) {
-      const st = stateMap.get(s.id || s.name) || 'subscribed';
+      const st = stateMap.get(s.id || s.name) || 'unsubscribed';
       if (st === 'subscribed') displayed++;
       else if (st === 'paused') paused++;
     }
@@ -1078,7 +1078,7 @@ async function handleDashboardWs(ws, req) {
             name: s.id || s.name,
             owner: s.owner || s.user || 'unknown',
             age: s.age || s.created || '',
-            state: stateMap.get(s.id || s.name) || 'subscribed',
+            state: stateMap.get(s.id || s.name) || 'unsubscribed',
           }));
           const prefs = userStore.getCardPrefs(user.email);
           ws.send(JSON.stringify({

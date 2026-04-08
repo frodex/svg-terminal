@@ -2071,15 +2071,13 @@ function init() {
     }
   }
 
-  // Restore perf mode from localStorage
-  var savedPerfMode = localStorage.getItem('perf-mode');
-  if (savedPerfMode && ['auto', 'full', 'reduced', 'minimal'].includes(savedPerfMode)) {
-    perfMode = savedPerfMode;
-    if (perfMode === 'full') applyPerfTier(0);
-    else if (perfMode === 'reduced') applyPerfTier(1);
-    else if (perfMode === 'minimal') applyPerfTier(2);
-    updatePerfIndicator();
-  }
+  // Restore perf mode from localStorage — default to minimal for new sessions
+  var savedPerfMode = localStorage.getItem('perf-mode') || 'minimal';
+  perfMode = savedPerfMode;
+  if (perfMode === 'full') applyPerfTier(0);
+  else if (perfMode === 'reduced') applyPerfTier(1);
+  else if (perfMode === 'minimal') applyPerfTier(2);
+  updatePerfIndicator();
 
   var perfEl = document.getElementById('perf-indicator');
   if (perfEl) {
