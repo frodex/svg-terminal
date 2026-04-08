@@ -589,7 +589,14 @@ function bridgeClaudeProxySession(session, cpUser) {
         }
 
         // Session ended — broadcast session-remove and clean up
+        // BUT: if a newer watcher exists (from restart), don't destroy it
         if (cpMsg.event === 'session-end') {
+          const currentWatcher = sessionWatchers.get(key);
+          if (currentWatcher && currentWatcher !== existing) {
+            process.stderr.write('[session-end] stale upgrade handler for ' + session + ' — newer watcher exists, skipping destroy\n');
+            cpUnregisterTerminal(session, handler);
+            return;
+          }
           const removeMsg = JSON.stringify({ type: 'session-remove', session });
           for (const ws of existing.subscribers) {
             if (ws.readyState === 1) ws.send(removeMsg);
@@ -633,6 +640,7 @@ function bridgeClaudeProxySession(session, cpUser) {
     subscribers: new Set(),
     timer: null, // no polling for cp sessions — event-driven
     _cpTerminalHandler: null,
+    _createdAt: Date.now(), // used to detect stale session-end events from pre-restart sessions
   };
   sessionWatchers.set(key, watcher);
 
@@ -658,7 +666,15 @@ function bridgeClaudeProxySession(session, cpUser) {
     }
 
     // Session ended — broadcast session-remove and clean up
+    // BUT: if a newer watcher exists (from restart), don't destroy it
     if (cpMsg.event === 'session-end') {
+      const currentWatcher = sessionWatchers.get(key);
+      if (currentWatcher && currentWatcher !== watcher) {
+        // A newer watcher replaced us (restart) — just unregister our handler, don't destroy
+        process.stderr.write('[session-end] stale handler for ' + session + ' — newer watcher exists, skipping destroy\n');
+        cpUnregisterTerminal(session, handler);
+        return;
+      }
       const removeMsg = JSON.stringify({ type: 'session-remove', session });
       for (const ws of watcher.subscribers) {
         if (ws.readyState === 1) ws.send(removeMsg);
