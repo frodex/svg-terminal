@@ -64,7 +64,8 @@ function connectWs() {
 
   ws.onclose = function() {
     ws = null;
-    currentSession = null;
+    // Preserve currentSession for restore after reconnect — don't null it
+    sessions.length = 0; // clear so session-add events repopulate on reconnect
     screenApplied = false;
     scheduleReconnect();
   };
@@ -198,8 +199,11 @@ function addSession(msg) {
   });
   updateDropdown();
 
-  // Auto-subscribe to first session if none selected
-  if (!currentSession) {
+  // Re-subscribe to current session after reconnect, or auto-select on first load
+  if (currentSession && msg.session === currentSession) {
+    // Reconnected — re-subscribe to the session we were viewing
+    switchSession(currentSession);
+  } else if (!currentSession) {
     const lastUsed = localStorage.getItem('mobile-last-session');
     const target = (lastUsed && sessions.find(function(s) { return s.name === lastUsed; }))
       ? lastUsed : sessions[0].name;
