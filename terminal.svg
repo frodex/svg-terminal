@@ -200,7 +200,6 @@
           var span = spans[i];
           var tspan = document.createElementNS(SVG_NS, 'tspan');
           tspan.textContent = span.text;
-          // Position each tspan at its character offset
           tspan.setAttribute('x', (charOffset * CELL_W).toFixed(2));
           var classes = [];
           if (span.cls)  classes.push(span.cls);
