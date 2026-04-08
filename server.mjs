@@ -740,7 +740,7 @@ async function cpPushFullScreensAfterCpResubscribe() {
 // Dashboard WebSocket — single multiplexed connection per browser
 // ---------------------------------------------------------------------------
 
-async function sendSessionDiscovery(ws, knownSessions, user) {
+async function sendSessionDiscovery(ws, knownSessions, user, skipSubscriptionFilter) {
   const cpUser = user.linux_user || CP_DEFAULT_USER;
   const sessions = [];
 
@@ -779,8 +779,8 @@ async function sendSessionDiscovery(ws, knownSessions, user) {
   for (const s of sessions) {
     if (knownSessions.has(s.name)) continue;
     const cardState = stateMap.get(s.name) || 'unsubscribed';
-    if (cardState === 'unsubscribed') continue; // skip entirely
-    const isPaused = cardState === 'paused';
+    if (!skipSubscriptionFilter && cardState === 'unsubscribed') continue; // skip entirely
+    const isPaused = !skipSubscriptionFilter && cardState === 'paused';
     knownSessions.add(s.name);
     if (ws.readyState === 1) {
       ws.send(JSON.stringify({ type: 'session-add', session: s.name, pane: '0', ...s, paused: isPaused || undefined }));
@@ -870,6 +870,8 @@ async function handleDashboardWs(ws, req) {
   ws._userEmail = user.email;  // For force-relogin (Task 13) to find WS by user
   const knownSessions = new Set();
   const cpUserDash = user.linux_user || CP_DEFAULT_USER;
+  const isMobile = req.url && req.url.includes('mobile=1');
+  ws._isMobile = isMobile;
 
   process.stderr.write('[WS] Dashboard connected for ' + user.email + ' (linux_user=' + cpUserDash + ')\n');
 
@@ -879,7 +881,7 @@ async function handleDashboardWs(ws, req) {
   }
 
   // Discover and subscribe to sessions
-  await sendSessionDiscovery(ws, knownSessions, user);
+  await sendSessionDiscovery(ws, knownSessions, user, isMobile);
 
   ws.on('message', async (data) => {
     if (req._apiKey && apiKeyStore) apiKeyStore.touch(req._apiKey);

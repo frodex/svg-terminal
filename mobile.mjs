@@ -43,7 +43,8 @@ function fetchApiKeyAndConnect() {
 function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const keyParam = apiKey ? '?key=' + encodeURIComponent(apiKey) : '';
-  const url = proto + '//' + location.host + '/ws/dashboard' + keyParam;
+  const mobileParam = keyParam ? '&mobile=1' : '?mobile=1';
+  const url = proto + '//' + location.host + '/ws/dashboard' + keyParam + mobileParam;
   ws = new WebSocket(url);
 
   ws.onopen = function() {
