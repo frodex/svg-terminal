@@ -5994,25 +5994,33 @@ function screenToCell(e, t) {
       if (svgRoot && r0 && r1) {
         const objRect = obj.getBoundingClientRect();
         if (objRect.width > 10) {
-          // Use getScreenCTM to account for preserveAspectRatio letterboxing.
-          // The SVG may be centered with padding — raw fractional mapping is wrong.
-          const ctm = svgRoot.getScreenCTM();
           const vb = svgRoot.getAttribute('viewBox').split(/\s+/);
           const vbW = parseFloat(vb[2]);
           const vbH = parseFloat(vb[3]);
-          var svgX, svgY;
-          if (ctm) {
-            // Invert CTM to map screen coords → SVG coords
-            const inv = ctm.inverse();
-            svgX = inv.a * e.clientX + inv.c * e.clientY + inv.e;
-            svgY = inv.b * e.clientX + inv.d * e.clientY + inv.f;
+          // Account for preserveAspectRatio letterboxing (default: xMidYMid meet).
+          // The SVG content is scaled uniformly and centered within the <object>.
+          const objAspect = objRect.width / objRect.height;
+          const svgAspect = vbW / vbH;
+          var contentW, contentH, offsetX, offsetY;
+          if (objAspect > svgAspect) {
+            // Object wider than SVG — horizontal padding
+            contentH = objRect.height;
+            contentW = contentH * svgAspect;
+            offsetX = (objRect.width - contentW) / 2;
+            offsetY = 0;
           } else {
-            // Fallback: proportional (no letterbox correction)
-            svgX = ((e.clientX - objRect.left) / objRect.width) * vbW;
-            svgY = ((e.clientY - objRect.top) / objRect.height) * vbH;
+            // Object taller than SVG — vertical padding
+            contentW = objRect.width;
+            contentH = contentW / svgAspect;
+            offsetX = 0;
+            offsetY = (objRect.height - contentH) / 2;
           }
-          // Out of bounds — click is in letterbox padding, not on content
-          if (svgX < 0 || svgX > vbW || svgY < 0 || svgY > vbH) return null;
+          const localX = e.clientX - objRect.left - offsetX;
+          const localY = e.clientY - objRect.top - offsetY;
+          // Out of bounds — click is in letterbox padding
+          if (localX < 0 || localX > contentW || localY < 0 || localY > contentH) return null;
+          const svgX = (localX / contentW) * vbW;
+          const svgY = (localY / contentH) * vbH;
           const cellH = parseFloat(r1.getAttribute('y')) - parseFloat(r0.getAttribute('y'));
           const cols = t.screenCols || Math.round(vbW / 8.6);
           const cellW = vbW / cols;
