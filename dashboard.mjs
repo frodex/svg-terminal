@@ -2450,13 +2450,23 @@ function routeDashboardMessage(msg) {
   }
   if (msg.type === 'session-add') {
     if (msg.session.startsWith('browser-')) return;
-    // If terminal already exists (restart/reconnect), re-subscribe to get fresh data
+    // If terminal already exists (restart/reconnect), reset state and re-subscribe
     if (terminals.has(msg.session)) {
+      var existing = terminals.get(msg.session);
+      // Reset screen state so next full screen applies correctly
+      existing._screenAppliedToEmbed = false;
+      existing._screenHealRequested = false;
+      existing.screenLines = [];
+      existing._thumbDirty = true;
       sendDashboardMessage({
         type: 'subscribe',
         session: msg.session,
         source: msg.source || 'claude-proxy'
       });
+      // Also request a full screen heal in case the subscribe doesn't include one
+      setTimeout(function() {
+        requestScreenHeal(msg.session, '0');
+      }, 1500);
       return;
     }
     {

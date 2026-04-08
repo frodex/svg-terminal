@@ -960,16 +960,40 @@ async function handleDashboardWs(ws, req) {
           const deadId = p.deadSessionId || p.deadId;
           if (!deadId || typeof deadId !== 'string') throw new Error('deadSessionId is required');
           const settings = buildRestartForkSettings(p);
+          process.stderr.write('[RESTART] deadId=' + deadId + ' linuxUser=' + linuxUser + '\n');
           const result = await cpRequest('restartSession', { user: linuxUser, sessionId: deadId, settings }, 120000);
-          notifyDashboardCpSessionCreated(result, linuxUser);
-          // Bridge immediately + retry after 1s (TerminalMirror may not be ready yet)
           const newId = result.id || result.name;
+          process.stderr.write('[RESTART] result id=' + newId + ' name=' + result.name + '\n');
+          notifyDashboardCpSessionCreated(result, linuxUser);
+          // Bridge immediately + retry after 1s and 3s (TerminalMirror may not be ready yet)
           if (newId) {
+            process.stderr.write('[RESTART] bridging ' + newId + '\n');
             bridgeClaudeProxySession(newId, linuxUser);
-            setTimeout(() => bridgeClaudeProxySession(newId, linuxUser), 1000);
+            setTimeout(() => {
+              process.stderr.write('[RESTART] retry bridge ' + newId + '\n');
+              bridgeClaudeProxySession(newId, linuxUser);
+              // Also push a full screen to ensure card has content
+              cpRequest('getSessionScreen', { sessionId: newId, pane: '0' }, 3000)
+                .then(screen => {
+                  if (screen) {
+                    const screenMsg = { type: 'screen', session: newId, pane: '0', ...screen };
+                    const watcher = sessionWatchers.get(newId + ':0');
+                    if (watcher) {
+                      watcher._lastScreen = screenMsg;
+                      const json = JSON.stringify(screenMsg);
+                      for (const sub of watcher.subscribers) {
+                        if (sub.readyState === 1) sub.send(json);
+                      }
+                      process.stderr.write('[RESTART] pushed full screen for ' + newId + ' to ' + watcher.subscribers.size + ' subscribers\n');
+                    }
+                  }
+                })
+                .catch(e => process.stderr.write('[RESTART] screen fetch failed: ' + e.message + '\n'));
+            }, 2000);
           }
           if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'restart-session-result', ok: true, session: result }));
         } catch (err) {
+          process.stderr.write('[RESTART] error: ' + (err.message || err) + '\n');
           if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'restart-session-result', ok: false, error: err.message || String(err) }));
         }
         return;
