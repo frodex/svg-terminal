@@ -425,10 +425,12 @@ html, body {
 /* === Compose Mode Bar === */
 .compose-bar {
   position: fixed;
-  bottom: 0; /* flush with bottom — sits on top of input bar */
-  right: 157px; /* aligned with sidebar edge */
-  left: auto;
-  width: max(450px, calc((100vw - 157px) / 2));
+  bottom: 34px; /* sits on top of input bar, not overlapping */
+  /* Centered in POV (viewport minus sidebar) */
+  left: 0;
+  right: 157px;
+  display: flex;
+  justify-content: center;
   z-index: 150;
   transform: translateY(100%); /* hidden below viewport */
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -440,7 +442,8 @@ html, body {
 }
 
 .compose-bar-glass {
-  margin: 0 12px 8px 12px;
+  width: max(450px, 50%);
+  margin: 0 0 8px 0;
   padding: 8px 12px;
   background: rgba(30, 30, 38, 0.65);
   backdrop-filter: blur(16px) saturate(1.2);
