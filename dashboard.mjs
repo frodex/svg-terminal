@@ -195,6 +195,15 @@ const LAYOUTS = {
       { x: 67, y: 0, w: 33, h: 100 }
     ]
   },
+  '2main-2side': {
+    name: '2 Main + 2 Side',
+    slots: [
+      { x: 0, y: 0, w: 33, h: 100 },
+      { x: 33, y: 0, w: 34, h: 100 },
+      { x: 67, y: 0, w: 33, h: 50 },
+      { x: 67, y: 50, w: 33, h: 50 }
+    ]
+  },
   '2x2': {
     name: '2×2 Grid',
     slots: [
@@ -229,7 +238,7 @@ const LAYOUTS = {
 };
 
 // Layout order for cycling with layout button
-const LAYOUT_ORDER = ['auto', '2up-h', '2up-v', '1main-2side', '3col', '2x2', '2top-1bottom', '1main-4mini', 'n-stacked'];
+const LAYOUT_ORDER = ['auto', '2up-h', '2up-v', '1main-2side', '3col', '2main-2side', '2x2', '2top-1bottom', '1main-4mini', 'n-stacked'];
 
 // Current active layout for the focus group
 let activeLayout = 'auto';
