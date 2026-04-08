@@ -3775,19 +3775,16 @@ function onSceneClick(e) {
       // Check for URL click on focused terminal
       const t = terminals.get(clicked);
       if (t) {
-        // URL clicks require Alt — prevents accidental link activation when clicking to focus
-        if (e.altKey || altHeld) {
-          const cell = screenToCell(e, t);
-          if (cell) {
-            const url = getUrlAtCell(t, cell.row, cell.col);
-            if (url) {
-              if (e.shiftKey) {
-                window.open(url, '_blank');
-              } else {
-                addBrowserCard(url);
-              }
-              return;
+        const cell = screenToCell(e, t);
+        if (cell) {
+          const url = getUrlAtCell(t, cell.row, cell.col);
+          if (url) {
+            if (e.altKey || altHeld) {
+              window.open(url, '_blank');
+            } else {
+              addBrowserCard(url);
             }
+            return;
           }
         }
       }
