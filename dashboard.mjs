@@ -5994,14 +5994,25 @@ function screenToCell(e, t) {
       if (svgRoot && r0 && r1) {
         const objRect = obj.getBoundingClientRect();
         if (objRect.width > 10) {
-          // Proportional mapping: screen position → 0-1 fraction → SVG viewBox
-          const fracX = (e.clientX - objRect.left) / objRect.width;
-          const fracY = (e.clientY - objRect.top) / objRect.height;
+          // Use getScreenCTM to account for preserveAspectRatio letterboxing.
+          // The SVG may be centered with padding — raw fractional mapping is wrong.
+          const ctm = svgRoot.getScreenCTM();
           const vb = svgRoot.getAttribute('viewBox').split(/\s+/);
           const vbW = parseFloat(vb[2]);
           const vbH = parseFloat(vb[3]);
-          const svgX = fracX * vbW;
-          const svgY = fracY * vbH;
+          var svgX, svgY;
+          if (ctm) {
+            // Invert CTM to map screen coords → SVG coords
+            const inv = ctm.inverse();
+            svgX = inv.a * e.clientX + inv.c * e.clientY + inv.e;
+            svgY = inv.b * e.clientX + inv.d * e.clientY + inv.f;
+          } else {
+            // Fallback: proportional (no letterbox correction)
+            svgX = ((e.clientX - objRect.left) / objRect.width) * vbW;
+            svgY = ((e.clientY - objRect.top) / objRect.height) * vbH;
+          }
+          // Out of bounds — click is in letterbox padding, not on content
+          if (svgX < 0 || svgX > vbW || svgY < 0 || svgY > vbH) return null;
           const cellH = parseFloat(r1.getAttribute('y')) - parseFloat(r0.getAttribute('y'));
           const cols = t.screenCols || Math.round(vbW / 8.6);
           const cellW = vbW / cols;
