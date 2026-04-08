@@ -206,3 +206,9 @@ if (obj && obj.contentDocument) {
 
 Internal: wiki.droidware.ai/projects/default/pages/bug-report-for-svg-terminal-url-decoder-clicks-on-card-send-link-when-they-shouldnt
 (Access via 192.168.22.56:8082 internally)
+
+---
+
+## User Note
+
+Drag-to-select uses the same `screenToCell` + character range logic. It works correctly. The difference is selection tolerates ±1 row error (barely visible during drag), URL clicks don't (wrong row = wrong link). If `screenToCell` were pixel-perfect, both would work through the same path. The SVG rect approach bypasses `screenToCell` for URL clicks — a workaround. Consider fixing `screenToCell` row precision as an alternative.
