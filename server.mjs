@@ -962,6 +962,12 @@ async function handleDashboardWs(ws, req) {
           const settings = buildRestartForkSettings(p);
           const result = await cpRequest('restartSession', { user: linuxUser, sessionId: deadId, settings }, 120000);
           notifyDashboardCpSessionCreated(result, linuxUser);
+          // Bridge immediately + retry after 1s (TerminalMirror may not be ready yet)
+          const newId = result.id || result.name;
+          if (newId) {
+            bridgeClaudeProxySession(newId, linuxUser);
+            setTimeout(() => bridgeClaudeProxySession(newId, linuxUser), 1000);
+          }
           if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'restart-session-result', ok: true, session: result }));
         } catch (err) {
           if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'restart-session-result', ok: false, error: err.message || String(err) }));
@@ -978,6 +984,12 @@ async function handleDashboardWs(ws, req) {
           const settings = buildRestartForkSettings(p);
           const result = await cpRequest('forkSession', { user: linuxUser, sessionId: sourceId, settings }, 120000);
           notifyDashboardCpSessionCreated(result, linuxUser);
+          // Bridge immediately + retry after 1s (TerminalMirror may not be ready yet)
+          const newId = result.id || result.name;
+          if (newId) {
+            bridgeClaudeProxySession(newId, linuxUser);
+            setTimeout(() => bridgeClaudeProxySession(newId, linuxUser), 1000);
+          }
           if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'fork-session-result', ok: true, session: result }));
         } catch (err) {
           if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'fork-session-result', ok: false, error: err.message || String(err) }));
