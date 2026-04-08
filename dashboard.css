@@ -427,7 +427,8 @@ html, body {
   position: fixed;
   bottom: 0; /* flush with bottom — sits on top of input bar */
   right: 157px; /* aligned with sidebar edge */
-  left: 0;
+  left: auto;
+  width: max(450px, calc((100vw - 157px) / 2));
   z-index: 150;
   transform: translateY(100%); /* hidden below viewport */
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
