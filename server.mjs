@@ -162,6 +162,7 @@ const CLIENT_VERSION = (() => {
     const hash = createHash('md5');
     hash.update(readFileSync(staticPath('dashboard.mjs')));
     hash.update(readFileSync(staticPath('index.html')));
+    hash.update(readFileSync(staticPath('terminal.svg')));
     hash.update(readFileSync(import.meta.filename));  // server.mjs itself
     try { hash.update(readFileSync(staticPath('mobile.mjs'))); } catch {}
     try { hash.update(readFileSync(staticPath('mobile.html'))); } catch {}

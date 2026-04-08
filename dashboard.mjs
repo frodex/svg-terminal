@@ -2363,6 +2363,7 @@ function showUpdateBanner() {
 
 function routeDashboardMessage(msg) {
   if (msg.type === 'version') {
+    window._clientVersion = msg.version; // expose for SVG cache-busting
     if (_serverVersion === null) {
       _serverVersion = msg.version; // first connect — remember server version
     } else if (_serverVersion !== msg.version) {
@@ -3925,7 +3926,7 @@ function createCardDOM(config) {
 function createTerminalDOM(sessionName) {
   const obj = document.createElement('object');
   obj.type = 'image/svg+xml';
-  obj.data = '/terminal.svg?session=' + encodeURIComponent(sessionName);
+  obj.data = '/terminal.svg?session=' + encodeURIComponent(sessionName) + '&v=' + (window._clientVersion || '');
 
   return createCardDOM({
     id: sessionName,
@@ -4815,7 +4816,7 @@ function updateTerminalTitle(sessionName, title) {
 }
 
 // SVG cell dimensions — measured from actual font rendering in terminal.svg.
-// terminal.svg measures via a 10-char span: bbox.width/10 ≈ 8.65, bbox.height ≈ 17.
+// terminal.svg measures via a 100-char span: bbox.width/100 for sub-pixel accuracy.
 // These MUST match what the SVG actually renders or card aspect will be wrong.
 const SVG_CELL_W = 8.65;
 const SVG_CELL_H = 17;
