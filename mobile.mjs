@@ -189,7 +189,14 @@ terminalObj.addEventListener('load', function() {
 // --- Session management ---
 
 function addSession(msg) {
-  if (sessions.find(function(s) { return s.name === msg.session; })) return; // duplicate
+  var existing = sessions.find(function(s) { return s.name === msg.session; });
+  if (existing) {
+    // Restarted session — re-subscribe to get fresh data
+    if (currentSession === msg.session) {
+      switchSession(currentSession);
+    }
+    return;
+  }
   sessions.push({
     name: msg.session,
     cols: msg.cols || 80,
