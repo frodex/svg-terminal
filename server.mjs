@@ -238,7 +238,11 @@ function ensureCpSocket() {
     }
     cpPending.clear();
   };
-  cpSock.on('close', onDead);
+  cpSock.on('close', () => {
+    onDead();
+    // Auto-reconnect after claude-proxy restart
+    setTimeout(() => { try { ensureCpSocket(); } catch {} }, 2000);
+  });
   cpSock.on('error', onDead);
   cpSock.once('connect', () => {
     void cpResubscribeAll().catch((err) => {
