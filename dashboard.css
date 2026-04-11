@@ -1083,6 +1083,9 @@ html, body {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
+}
+.session-form-row[hidden] {
+  display: none;
   margin-bottom: 10px;
 }
 @media (max-width: 520px) {

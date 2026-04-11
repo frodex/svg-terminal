@@ -4303,7 +4303,8 @@ function updateSessionFormVisibility() {
 
   var remoteRow = document.getElementById('sf-remote-row');
   if (remoteRow) {
-    remoteRow.hidden = !(admin && profile === 'claude' && _sessionFormRemotesCount > 0);
+    var remoteProfiles = { claude: true, shell: true, cursor: true };
+    remoteRow.hidden = !(admin && remoteProfiles[profile] && _sessionFormRemotesCount > 0);
   }
 
   var dangerRow = document.getElementById('sf-danger-row');
@@ -5150,6 +5151,7 @@ function removeTerminal(sessionName) {
   shadowGroup.remove(t.shadowObject);
   t.thumbnail.remove();
   terminals.delete(sessionName);
+  slotOrder.delete(sessionName);
   sessionOrder = sessionOrder.filter(n => n !== sessionName);
   if (focusedSessions.has(sessionName)) {
     focusedSessions.delete(sessionName);
@@ -5384,6 +5386,10 @@ function removeFromFocus(sessionName) {
   if (!focusedSessions.has(sessionName)) return;
   restoreFocusedTerminal(sessionName);
   focusedSessions.delete(sessionName);
+  // Clean up slot assignment so the released slot is available for new cards
+  slotOrder.delete(sessionName);
+  var rt = terminals.get(sessionName);
+  if (rt) { rt._slotIndex = null; rt._slotRect = null; }
 
   if (focusedSessions.size === 0) {
     unfocusTerminal();
@@ -5453,9 +5459,12 @@ function deselectTerminals() {
 function unfocusTerminal() {
   activeLayout = 'auto';  // reset to default layout when focus group changes
   // Clear layout slot assignments
+  slotOrder.clear();
   for (var entry of terminals) {
     entry[1]._layoutSlot = null;
     entry[1]._layoutFit = null;
+    entry[1]._slotIndex = null;
+    entry[1]._slotRect = null;
   }
   restoreAllFocused();
   activeInputSession = null;
