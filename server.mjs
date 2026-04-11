@@ -629,6 +629,9 @@ function bridgeClaudeProxySession(session, cpUser) {
       existing._cpTerminalHandler = handler;
       if (existing.timer) { clearInterval(existing.timer); existing.timer = null; }
       cpRegisterTerminal(session, handler);
+      // Force-reset subscribe count — restarted sessions may have stale count > 0
+      // which causes cpEnsureSubscribed to skip the actual subscribe call
+      cpSubscribeCounts.delete(session);
       void cpEnsureSubscribed(session, u).catch(() => {
         cpUnregisterTerminal(session, handler);
         existing._cpTerminalHandler = null;
@@ -710,7 +713,8 @@ function bridgeClaudeProxySession(session, cpUser) {
   watcher._cpTerminalHandler = handler;
   watcher._lastScreen = null;
   cpRegisterTerminal(session, handler);
-
+  // Force-reset subscribe count — ensures a fresh subscribe call to claude-proxy
+  cpSubscribeCounts.delete(session);
   void cpEnsureSubscribed(session, u).catch(() => {
     cpUnregisterTerminal(session, handler);
     watcher._cpTerminalHandler = null;
