@@ -559,80 +559,16 @@ function updateTopBarLayoutLabel() {
 
 function fitAllFocused() {
   if (focusedSessions.size < 1) return;
-
-  // Reset user-positioned state so all cards participate in the layout
+  // Reposition cards in 3D (Z dolly) so each fills its slot optimally.
+  // Same transform as compose open/close. NEVER changes card DOM size.
+  // Keeps slot assignments — cards stay in their current slots.
   for (var name of focusedSessions) {
     var t = terminals.get(name);
     if (t) t._userPositioned = false;
   }
-
-  // Layout to get slot assignments
+  camera.fov = 50;
+  camera.updateProjectionMatrix();
   calculateFocusedLayout();
-
-  // Expand card DOM to fill slots edge-to-edge (no terminal resize)
-  for (var name of focusedSessions) {
-    var t = terminals.get(name);
-    if (!t || !t._slotFit) continue;
-    var fit = t._slotFit;
-    var newW = t.baseCardW;
-    var newH = t.baseCardH;
-    if (fit.constrainedBy === 'width') {
-      newH = Math.round(fit.slotH * t.baseCardW / fit.slotW);
-    } else {
-      newW = Math.round(fit.slotW * t.baseCardH / fit.slotH);
-    }
-    t.baseCardW = newW;
-    t.baseCardH = newH;
-    t.dom.style.width = newW + 'px';
-    t.dom.style.height = newH + 'px';
-    var inner = t.dom.querySelector('.terminal-inner');
-    if (inner) { inner.style.width = newW + 'px'; inner.style.height = newH + 'px'; }
-  }
-
-  // Reposition cards in 3D for expanded DOM — frustum projection
-  var vFov = camera.fov * DEG2RAD;
-  var halfTan = Math.tan(vFov / 2);
-  var screenW = window.innerWidth;
-  var screenH = window.innerHeight;
-  var now = clock.getElapsedTime();
-
-  var depths = [];
-  for (var name of focusedSessions) {
-    var t = terminals.get(name);
-    if (!t || !t._slotRect) continue;
-    var slot = t._slotRect;
-    var worldH = t.baseCardH * WORLD_SCALE;
-    var fracH = slot.h / screenH;
-    var depth = worldH / (fracH * 2 * halfTan);
-    depths.push({ name: name, depth: depth, cx: slot.x + slot.w / 2, cy: slot.y + slot.h / 2 });
-  }
-  if (depths.length > 0) {
-    var maxDepth = Math.max.apply(null, depths.map(function(d) { return d.depth; }));
-    var camZ = Math.max(FOCUS_DIST, maxDepth + 150);
-
-    for (var di = 0; di < depths.length; di++) {
-      var d = depths[di];
-      var t = terminals.get(d.name);
-      if (!t) continue;
-      var cardZ = camZ - d.depth;
-      var visHAtDepth = 2 * d.depth * halfTan;
-      var px2w = visHAtDepth / screenH;
-      t.morphFrom = { x: t.currentPos.x, y: t.currentPos.y, z: t.currentPos.z };
-      t._layoutZ = cardZ;
-      t.targetPos = { x: (d.cx - screenW / 2) * px2w, y: -(d.cy - screenH / 2) * px2w, z: cardZ };
-      t.morphStart = now;
-    }
-
-    var avgZ = depths.reduce(function(s, d) { return s + (camZ - d.depth); }, 0) / depths.length;
-    cameraTween = {
-      from: camera.position.clone(),
-      to: new THREE.Vector3(0, 0, camZ),
-      lookFrom: currentLookTarget.clone(),
-      lookTo: new THREE.Vector3(0, 0, avgZ),
-      start: now,
-      duration: 1.0
-    };
-  }
 }
 
 function maxAllFocused() {
@@ -1647,7 +1583,11 @@ function computeRingPos(index, total, config, angle) {
 // Each terminal gets a screen rectangle proportional to its cell count.
 // The card sits at whatever Z depth makes its world size fill that screen rectangle.
 const STATUS_BAR_H = 34; /* bottom input bar — always visible, measured at 34px */
-const COMPOSE_BAR_H = 75; /* compose bar measured height (compact: label + editor + margins) */
+function getComposeBarH() {
+  var bar = document.getElementById('compose-bar');
+  if (bar && bar.classList.contains('visible')) return bar.offsetHeight || 90;
+  return 90; // default estimate
+}
 const LAYOUT_GAP_PX = 8;
 
 function calculateFocusedLayout() {
@@ -1678,8 +1618,8 @@ function calculateFocusedLayout() {
   const screenH = window.innerHeight;
 
   const availW = screenW - SIDEBAR_WIDTH;
-  const composeExtra = _composeMode ? COMPOSE_BAR_H : 0;
-  const availH = screenH - STATUS_BAR_H - TOP_BAR_H - composeExtra;
+  const bottomBar = _composeMode ? getComposeBarH() : STATUS_BAR_H;
+  const availH = screenH - bottomBar - TOP_BAR_H;
 
   // Build cards with cell counts — skip user-positioned terminals
   const names = [...focusedSessions];
@@ -1837,8 +1777,8 @@ function calculateSlotLayout(slots) {
   var screenW = window.innerWidth;
   var screenH = window.innerHeight;
   var availW = screenW - SIDEBAR_WIDTH;
-  var composeExtra = _composeMode ? COMPOSE_BAR_H : 0;
-  var availH = screenH - STATUS_BAR_H - TOP_BAR_H - composeExtra;
+  var bottomBar = _composeMode ? getComposeBarH() : STATUS_BAR_H;
+  var availH = screenH - bottomBar - TOP_BAR_H;
 
   // Build card info — same structure as masonry path
   var names = [...focusedSessions];
@@ -3550,13 +3490,13 @@ function toggleComposeMode() {
 
 // Update layout overlays when compose bar opens/closes — called once, not on every focus change
 function syncComposeLayout() {
-  var bottomPx = (STATUS_BAR_H + (_composeMode ? COMPOSE_BAR_H : 0)) + 'px';
+  var bottomPx = (_composeMode ? getComposeBarH() : STATUS_BAR_H) + 'px';
   var ghost = document.getElementById('ghost-layout-preview');
   if (ghost) ghost.style.bottom = bottomPx;
   var dropZone = document.getElementById('drop-zone-overlay');
   if (dropZone) dropZone.style.bottom = bottomPx;
 
-  // Re-run layout so cards reposition above/below compose bar
+  // Re-run layout so cards reposition above compose bar (not overlapped)
   if (focusedSessions.size > 0) {
     calculateFocusedLayout();
   }
@@ -5379,9 +5319,9 @@ function focusTerminal(sessionName) {
   const vFov = camera.fov * DEG2RAD;
   const halfTan = Math.tan(vFov / 2);
 
-  // Calculate usable area accounting for sidebar, top bar, status bar, and compose bar
-  const composeExtra = _composeMode ? COMPOSE_BAR_H : 0;
-  const usableH = window.innerHeight - TOP_BAR_H - STATUS_BAR_H - composeExtra;
+  // Calculate usable area accounting for sidebar, top bar, and bottom bar
+  const bottomBar = _composeMode ? getComposeBarH() : STATUS_BAR_H;
+  const usableH = window.innerHeight - TOP_BAR_H - bottomBar;
   const usableW = window.innerWidth - SIDEBAR_WIDTH;
 
   // Camera distance where card fills ~90% of usable height
@@ -5393,7 +5333,7 @@ function focusTerminal(sessionName) {
   const visHAtDist = 2 * camDist * halfTan;
   const px2w = visHAtDist / window.innerHeight;
   const usableCenterX = SIDEBAR_WIDTH / 2; // usable area shifted left by sidebar
-  const usableCenterY = (TOP_BAR_H - STATUS_BAR_H - composeExtra) / 2; // shifted up
+  const usableCenterY = (TOP_BAR_H - bottomBar) / 2; // shifted up
   const offsetX = usableCenterX * px2w;
   const offsetY = -usableCenterY * px2w;
 

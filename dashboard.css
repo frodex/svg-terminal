@@ -425,7 +425,7 @@ html, body {
 /* === Compose Mode Bar === */
 .compose-bar {
   position: fixed;
-  bottom: 34px; /* sits on top of input bar, not overlapping */
+  bottom: 0;
   /* Centered in POV (viewport minus sidebar) */
   left: 0;
   right: 157px;
