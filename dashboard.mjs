@@ -5479,7 +5479,7 @@ function restoreFocusedTerminal(name) {
 // If other terminals remain focused, recalculate layout.
 // If none remain, unfocus entirely.
 function removeFromFocus(sessionName) {
-  activeLayout = 'auto';  // reset to default layout when focus group changes
+  // Keep the current layout — user may be swapping a card, not changing layout.
   clearGhostLayoutPreview();
   if (!focusedSessions.has(sessionName)) return;
   restoreFocusedTerminal(sessionName);
