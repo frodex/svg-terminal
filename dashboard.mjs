@@ -995,6 +995,23 @@ function wireTopBar() {
     if (cp) cp.classList.remove('visible');
     clearGhostLayoutPreview();
     syncUiOverlayPointerBlock();
+
+    // Deselect focused cards when clicking on non-interactive background areas
+    // (status bar, input bar, compose bar gaps, sidebar gaps, renderer background).
+    // Skip if click was on an interactive element or inside a card.
+    if (focusedSessions.size > 0) {
+      var t = ev.target;
+      var isInteractive = t.closest && (
+        t.closest('button') || t.closest('a') || t.closest('input') ||
+        t.closest('select') || t.closest('textarea') || t.closest('.thumbnail-item') ||
+        t.closest('.terminal-3d') || t.closest('#top-bar') || t.closest('#cards-panel') ||
+        t.closest('.compose-bar-glass') || t.closest('#session-form-panel') ||
+        t.closest('#restart-session-panel') || t.closest('#fork-session-panel')
+      );
+      if (!isInteractive) {
+        deselectTerminals();
+      }
+    }
   });
 
   var newSess = document.getElementById('menu-new-session');
@@ -2117,6 +2134,11 @@ function init() {
   renderer.domElement.style.transformOrigin = '0 0';
   resizeRenderer();
   document.body.appendChild(renderer.domElement);
+  // Make CSS3D camera container pass-through for clicks so gaps between cards
+  // reach renderer.domElement. Only .terminal-3d elements have pointer-events:auto.
+  if (renderer.domElement.firstChild) {
+    renderer.domElement.firstChild.style.pointerEvents = 'none';
+  }
 
   terminalGroup = new THREE.Group();
   scene.add(terminalGroup);
@@ -2193,6 +2215,26 @@ function init() {
     // Close button
     var closeBtn = document.getElementById('compose-close');
     if (closeBtn) closeBtn.addEventListener('click', function() { closeComposeMode(); });
+    // Click compose label bar to switch focus to the active session's card
+    var composeLabelEl = document.querySelector('.compose-bar-label');
+    if (composeLabelEl) composeLabelEl.addEventListener('click', function(ev) {
+      // Don't intercept close button clicks
+      if (ev.target.closest && ev.target.closest('button')) return;
+      var composeTargetEl = document.getElementById('compose-target');
+      var name = composeTargetEl ? composeTargetEl.textContent : null;
+      if (name && terminals.has(name)) {
+        setActiveInput(name);
+        // Also focus the compose editor for immediate typing
+        var ed = document.getElementById('compose-editor');
+        if (ed) ed.focus();
+      }
+    });
+    // Click input-bar target label to switch focus
+    var inputTargetEl = document.getElementById('input-target');
+    if (inputTargetEl) inputTargetEl.addEventListener('click', function() {
+      var name = inputTargetEl.textContent;
+      if (name && terminals.has(name)) setActiveInput(name);
+    });
     // Restore open state from localStorage
     if (localStorage.getItem('compose-open') === '1') {
       // Delay so layout is ready
@@ -3292,6 +3334,7 @@ function onMouseUp(e) {
   // Title bar click (not drag) — switch input to that terminal
   if ((dragMode === 'moveCard' || dragMode === 'dollyCard') && dragDistance <= 5 && _moveCardSession) {
     setActiveInput(_moveCardSession);
+    suppressNextClick = true; // prevent onSceneClick from deselecting what we just activated
   }
   // Drag-to-swap with visual drop zones
   if (dragMode === 'moveCard' && _moveCardSession && focusedSessions.size >= 2) {
@@ -3865,27 +3908,15 @@ function onSceneClick(e) {
   if (e.button !== 0) return;
   if (e.shiftKey) return; // shift+click reserved for drag
 
-  let clicked = null;
-  let closestZ = -Infinity;
-
-  // When terminals are focused, only check focused terminals for click (setActiveInput).
-  // Don't check unfocused terminals behind them — their overlapping bounding rects
-  // cause the focused terminal to be replaced by a background one.
-  const checkSet = focusedSessions.size > 0 ? focusedSessions : null;
-
-  for (const [name, t] of terminals) {
-    if (checkSet && !checkSet.has(name)) continue; // skip unfocused when in focus mode
-    const rect = t.dom.getBoundingClientRect();
-    if (rect.width < 10) continue;
-    if (e.clientX >= rect.left && e.clientX <= rect.right &&
-        e.clientY >= rect.top && e.clientY <= rect.bottom) {
-      const worldPos = new THREE.Vector3();
-      t.css3dObject.getWorldPosition(worldPos);
-      worldPos.project(camera);
-      if (worldPos.z > closestZ) {
-        closestZ = worldPos.z;
-        clicked = name;
-      }
+  // Detect which card was clicked using DOM target (reliable) instead of bounding rect
+  // hit-testing (unreliable with CSS3D — transformed rects overlap in screen space).
+  var clickedCardDom = e.target.closest ? e.target.closest('.terminal-3d') : null;
+  var clicked = null;
+  if (clickedCardDom && clickedCardDom.dataset.session) {
+    var candidateName = clickedCardDom.dataset.session;
+    // In focus mode, only accept clicks on focused cards
+    if (focusedSessions.size === 0 || focusedSessions.has(candidateName)) {
+      clicked = candidateName;
     }
   }
 
@@ -3915,8 +3946,9 @@ function onSceneClick(e) {
       focusTerminal(clicked);
     }
   }
-  // Click on empty space: deselect (remove input focus) but keep camera and cards in place.
-  // Escape returns to attract mode (ring animation).
+  // Click on empty space (or renderer background): deselect but keep cards in place.
+  // This works even when cards fill their slots because e.target is the renderer div,
+  // not a .terminal-3d element.
   if (!clicked && focusedSessions.size > 0) {
     deselectTerminals();
   }
@@ -5447,28 +5479,24 @@ function updateFocusStyles() {
     // Skip cards that are mid-retreat — they have their own fade transition
     if (term._retreating) continue;
 
-    term.dom.classList.remove('faded', 'focused', 'input-active');
-    if (term.thumbnail) term.thumbnail.classList.remove('active');
+    var isFocused = focusedSessions.has(name);
+    var isActive = name === activeInputSession;
+    var shouldFade = focusedSessions.size > 0 && !isFocused;
+
+    // Toggle classes only when state changes — avoids flash from remove+re-add
+    // on cards with CSS opacity transitions (.faded has transition: opacity 0.5s).
+    term.dom.classList.toggle('focused', isFocused && focusedSessions.size > 0);
+    term.dom.classList.toggle('input-active', isFocused && isActive);
+    term.dom.classList.toggle('faded', shouldFade);
+    if (term.thumbnail) term.thumbnail.classList.toggle('active', isFocused && focusedSessions.size > 0);
 
     // Show/hide minimize button on thumbnail
     const minBtn = term.thumbnail ? term.thumbnail.querySelector('.thumb-minimize') : null;
-    if (minBtn) minBtn.style.display = (focusedSessions.has(name) && focusedSessions.size > 1) ? 'block' : 'none';
+    if (minBtn) minBtn.style.display = (isFocused && focusedSessions.size > 1) ? 'block' : 'none';
 
     // Show/hide header controls
     const hdrControls = term.dom.querySelector('.header-controls');
-    if (hdrControls) hdrControls.style.display = focusedSessions.has(name) ? 'inline-flex' : 'none';
-
-    if (focusedSessions.size > 0) {
-      if (focusedSessions.has(name)) {
-        term.dom.classList.add('focused');
-        if (term.thumbnail) term.thumbnail.classList.add('active');
-        if (name === activeInputSession) {
-          term.dom.classList.add('input-active');
-        }
-      } else {
-        term.dom.classList.add('faded');
-      }
-    }
+    if (hdrControls) hdrControls.style.display = isFocused ? 'inline-flex' : 'none';
   }
   if (perfTier >= 2) syncPerfTier2Visibility();
 }
@@ -5479,6 +5507,12 @@ function restoreFocusedTerminal(name) {
   if (!term) return;
   const now = clock.getElapsedTime();
   term.dom.classList.remove('focused', 'input-active');
+  // Hide minimize button and header controls immediately (before _retreating blocks updateFocusStyles)
+  const minBtn = term.thumbnail ? term.thumbnail.querySelector('.thumb-minimize') : null;
+  if (minBtn) minBtn.style.display = 'none';
+  const hdrCtrl = term.dom.querySelector('.header-controls');
+  if (hdrCtrl) hdrCtrl.style.display = 'none';
+  if (term.thumbnail) term.thumbnail.classList.remove('active');
   // Fade out as card retreats to ring
   term.dom.classList.add('faded');
   term.dom.style.transition = 'opacity ' + MORPH_DURATION + 's ease';
