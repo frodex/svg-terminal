@@ -2,6 +2,14 @@
 // HTTP server for SVG Terminal Viewer
 // Zero npm dependencies — uses Node built-ins only
 
+// Catch unhandled errors so the process doesn't silently crash
+process.on('uncaughtException', (err) => {
+  process.stderr.write('[FATAL] uncaughtException: ' + (err.stack || err.message || err) + '\n');
+});
+process.on('unhandledRejection', (reason) => {
+  process.stderr.write('[FATAL] unhandledRejection: ' + (reason && reason.stack ? reason.stack : String(reason)) + '\n');
+});
+
 import http from 'node:http';
 import https from 'node:https';
 import { createConnection } from 'node:net';
@@ -620,11 +628,13 @@ function bridgeClaudeProxySession(session, cpUser) {
         const msg = { ...base, session, pane: '0' };
         if (msg.type === 'screen') existing._lastScreen = msg;
         const json = JSON.stringify(msg);
+        let dropped = false;
         for (const ws of existing.subscribers) {
           if (ws.readyState !== 1) continue;
-          if (msg.type === 'delta' && ws.bufferedAmount > 65536) continue;
+          if (msg.type === 'delta' && ws.bufferedAmount > 65536) { dropped = true; continue; }
           ws.send(json);
         }
+        if (dropped) scheduleBackpressureHeal(existing, session);
       };
       existing._cpTerminalHandler = handler;
       if (existing.timer) { clearInterval(existing.timer); existing.timer = null; }
@@ -701,14 +711,15 @@ function bridgeClaudeProxySession(session, cpUser) {
     const msg = { ...base, session, pane: '0' };
     if (msg.type === 'screen') watcher._lastScreen = msg;
     const json = JSON.stringify(msg);
+    let dropped = false;
     for (const ws of watcher.subscribers) {
       if (ws.readyState !== 1) continue;
       // Backpressure: if WS send buffer is backed up, skip delta messages.
-      // The next screen or delta will carry current state. Prevents growing
-      // lag on slow connections (e.g. second browser through Cloudflare tunnel).
-      if (msg.type === 'delta' && ws.bufferedAmount > 65536) continue;
+      // Schedule a full screen heal so the client catches up once buffer drains.
+      if (msg.type === 'delta' && ws.bufferedAmount > 65536) { dropped = true; continue; }
       ws.send(json);
     }
+    if (dropped) scheduleBackpressureHeal(watcher, session);
   };
   watcher._cpTerminalHandler = handler;
   watcher._lastScreen = null;
@@ -722,6 +733,27 @@ function bridgeClaudeProxySession(session, cpUser) {
   });
 
   return watcher;
+}
+
+// When deltas are dropped due to WebSocket backpressure, the client's SVG state diverges
+// from the actual terminal. Schedule a full screen push once the buffer drains.
+// Debounced per-watcher: only one heal pending at a time, fires 500ms after last drop.
+function scheduleBackpressureHeal(watcher, sessionId) {
+  if (watcher._healTimer) clearTimeout(watcher._healTimer);
+  watcher._healTimer = setTimeout(() => {
+    watcher._healTimer = null;
+    cpRequest('getSessionScreen', { sessionId, pane: '0' }, 3000)
+      .then(screen => {
+        if (!screen) return;
+        const screenMsg = { type: 'screen', session: sessionId, pane: '0', ...screen };
+        watcher._lastScreen = screenMsg;
+        const json = JSON.stringify(screenMsg);
+        for (const sub of watcher.subscribers) {
+          if (sub.readyState === 1) sub.send(json);
+        }
+      })
+      .catch(() => {});
+  }, 500);
 }
 
 // After reconnect, claude-proxy often emits incremental deltas before any full screen.
@@ -1030,16 +1062,19 @@ async function handleDashboardWs(ws, req) {
           const sourceId = p.sourceSessionId || p.sourceId;
           if (!sourceId || typeof sourceId !== 'string') throw new Error('sourceSessionId is required');
           const settings = buildRestartForkSettings(p);
+          process.stderr.write('[FORK] sourceId=' + sourceId + ' linuxUser=' + linuxUser + '\n');
           const result = await cpRequest('forkSession', { user: linuxUser, sessionId: sourceId, settings }, 120000);
+          const newId = result.id || result.name;
+          process.stderr.write('[FORK] result id=' + newId + ' name=' + result.name + '\n');
           notifyDashboardCpSessionCreated(result, linuxUser);
           // Bridge immediately + retry after 1s (TerminalMirror may not be ready yet)
-          const newId = result.id || result.name;
           if (newId) {
             bridgeClaudeProxySession(newId, linuxUser);
             setTimeout(() => bridgeClaudeProxySession(newId, linuxUser), 1000);
           }
           if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'fork-session-result', ok: true, session: result }));
         } catch (err) {
+          process.stderr.write('[FORK] error: ' + (err.message || err) + '\n');
           if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'fork-session-result', ok: false, error: err.message || String(err) }));
         }
         return;
@@ -1271,6 +1306,37 @@ async function handleDashboardWs(ws, req) {
             }
             sendCardCounts(ws, user);
           }
+        }
+        return;
+      }
+
+      // Paste image: save base64 image to temp file, send file path as terminal input
+      if (msg.type === 'paste-image') {
+        try {
+          const session = msg.session;
+          if (!session || !validateParam(session)) throw new Error('Invalid session');
+          const data = msg.data;
+          const mimeType = msg.mimeType || 'image/png';
+          if (!data || typeof data !== 'string') throw new Error('Missing image data');
+          // Limit to ~10MB base64 (~7.5MB image)
+          if (data.length > 10 * 1024 * 1024) throw new Error('Image too large (max ~7.5MB)');
+          const ext = mimeType === 'image/jpeg' ? '.jpg' : mimeType === 'image/gif' ? '.gif' : mimeType === 'image/webp' ? '.webp' : '.png';
+          const filename = 'paste-' + Date.now() + '-' + randomBytes(4).toString('hex') + ext;
+          const dir = '/tmp/svg-terminal-pastes';
+          if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+          const filepath = dir + '/' + filename;
+          writeFileSync(filepath, Buffer.from(data, 'base64'));
+          process.stderr.write('[paste-image] saved ' + filepath + ' (' + Math.round(data.length * 3 / 4 / 1024) + 'KB)\n');
+          // Send file path as input to the terminal
+          cpRequest('input', {
+            sessionId: session,
+            user: cpUserDash,
+            body: { keys: filepath },
+          }).catch(err => process.stderr.write('[paste-image input] ' + (err.message || err) + '\n'));
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'paste-image-result', ok: true, path: filepath }));
+        } catch (err) {
+          process.stderr.write('[paste-image] error: ' + (err.message || err) + '\n');
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'paste-image-result', ok: false, error: err.message || String(err) }));
         }
         return;
       }

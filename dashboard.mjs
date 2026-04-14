@@ -179,6 +179,13 @@ const LAYOUTS = {
       { x: 0, y: 50, w: 100, h: 50 }
     ]
   },
+  '1main-1side': {
+    name: '1 Main + 1 Side',
+    slots: [
+      { x: 0, y: 0, w: 66, h: 100 },
+      { x: 66, y: 0, w: 34, h: 100 }
+    ]
+  },
   '1main-2side': {
     name: '1 Main + 2 Side',
     slots: [
@@ -202,6 +209,40 @@ const LAYOUTS = {
       { x: 33, y: 0, w: 34, h: 100 },
       { x: 67, y: 0, w: 33, h: 50 },
       { x: 67, y: 50, w: 33, h: 50 }
+    ]
+  },
+  '2main-v-2side': {
+    name: '2 Main (Vert) + 2 Side',
+    slots: [
+      { x: 0, y: 0, w: 66, h: 50 },
+      { x: 0, y: 50, w: 66, h: 50 },
+      { x: 66, y: 0, w: 34, h: 50 },
+      { x: 66, y: 50, w: 34, h: 50 }
+    ]
+  },
+  '2main-v-1side': {
+    name: '2 Main (Vert) + 1 Side',
+    slots: [
+      { x: 0, y: 0, w: 66, h: 50 },
+      { x: 0, y: 50, w: 66, h: 50 },
+      { x: 66, y: 0, w: 34, h: 100 }
+    ]
+  },
+  '1side-2main-v': {
+    name: '1 Side + 2 Main (Vert)',
+    slots: [
+      { x: 0, y: 0, w: 34, h: 100 },
+      { x: 34, y: 0, w: 66, h: 50 },
+      { x: 34, y: 50, w: 66, h: 50 }
+    ]
+  },
+  '2side-2main-v': {
+    name: '2 Side + 2 Main (Vert)',
+    slots: [
+      { x: 0, y: 0, w: 34, h: 50 },
+      { x: 0, y: 50, w: 34, h: 50 },
+      { x: 34, y: 0, w: 66, h: 50 },
+      { x: 34, y: 50, w: 66, h: 50 }
     ]
   },
   '2x2': {
@@ -238,7 +279,7 @@ const LAYOUTS = {
 };
 
 // Layout order for cycling with layout button
-const LAYOUT_ORDER = ['auto', '2up-h', '2up-v', '1main-2side', '3col', '2main-2side', '2x2', '2top-1bottom', '1main-4mini', 'n-stacked'];
+const LAYOUT_ORDER = ['auto', '2up-h', '2up-v', '1main-1side', '1main-2side', '3col', '2main-2side', '2main-v-2side', '2main-v-1side', '1side-2main-v', '2side-2main-v', '2x2', '2top-1bottom', '1main-4mini', 'n-stacked'];
 
 // Current active layout for the focus group
 let activeLayout = 'auto';
@@ -518,17 +559,87 @@ function updateTopBarLayoutLabel() {
 
 function fitAllFocused() {
   if (focusedSessions.size < 1) return;
+
+  // Reset user-positioned state so all cards participate in the layout
   for (var name of focusedSessions) {
     var t = terminals.get(name);
-    if (t) optimizeTermToCard(t);
+    if (t) t._userPositioned = false;
+  }
+
+  // Layout to get slot assignments
+  calculateFocusedLayout();
+
+  // Expand card DOM to fill slots edge-to-edge (no terminal resize)
+  for (var name of focusedSessions) {
+    var t = terminals.get(name);
+    if (!t || !t._slotFit) continue;
+    var fit = t._slotFit;
+    var newW = t.baseCardW;
+    var newH = t.baseCardH;
+    if (fit.constrainedBy === 'width') {
+      newH = Math.round(fit.slotH * t.baseCardW / fit.slotW);
+    } else {
+      newW = Math.round(fit.slotW * t.baseCardH / fit.slotH);
+    }
+    t.baseCardW = newW;
+    t.baseCardH = newH;
+    t.dom.style.width = newW + 'px';
+    t.dom.style.height = newH + 'px';
+    var inner = t.dom.querySelector('.terminal-inner');
+    if (inner) { inner.style.width = newW + 'px'; inner.style.height = newH + 'px'; }
+  }
+
+  // Reposition cards in 3D for expanded DOM — frustum projection
+  var vFov = camera.fov * DEG2RAD;
+  var halfTan = Math.tan(vFov / 2);
+  var screenW = window.innerWidth;
+  var screenH = window.innerHeight;
+  var now = clock.getElapsedTime();
+
+  var depths = [];
+  for (var name of focusedSessions) {
+    var t = terminals.get(name);
+    if (!t || !t._slotRect) continue;
+    var slot = t._slotRect;
+    var worldH = t.baseCardH * WORLD_SCALE;
+    var fracH = slot.h / screenH;
+    var depth = worldH / (fracH * 2 * halfTan);
+    depths.push({ name: name, depth: depth, cx: slot.x + slot.w / 2, cy: slot.y + slot.h / 2 });
+  }
+  if (depths.length > 0) {
+    var maxDepth = Math.max.apply(null, depths.map(function(d) { return d.depth; }));
+    var camZ = Math.max(FOCUS_DIST, maxDepth + 150);
+
+    for (var di = 0; di < depths.length; di++) {
+      var d = depths[di];
+      var t = terminals.get(d.name);
+      if (!t) continue;
+      var cardZ = camZ - d.depth;
+      var visHAtDepth = 2 * d.depth * halfTan;
+      var px2w = visHAtDepth / screenH;
+      t.morphFrom = { x: t.currentPos.x, y: t.currentPos.y, z: t.currentPos.z };
+      t._layoutZ = cardZ;
+      t.targetPos = { x: (d.cx - screenW / 2) * px2w, y: -(d.cy - screenH / 2) * px2w, z: cardZ };
+      t.morphStart = now;
+    }
+
+    var avgZ = depths.reduce(function(s, d) { return s + (camZ - d.depth); }, 0) / depths.length;
+    cameraTween = {
+      from: camera.position.clone(),
+      to: new THREE.Vector3(0, 0, camZ),
+      lookFrom: currentLookTarget.clone(),
+      lookTo: new THREE.Vector3(0, 0, avgZ),
+      start: now,
+      duration: 1.0
+    };
   }
 }
 
 function maxAllFocused() {
   if (focusedSessions.size < 1) return;
 
-  // --- Probe setup for 16px equalize (needed early for pre-computation) ---
-  var maxAllFontTarget = 16;
+  // --- Probe setup: use the user's POV font size setting ---
+  var maxAllFontTarget = _povFontTarget;
   var probe = document.getElementById('_pov-font-probe');
   if (!probe) {
     probe = document.createElement('span');
@@ -778,6 +889,7 @@ function wireTopBar() {
       e.stopPropagation();
       var open = mainMenu.classList.toggle('visible');
       if (layoutDd) layoutDd.classList.remove('visible');
+      clearGhostLayoutPreview();
       if (open) refreshTopBarUser();
       syncUiOverlayPointerBlock();
     });
@@ -2539,6 +2651,14 @@ function routeDashboardMessage(msg) {
     }
     return;
   }
+  if (msg.type === 'paste-image-result') {
+    if (msg.ok) {
+      console.log('[WS] Image pasted:', msg.path);
+    } else {
+      window.alert('Image paste failed: ' + (msg.error || 'Unknown error'));
+    }
+    return;
+  }
   if (msg.type === 'save-layout-result') {
     if (!msg.ok) console.warn('[WS] Layout save failed:', msg.error);
     return;
@@ -3932,7 +4052,7 @@ function createCardDOM(config) {
     }
   }
   // Minimize is always available
-  controls.appendChild(mkHdrBtn('⌊', 'Minimize', function() {
+  controls.appendChild(mkHdrBtn('⊖', 'Remove from focus group', function() {
     removeFromFocus(config.id);
   }));
   header.appendChild(controls);
@@ -4048,7 +4168,7 @@ function createThumbnail(sessionName) {
   // Minimize button — only visible when this terminal is in a focused group
   const minBtn = document.createElement('div');
   minBtn.className = 'thumb-minimize';
-  minBtn.textContent = '⌊';
+  minBtn.textContent = '⊖';
   minBtn.title = 'Remove from focus group';
   minBtn.style.display = 'none';
   minBtn.addEventListener('click', function(e) {
@@ -4091,8 +4211,8 @@ function createThumbnail(sessionName) {
   // State indicator (green ▶ / orange ⏸, bottom-center) — toggles temp pause
   const stateIcon = document.createElement('div');
   stateIcon.className = 'thumb-state-icon active';
-  stateIcon.textContent = '\u25B6';
-  stateIcon.title = 'Playing \u2014 click to pause';
+  stateIcon.textContent = 'ACTIVE';
+  stateIcon.title = 'Active \u2014 click to pause';
   stateIcon.addEventListener('click', function(e) {
     e.stopPropagation();
     var t = terminals.get(sessionName);
@@ -4101,9 +4221,9 @@ function createThumbnail(sessionName) {
       // Resume
       sendDashboardMessage({ type: 'subscribe', session: sessionName, source: 'claude-proxy' });
       t._muted = false;
-      stateIcon.textContent = '\u25B6';
+      stateIcon.textContent = 'ACTIVE';
       stateIcon.className = 'thumb-state-icon active';
-      stateIcon.title = 'Playing \u2014 click to pause';
+      stateIcon.title = 'Active \u2014 click to pause';
       item.classList.remove('muted');
       var overlay = t.dom ? t.dom.querySelector('.card-paused-overlay') : null;
       if (overlay) overlay.classList.remove('visible');
@@ -4243,6 +4363,7 @@ function removeBrowserCard(cardId) {
   shadowGroup.remove(t.shadowObject);
   if (t.thumbnail) t.thumbnail.remove();
   terminals.delete(cardId);
+  slotOrder.delete(cardId);
   const idx = sessionOrder.indexOf(cardId);
   if (idx >= 0) sessionOrder.splice(idx, 1);
   focusedSessions.delete(cardId);
@@ -4251,7 +4372,7 @@ function removeBrowserCard(cardId) {
     activeInputSession = focusedSessions.size > 0 ? [...focusedSessions][0] : null;
   }
   if (focusedSessions.size === 0) unfocusTerminal();
-  else updateFocusStyles();
+  else { updateFocusStyles(); calculateFocusedLayout(); }
   assignRings();
 }
 
@@ -5187,6 +5308,7 @@ function focusTerminal(sessionName) {
   }
   const t = terminals.get(sessionName);
   if (!t) return;
+  clearGhostLayoutPreview();
 
   // Restore any previously focused terminals
   restoreAllFocused();
@@ -5265,9 +5387,10 @@ function focusTerminal(sessionName) {
 
 // Add a terminal to the multi-focus set (ctrl+click)
 function addToFocus(sessionName) {
-  // Keep current layout — new card gets assigned to next available slot.
-  // Only clear slotOrder so the new card can be assigned by the default sort.
-  slotOrder.clear();
+  // Keep current layout — new card gets the next available slot.
+  // Only remove the new card's stale slotOrder entry (if re-adding a previously removed card)
+  // so it gets assigned by default sort. Don't clear all entries — that disrupts existing pins.
+  slotOrder.delete(sessionName);
   const t = terminals.get(sessionName);
   if (!t) return;
 
@@ -5383,6 +5506,7 @@ function restoreFocusedTerminal(name) {
 // If none remain, unfocus entirely.
 function removeFromFocus(sessionName) {
   activeLayout = 'auto';  // reset to default layout when focus group changes
+  clearGhostLayoutPreview();
   if (!focusedSessions.has(sessionName)) return;
   restoreFocusedTerminal(sessionName);
   focusedSessions.delete(sessionName);
@@ -5458,6 +5582,7 @@ function deselectTerminals() {
 // Full unfocus: return cards to ring, camera to home position.
 function unfocusTerminal() {
   activeLayout = 'auto';  // reset to default layout when focus group changes
+  clearGhostLayoutPreview();
   // Clear layout slot assignments
   slotOrder.clear();
   for (var entry of terminals) {
@@ -5852,6 +5977,33 @@ document.addEventListener('paste', function(e) {
   if (!shouldSendKeysToTerminal()) return;
   if (!activeInputSession) return;
   if (focusedSessions.size === 0) return;
+
+  // Check for image data in clipboard (screen captures, copied images)
+  var items = e.clipboardData && e.clipboardData.items;
+  if (items) {
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image/') === 0) {
+        e.preventDefault();
+        var blob = items[i].getAsFile();
+        if (!blob) return;
+        var reader = new FileReader();
+        var session = activeInputSession;
+        reader.onload = function() {
+          var base64 = reader.result.split(',')[1]; // strip data:image/...;base64,
+          sendDashboardMessage({
+            type: 'paste-image',
+            session: session,
+            pane: '0',
+            data: base64,
+            mimeType: blob.type
+          });
+        };
+        reader.readAsDataURL(blob);
+        return;
+      }
+    }
+  }
+
   e.preventDefault();
   const text = e.clipboardData.getData('text');
   if (text) {

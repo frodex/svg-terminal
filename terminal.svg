@@ -243,6 +243,68 @@
         }
       }
 
+      // Incremental bg/link patch — only update rows that changed in a delta.
+      // Full rebuild is still used for 'screen' messages.
+      function patchBgLayer(changedKeys, allLines) {
+        // Remove existing bg rects for changed rows
+        var changedRows = {};
+        for (var i = 0; i < changedKeys.length; i++) changedRows[parseInt(changedKeys[i])] = true;
+        var toRemove = [];
+        for (var c = bgLayer.firstChild; c; c = c.nextSibling) {
+          var ry = Math.floor(parseFloat(c.getAttribute('y')) / CELL_H);
+          if (changedRows[ry]) toRemove.push(c);
+        }
+        for (var r = 0; r < toRemove.length; r++) bgLayer.removeChild(toRemove[r]);
+        // Add new bg rects for changed rows
+        for (var k = 0; k < changedKeys.length; k++) {
+          var row = parseInt(changedKeys[k]);
+          if (!allLines[row]) continue;
+          var spans = allLines[row].spans;
+          var colOffset = 0;
+          for (var s = 0; s < spans.length; s++) {
+            var span = spans[s];
+            var hasBg = (span.bg != null) || (span.bgCls != null);
+            if (hasBg) {
+              var rect = document.createElementNS(SVG_NS, 'rect');
+              rect.setAttribute('x', (colOffset * CELL_W).toFixed(2));
+              rect.setAttribute('y', row * CELL_H);
+              rect.setAttribute('width', (span.text.length * CELL_W).toFixed(2));
+              rect.setAttribute('height', CELL_H);
+              if (span.bgCls) rect.setAttribute('class', span.bgCls);
+              else if (span.bg) rect.setAttribute('fill', span.bg);
+              bgLayer.appendChild(rect);
+            }
+            colOffset += span.text.length;
+          }
+        }
+      }
+
+      function patchLinkLayer(changedKeys, allLines) {
+        // For link layer, full rebuild is simpler due to multi-line URL detection.
+        // But skip rebuild if no changed line contains 'http' and no existing link
+        // overlaps a changed row — common case for cursor-only updates.
+        var changedRows = {};
+        for (var i = 0; i < changedKeys.length; i++) changedRows[parseInt(changedKeys[i])] = true;
+        var needRebuild = false;
+        for (var k = 0; k < changedKeys.length; k++) {
+          var row = parseInt(changedKeys[k]);
+          if (!allLines[row]) continue;
+          var spans = allLines[row].spans;
+          for (var s = 0; s < spans.length; s++) {
+            if (spans[s].text && spans[s].text.indexOf('http') >= 0) { needRebuild = true; break; }
+          }
+          if (needRebuild) break;
+        }
+        // Also check if any existing link underline overlaps a changed row
+        if (!needRebuild) {
+          for (var c = linkLayer.firstChild; c; c = c.nextSibling) {
+            var ly = Math.floor(parseFloat(c.getAttribute('y')) / CELL_H);
+            if (changedRows[ly]) { needRebuild = true; break; }
+          }
+        }
+        if (needRebuild) rebuildLinkLayer(allLines);
+      }
+
       // Render blue underlines for URLs in terminal text.
       // Checks span.url (set by server-side sgr-parser) AND scans text for
       // http:// / https:// patterns (for claude-proxy sessions where
@@ -739,7 +801,7 @@
           nudgeObjectRepaint();
 
         } else if (msg.type === 'delta') {
-          var keys = Object.keys(msg.changed);
+          var keys = msg.changed ? Object.keys(msg.changed) : [];
           for (var k = 0; k < keys.length; k++) {
             var idx = parseInt(keys[k]);
             var lineData = msg.changed[keys[k]];
@@ -748,7 +810,7 @@
             allLines[idx] = { spans: spans };
             prevState[idx] = JSON.stringify(spans);
           }
-          if (keys.length > 0) { rebuildBgLayer(allLines); rebuildLinkLayer(allLines); }
+          if (keys.length > 0) { patchBgLayer(keys, allLines); patchLinkLayer(keys, allLines); }
           if (msg.cursor) {
             cursorEl.setAttribute('x', (msg.cursor.x * CELL_W).toFixed(2));
             cursorEl.setAttribute('y', msg.cursor.y * CELL_H);
