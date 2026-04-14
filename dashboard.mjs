@@ -559,9 +559,8 @@ function updateTopBarLayoutLabel() {
 
 function fitAllFocused() {
   if (focusedSessions.size < 1) return;
-  // Reposition cards in 3D (Z dolly) so each fills its slot optimally.
-  // Same transform as compose open/close. NEVER changes card DOM size.
-  // Keeps slot assignments — cards stay in their current slots.
+  // Dolly each card in Z to fill its slot in one dimension.
+  // No DOM changes — uses the card's actual world proportions.
   for (var name of focusedSessions) {
     var t = terminals.get(name);
     if (t) t._userPositioned = false;
@@ -1790,10 +1789,11 @@ function calculateSlotLayout(slots) {
     var cols = t ? t.screenCols || 80 : 80;
     var rows = t ? t.screenRows || 24 : 24;
     var cells = cols * rows;
-    var m = t ? getMeasuredCellSize(t) : null;
-    var aspect = (cols * (m ? m.cellW : SVG_CELL_W)) / (rows * (m ? m.cellH : SVG_CELL_H));
     var worldW = (t ? t.baseCardW || 1280 : 1280) * WORLD_SCALE;
     var worldH = (t ? t.baseCardH || 992 : 992) * WORLD_SCALE;
+    // Use card's actual DOM aspect ratio — matches what the 3D scene renders.
+    // Terminal aspect (cols*cellW / rows*cellH) can diverge from DOM after Max All.
+    var aspect = worldW / worldH;
     cards.push({ name: name, cols: cols, rows: rows, cells: cells, aspect: aspect, worldW: worldW, worldH: worldH });
   }
 
